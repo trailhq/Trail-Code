@@ -14,7 +14,7 @@ import { createServer, type Server } from "node:http";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
-import { tmpRepo } from "./helpers.js";
+import { tmpRepo, wasmParserFailureCliArgs } from "./helpers.js";
 
 /** A gateway that answers every request the way an exhausted quota does. */
 async function quotaExhaustedServer(): Promise<{ url: string; close: () => Promise<void>; calls: () => number }> {
@@ -56,18 +56,21 @@ async function runBuild(
   dir: string,
   baseUrl: string,
   extra: string[] = [],
+  injectWasmFailure = false,
 ): Promise<{ status: number | null; stderr: string; stdout: string }> {
+  const cliArgs = [
+    "--provider", "openai",
+    "--api-key", "test-key",
+    "--base-url", baseUrl,
+    "--model", "test-model",
+    "build", dir, "--deep", "-j", "1",
+    ...extra,
+  ];
   const child = spawn(
     process.execPath,
-    [
-      "--import", "tsx", "src/cli.ts",
-      "--provider", "openai",
-      "--api-key", "test-key",
-      "--base-url", baseUrl,
-      "--model", "test-model",
-      "build", dir, "--deep", "-j", "1",
-      ...extra,
-    ],
+    injectWasmFailure
+      ? wasmParserFailureCliArgs(cliArgs)
+      : ["--import", "tsx", "src/cli.ts", ...cliArgs],
     {
       // No transport retries: the SDK's backoff is correct behaviour but would make
       // this test spend seconds waiting to learn what the first response already said.
@@ -110,6 +113,21 @@ test("#127: --allow-partial keeps the same report but exits 0, for callers that 
     const r = await runBuild(d, gateway.url, ["--allow-partial"]);
 
     assert.equal(r.status, 0, `expected --allow-partial to exit 0\n${r.stderr}`);
+    assert.match(r.stderr, /the deep pass did not complete/);
+  } finally {
+    await gateway.close();
+  }
+});
+
+test("--allow-partial cannot waive a structural failure during a degraded deep build", async () => {
+  const gateway = await quotaExhaustedServer();
+  try {
+    const d = repo(5);
+    writeFileSync(join(d, "Broken.cs"), "public class Broken {}\n");
+    const r = await runBuild(d, gateway.url, ["--allow-partial"], true);
+
+    assert.equal(r.status, 1, `expected the structural failure to win\n${r.stderr}`);
+    assert.match(r.stderr, /wiring incomplete: 1 structural error\(s\)/);
     assert.match(r.stderr, /the deep pass did not complete/);
   } finally {
     await gateway.close();
