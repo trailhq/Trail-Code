@@ -138,7 +138,7 @@ export function wasmParserFailureCliArgs(args: string[]): string[] {
     'Parser.prototype.setLanguage = function () { throw new Error("injected WASM parse failure"); };',
     // Commander detects eval mode and treats argv after the executable as user
     // arguments, so there is no script-path slot in this process shape.
-    `process.argv = [process.execPath, ...${JSON.stringify(args)}];`,
+    `process.argv = [process.execPath, "graft", ...${JSON.stringify(args)}];`,
     'await import("./src/cli.ts");',
   ].join("\n");
   return ["--import", "tsx", "--input-type=module", "--eval", script];
