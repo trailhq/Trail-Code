@@ -218,7 +218,7 @@ test('CLI: --yes wires every detected agent (the pre-0.8 default)', () => {
 test('CLI: --no-global writes AGENTS.md but leaves ~/.codex alone', () => {
   const home = fresh(); const repo = fresh();
   mkdirSync(join(home, '.codex'), { recursive: true });
-  const out = cliStderr(repo, home, ['--agents', 'agents', '--no-global']);
+  const out = cliStderr(repo, home, ['--agents', 'agents', '--no-global', '--verbose']);
   assert.ok(existsSync(join(repo, 'AGENTS.md')));
   assert.deepEqual(readdirSync(join(home, '.codex')), []);
   assert.match(out, /skipped out-of-repo writes/);
@@ -230,7 +230,7 @@ test('CLI: the graph build is attempted even when claude is not selected', () =>
   // Regression: the build used to sit inside `if (wantClaude)`, so picking only
   // cursor wired .cursor/ and never built the graph its rule file points at.
   const out = cliStderr(repo, home, ['--agents', 'cursor']);
-  assert.match(out, /(built the graph|skipped graph build)/);
+  assert.match(out, /(built the graph|graph built|skipped graph build|skipped the graph build)/);
 });
 
 test('CLI: --no-global stays quiet when the selection has nothing out-of-repo', () => {

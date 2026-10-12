@@ -1,6 +1,6 @@
 {
   "name": "@nanonets/graft",
-  "version": "0.19.0",
+  "version": "0.21.1",
   "description": "Build a repo's context graph as a folder of linked markdown files: a local, regenerable cache that every query keeps in sync with your code.",
   "keywords": [
     "ai",
@@ -14,11 +14,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/NanoNets/context-graph-engine.git"
+    "url": "git+https://github.com/trailhq/Graft.git"
   },
-  "homepage": "https://github.com/NanoNets/context-graph-engine#readme",
+  "homepage": "https://github.com/trailhq/Graft#readme",
   "bugs": {
-    "url": "https://github.com/NanoNets/context-graph-engine/issues"
+    "url": "https://github.com/trailhq/Graft/issues"
   },
   "publishConfig": {
     "access": "public"
@@ -55,11 +55,11 @@
     "node": ">=20"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.117.1",
+    "@anthropic-ai/sdk": "^0.122.0",
     "commander": "^15.0.0",
     "dotenv": "^17.4.2",
     "gray-matter": "^4.0.3",
-    "openai": "^6.45.0",
+    "openai": "^7.8.0",
     "tree-sitter": "^0.21.1",
     "tree-sitter-go": "^0.23.4",
     "tree-sitter-java": "^0.23.5",

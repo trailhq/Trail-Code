@@ -7,7 +7,7 @@ import { planInit } from '../src/hosts/plan.js';
 import {
   KEY_CTRL_C, KEY_DOWN, KEY_ESC, KEY_UP,
   describeWrites, formatNonInteractiveHelp, formatPlan, initialPickerState,
-  keyOf, keysOf, pickedHostIds, pickedIds, pickedTelemetry, reducePicker, renderPicker, tilde,
+  compactWrites, keyOf, keysOf, pickedHostIds, pickedIds, pickedTelemetry, reducePicker, renderPicker, tilde, visibleRows,
   TELEMETRY_ROW_ID,
   type PickerKey,
 } from '../src/cli-picker.js';
@@ -100,16 +100,21 @@ test('down then space adds the second host', () => {
   assert.deepEqual(pickedIds(state), ['claude', 'agents']);
 });
 
+/** Rows on screen before `m`: the agents graft found, and nothing else. */
+function shownCount(repo: string, home: string): number {
+  return visibleRows(initialPickerState(planInit(repo, { home }), repo, home)).length;
+}
+
 test('cursor wraps at both ends', () => {
   const repo = fresh(); const home = fullHome();
-  const n = planInit(repo, { home }).length;
+  const n = shownCount(repo, home);
   assert.equal(drive(repo, home, ['up']).cursor, n - 1);
   assert.equal(drive(repo, home, Array(n).fill('down') as PickerKey[]).cursor, 0);
 });
 
 test('a toggles all on, then all off', () => {
   const repo = fresh(); const home = fullHome();
-  const n = planInit(repo, { home }).length;
+  const n = shownCount(repo, home);
   assert.equal(pickedIds(drive(repo, home, ['all'])).length, n);
   assert.deepEqual(pickedIds(drive(repo, home, ['all', 'all'])), []);
 });
@@ -169,15 +174,38 @@ test('describeWrites truncates long path lists', () => {
   assert.match(describeWrites(claude.writes, repo, home), /\+2 more/);
 });
 
-test('renderPicker marks the cursor, the checkboxes and undetected hosts', () => {
+test('renderPicker marks the cursor and folds undetected hosts into one line', () => {
   const repo = fresh(); const home = fresh(); // nothing installed
   const state = initialPickerState(planInit(repo, { home }), repo, home);
   const text = renderPicker(state, false);
+  assert.match(text, /^graft init — pick the agents your team uses:/);
   assert.match(text, /› \[x\] claude/);
-  assert.match(text, /\[ \] cursor.*\(not detected\)/);
-  assert.match(text, /space toggle/);
-  // Every host gets a row, plus header, blank lines and the key legend.
-  assert.equal(text.split('\n').filter((l) => /\[[ x]\]/.test(l)).length, state.rows.length);
+  assert.doesNotMatch(text, /\[ \] cursor/, 'an agent graft cannot find is folded away');
+  assert.match(text, /\+ \d+ not detected \(.*cursor.*\) · m to show/);
+  assert.match(text, /space toggle · a all · m more · enter confirm/);
+  // Only the detected rows get a checkbox until `m`.
+  assert.equal(text.split('\n').filter((l) => /\[[ x]\]/.test(l)).length, visibleRows(state).length);
+
+  const opened = reducePicker(state, 'more');
+  const all = renderPicker(opened, false);
+  assert.match(all, /\[ \] cursor \(not detected\)/);
+  assert.equal(all.split('\n').filter((l) => /\[[ x]\]/.test(l)).length, state.rows.length);
+});
+
+test('a never selects an agent that is folded away', () => {
+  const repo = fresh(); const home = fresh();
+  const state = reducePicker(initialPickerState(planInit(repo, { home }), repo, home), 'all');
+  for (const id of pickedIds(state)) {
+    assert.ok(state.rows.find((r) => r.id === id)?.detected, `${id} was folded and must not be picked`);
+  }
+});
+
+test('compactWrites shows a folder written into several times once, and two entries at most', () => {
+  const repo = fresh(); const home = fullHome();
+  const [claude] = planInit(repo, { home, ids: ['claude'] });
+  assert.equal(compactWrites(claude.writes, repo, home), `.claude${sep}, .mcp.json · + 3 in ~${sep}`);
+  const cursor = planInit(repo, { home, ids: ['cursor'] })[0];
+  assert.match(compactWrites(cursor.writes, repo, home), /^[^,]+, [^,]+ \+\d+ more$/);
 });
 
 test('formatPlan separates repo writes from machine-wide ones', () => {
@@ -273,7 +301,7 @@ test('the consent row is never returned as an agent to wire', () => {
 
 test('a (toggle all) is about agents and leaves the consent answer alone', () => {
   const repo = fresh(); const home = fullHome();
-  const n = planInit(repo, { home }).length;
+  const n = shownCount(repo, home);
   // On: every agent selected, consent still the default yes.
   const on = driveWithConsent(repo, home, ['all']);
   assert.equal(pickedHostIds(on).length, n);
@@ -293,7 +321,6 @@ test('the rendered row shows the label, a rule, and what is not collected', () =
   const out = renderPicker(initialPickerState(planInit(repo, { home }), repo, home, { offerTelemetry: true }), false);
   assert.match(out, /\[x\] anonymous usage stats/);
   assert.match(out, /no code, no file paths, no queries/);
-  assert.match(out, /TELEMETRY\.md/);
   assert.equal(out.includes(TELEMETRY_ROW_ID), false, 'the internal id must never be shown');
   assert.match(out, /─/, 'a rule separates the settings from the agents');
 });

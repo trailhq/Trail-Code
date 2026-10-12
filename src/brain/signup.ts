@@ -2,12 +2,12 @@
  * Getting a brain without leaving the terminal.
  *
  * Until now a brain could only begin in the browser. You signed up on Trail, it
- * created the brain, and handed you a `graft init --brain <id>:<token>` line to
+ * created the brain, and handed you a `graft init --trail <id>:<token>` line to
  * paste. That is the right way round when the website is where you already are,
  * and the wrong way round when you are standing in a repository with graft
  * already installed — which is where most people meet graft first.
  *
- * So `graft brain push` on an unlinked repo starts here instead of stopping.
+ * So `graft trail push` on an unlinked repo starts here instead of stopping.
  * Graft opens a listener on loopback, sends the browser to Trail carrying the
  * repository it is standing in and the port to answer on, and waits. Trail does
  * the signing up, makes a brain for that repository, and redirects back to the
@@ -76,8 +76,8 @@ function sameState(got: string, want: string): boolean {
  * about to close, so there is nothing to style around. */
 function donePage(ok: boolean): string {
   const msg = ok
-    ? "Your brain is connected. Return to your terminal — the push is already running."
-    : "That handoff did not match this terminal. Run `graft brain push` again.";
+    ? "Your trail is connected. Return to your terminal — the push is already running."
+    : "That sign-up doesn't match this terminal. Run graft trail push again.";
   return `<!doctype html><meta charset="utf-8"><title>graft</title><body style="font:15px/1.5 system-ui,sans-serif;margin:3rem auto;max-width:32rem;color:#1F2129"><p>${msg}</p><p style="color:#676767">You can close this tab.</p>`;
 }
 
@@ -116,7 +116,7 @@ export async function startHandoff(): Promise<Handoff> {
     if (!brainId || !token) {
       res.writeHead(400, { "content-type": "text/html; charset=utf-8" });
       res.end(donePage(false));
-      settle({ error: "the browser came back without a brain id and token", reason: "bad_callback" });
+      settle({ error: "sign-up came back incomplete · nothing was sent — run graft trail push again", reason: "bad_callback" });
       return;
     }
 
@@ -155,7 +155,13 @@ export async function startHandoff(): Promise<Handoff> {
       let timer: NodeJS.Timeout | undefined;
       const timeout = new Promise<HandoffResult>((resolve) => {
         timer = setTimeout(
-          () => resolve({ error: "timed out waiting for the browser — run `graft brain push` again, or use the link above", reason: "timed_out" }),
+          () =>
+            resolve({
+              error: `no sign-up after ${
+                timeoutMs >= 60_000 ? `${Math.round(timeoutMs / 60_000)} minutes` : `${Math.max(1, Math.round(timeoutMs / 1000))} seconds`
+              } · nothing was sent — run graft trail push again`,
+              reason: "timed_out",
+            }),
           timeoutMs,
         );
         // The timer must not hold the process open once the browser has answered.
@@ -196,16 +202,114 @@ export function brainUrl(brainId: string, baseUrl?: string): string {
   return `${webBaseUrl(baseUrl)}/get-started?step=build&brain=${encodeURIComponent(brainId)}`;
 }
 
-/** Where to send the browser for a repo's brain. */
-export function signupUrl(opts: { repo: string; port: number; state: string; baseUrl?: string }): string {
+/** Where a trail's suggested context-file changes are reviewed and accepted:
+ * the Context files overview, which lists every file the repo's agents read
+ * (CLAUDE.md, AGENTS.md, Cursor rules, folder files, skills) with what waits
+ * on each. Needs a Trail that has the page (NanoNets/assign#2957). */
+export function reviewUrl(brainId: string, baseUrl?: string): string {
+  return `${webBaseUrl(baseUrl)}/brain/${encodeURIComponent(brainId)}/context-files`;
+}
+
+/** Where to send the browser for a repo's brain.
+ *
+ * No port when an agent runs the push: nothing stays listening on loopback, so
+ * Trail keeps the trail it made under `state` and graft asks for it by that. */
+export function signupUrl(opts: { repo: string; port?: number; state: string; baseUrl?: string }): string {
   const base = webBaseUrl(opts.baseUrl);
-  const q = new URLSearchParams({
-    step: "repo",
-    graft_repo: opts.repo,
-    graft_port: String(opts.port),
-    graft_state: opts.state,
-  });
+  const q = new URLSearchParams({ step: "repo", graft_repo: opts.repo });
+  if (opts.port !== undefined) q.set("graft_port", String(opts.port));
+  q.set("graft_state", opts.state);
   return `${base}/get-started?${q.toString()}`;
+}
+
+/*
+ * Signing up when an agent runs the push.
+ *
+ * Claude Code, Cursor and the rest run `graft trail push` with no terminal, and
+ * show the person nothing until the command exits. A loopback listener cannot
+ * work there: the link would sit unseen inside a running command, and anything
+ * the browser is sent back to is gone by the time the person finishes signing
+ * up. So the push runs in two short steps instead. The first opens the sign-up
+ * page, saves the state it put in the link, and exits at once so the agent can
+ * tell the person what to do. The next asks Trail every couple of seconds,
+ * by that state, whether the sign-up has finished, and carries on with the push
+ * when it has.
+ */
+
+/** A fresh state for a sign-up link: 24 random bytes, which is what Trail
+ * accepts and what makes the link impossible to guess. */
+export function newSignupState(): string {
+  return randomBytes(24).toString("base64url");
+}
+
+/** How long one agent-run push waits for the sign-up. Under the two minutes an
+ * agent gives a command by default, so the wait ends with a message it can read
+ * rather than a killed process. */
+export const AGENT_WAIT_MS = 90 * 1000;
+
+/** How often it asks. */
+export const AGENT_POLL_MS = 2000;
+
+/** How long a saved state is worth asking about: a minute under the fifteen
+ * Trail keeps an unclaimed sign-up, so graft never waits on one Trail dropped. */
+export const PENDING_SIGNUP_TTL_MS = 14 * 60 * 1000;
+
+/** Why asking stopped short of a link. */
+export type ClaimFailure = "expired" | "unsupported";
+export type ClaimResult = { link: BrainLink } | { pending: true } | { error: string; reason: ClaimFailure };
+
+/**
+ * Ask Trail once whether the sign-up for `state` has finished.
+ *
+ * A network error or a server error counts as "not yet": one bad request in a
+ * ninety-second wait is not a reason to give up on it.
+ */
+export async function claimSignup(state: string, apiBase: string, fetchImpl: typeof fetch = fetch): Promise<ClaimResult> {
+  let res: Response;
+  try {
+    res = await fetchImpl(`${apiBase}/api/public/graft-handoffs/claim`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ state }),
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch {
+    return { pending: true };
+  }
+  if (res.status === 200) {
+    const body = (await res.json().catch(() => ({}))) as { brain_id?: string; token?: string };
+    if (body.brain_id && body.token) return { link: { brainId: body.brain_id, token: body.token } };
+    return { pending: true };
+  }
+  await res.body?.cancel().catch(() => undefined);
+  if (res.status === 410) {
+    return { error: "that sign-up link was already used or has expired · run graft trail push again for a new one", reason: "expired" };
+  }
+  // An older Trail, without the route. Waiting on it would never end.
+  if (res.status === 404 || res.status === 405) {
+    return {
+      error: "this Trail can't hand a sign-up to an agent yet · run graft trail push in a terminal, or graft trail connect <trailId>:<token>",
+      reason: "unsupported",
+    };
+  }
+  return { pending: true };
+}
+
+/** Ask until the sign-up finishes, Trail says it never will, or `timeoutMs`
+ * passes — which comes back as `{ pending: true }`. */
+export async function waitForSignup(
+  state: string,
+  apiBase: string,
+  opts: { timeoutMs?: number; intervalMs?: number; fetchImpl?: typeof fetch } = {},
+): Promise<ClaimResult> {
+  const deadline = Date.now() + (opts.timeoutMs ?? AGENT_WAIT_MS);
+  const interval = opts.intervalMs ?? AGENT_POLL_MS;
+  for (;;) {
+    const got = await claimSignup(state, apiBase, opts.fetchImpl);
+    if (!("pending" in got)) return got;
+    if (Date.now() + interval > deadline) return got;
+    await new Promise((r) => setTimeout(r, interval));
+  }
 }
 
 /** Open the user's browser, best effort. A machine with no opener is not an

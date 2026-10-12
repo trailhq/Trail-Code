@@ -84,7 +84,7 @@ test('CLI: --no-statusline leaves statusLine unset', () => {
   const d = fresh();
   const res = spawnSync(
     process.execPath,
-    ['--import', 'tsx', 'src/cli.ts', 'init', d, '--no-build', '--no-agents', '--no-statusline'],
+    ['--import', 'tsx', 'src/cli.ts', 'init', d, '--no-build', '--no-agents', '--no-statusline', '--verbose'],
     { encoding: 'utf8' },
   );
   assert.equal(res.status, 0, res.stderr);
@@ -160,11 +160,27 @@ test('formatInitEpilogue: graph not built shows "build the graph" as step 1, no 
   assert.equal(col(built, 'restart your agent'), col(notBuilt, 'restart your agent'));
 });
 
-test('CLI: graft init epilogue has the wordmark + next steps, and never mentions OPENROUTER', () => {
+test('CLI: graft init prints one line per step, and no banner', () => {
   const d = fresh();
   const res = spawnSync(
     process.execPath,
     ['--import', 'tsx', 'src/cli.ts', 'init', d, '--no-build', '--no-agents'],
+    { encoding: 'utf8' },
+  );
+  assert.equal(res.status, 0, res.stderr);
+  assert.match(res.stderr, /skipped the graph build — run graft build/);
+  assert.match(res.stderr, /✓ claude +\.claude[\\/], \.mcp\.json/);
+  assert.match(res.stderr, /restart your agents so a new session picks up graft/);
+  assert.match(res.stderr, /commit \.claude\/ \.mcp\.json to share it — graft\/ stays local and git-ignored/);
+  assert.ok(!res.stderr.includes('|___/'), 'the banner is --verbose only');
+  assert.ok(!res.stderr.includes('✓ wrote'), 'file-by-file lines are --verbose only');
+});
+
+test('CLI: graft init --verbose epilogue has the wordmark + next steps, and never mentions OPENROUTER', () => {
+  const d = fresh();
+  const res = spawnSync(
+    process.execPath,
+    ['--import', 'tsx', 'src/cli.ts', 'init', d, '--no-build', '--no-agents', '--verbose'],
     { encoding: 'utf8' },
   );
   assert.equal(res.status, 0, res.stderr);

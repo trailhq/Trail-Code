@@ -87,11 +87,130 @@ export function readAgentInstructions(root: string): HistorySource[] {
     ".github/copilot-instructions.md",
     ".windsurf/rules/graft.md",
     ...filesIn(root, ".cursor/rules", (n) => n.endsWith(".mdc") || n.endsWith(".md")),
+    // The same files one folder down: a monorepo keeps its frontend's rules in
+    // web/CLAUDE.md, and those are as deliberate as the root's.
+    ...folderInstructionFiles(root),
+    // Skills a team wrote for its agents. Graft's own is left out for the same
+    // reason its managed blocks are: the brain must not learn graft from graft.
+    ...skillFiles(root),
   ];
   const out: HistorySource[] = [];
+  const seen = new Set<string>();
   for (const rel of candidates) {
+    const key = rel.replace(/\\/g, "/");
+    if (seen.has(key)) continue;
+    seen.add(key);
     const text = stripManagedBlocks(readText(root, rel) ?? "");
-    if (text.trim()) out.push({ kind: "agent_instructions", path: rel, text });
+    if (text.trim()) out.push({ kind: "agent_instructions", path: key, text });
+  }
+  return out;
+}
+
+/** Instruction files below the root that are worth reading as instructions. */
+const FOLDER_INSTRUCTION_NAMES = new Set(["CLAUDE.md", "AGENTS.md"]);
+/** How deep below the root a folder instruction file may sit (a/b/c/d/CLAUDE.md). */
+const MAX_FOLDER_DEPTH = 4;
+/** Most folder instruction files, and most skills, carried per push. */
+export const MAX_FOLDER_FILES = 30;
+export const MAX_SKILL_FILES = 30;
+
+/** Directories never searched for instruction files: dependencies, build
+ * output, graft's own cache. Dot-directories are skipped as a class. */
+const SKIP_INSTRUCTION_DIRS = new Set([
+  "node_modules",
+  "dist",
+  "build",
+  "out",
+  "vendor",
+  "graft",
+  "target",
+  "coverage",
+  "__pycache__",
+  "venv",
+  "bower_components",
+]);
+
+function skippedSegment(seg: string): boolean {
+  return seg.startsWith(".") || SKIP_INSTRUCTION_DIRS.has(seg);
+}
+
+/**
+ * `**\/CLAUDE.md` and `**\/AGENTS.md` below the root, shallowest first.
+ *
+ * Asked of git first, because git already knows what the repository ignores:
+ * a CLAUDE.md inside an ignored folder is someone's scratch, not the team's.
+ * The walk is the fallback for a checkout git cannot answer for.
+ */
+export function folderInstructionFiles(root: string, max = MAX_FOLDER_FILES): string[] {
+  const keep = (rel: string): boolean => {
+    const parts = rel.split("/");
+    const name = parts[parts.length - 1] ?? "";
+    const dirs = parts.slice(0, -1);
+    if (!FOLDER_INSTRUCTION_NAMES.has(name)) return false;
+    if (dirs.length === 0 || dirs.length > MAX_FOLDER_DEPTH) return false;
+    return !dirs.some(skippedSegment);
+  };
+  let found: string[] | null = null;
+  const listed = git(root, ["ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "*CLAUDE.md", "*AGENTS.md"]);
+  if (listed !== null) found = [...new Set(listed.split("\0").filter(Boolean))].filter(keep);
+  if (found === null) found = walkFor(root, keep);
+  const depth = (p: string) => p.split("/").length;
+  return found
+    .filter((rel) => existsSync(join(root, rel)))
+    .sort((a, b) => depth(a) - depth(b) || a.localeCompare(b))
+    .slice(0, max);
+}
+
+/** The filesystem walk behind folderInstructionFiles, for a tree git cannot list. */
+function walkFor(root: string, keep: (rel: string) => boolean): string[] {
+  const out: string[] = [];
+  const visit = (rel: string, depth: number) => {
+    if (depth > MAX_FOLDER_DEPTH) return;
+    let names: string[];
+    try {
+      names = readdirSync(join(root, rel));
+    } catch {
+      return;
+    }
+    for (const name of names) {
+      const child = rel ? `${rel}/${name}` : name;
+      let isDir = false;
+      try {
+        isDir = statSync(join(root, child)).isDirectory();
+      } catch {
+        continue;
+      }
+      if (isDir) {
+        if (!skippedSegment(name)) visit(child, depth + 1);
+      } else if (depth > 0 && keep(child)) {
+        out.push(child);
+      }
+    }
+  };
+  visit("", 0);
+  return out;
+}
+
+/** `.claude/skills/<name>/SKILL.md`, graft's own skill excluded. */
+export function skillFiles(root: string, max = MAX_SKILL_FILES): string[] {
+  const dir = join(root, ".claude", "skills");
+  let names: string[];
+  try {
+    names = readdirSync(dir).sort();
+  } catch {
+    return [];
+  }
+  const out: string[] = [];
+  for (const name of names) {
+    if (name === "graft" || name.startsWith(".")) continue;
+    const rel = `.claude/skills/${name}/SKILL.md`;
+    try {
+      if (!statSync(join(root, rel)).isFile()) continue;
+    } catch {
+      continue;
+    }
+    out.push(rel);
+    if (out.length >= max) break;
   }
   return out;
 }

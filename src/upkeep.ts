@@ -152,7 +152,7 @@ export function maybeRefreshInBackground(home?: string, now = Date.now()): boole
  * stalled first turn. So nothing here blocks — the child does the fetch and
  * this call returns immediately.
  *
- * Without it a brain is pulled exactly once, at `graft brain connect`, and
+ * Without it a brain is pulled exactly once, at `graft trail connect`, and
  * never again. That was survivable when connecting happened after the brain
  * finished building; it is not survivable now that onboarding connects DURING
  * the build, because the one pull returns an empty rulebook and nothing would

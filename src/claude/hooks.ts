@@ -14,6 +14,10 @@ import { flushClosedSessions, summarizeSession } from '../telemetry/sessions.js'
 import { hasSavingsTally, lastAssistantTurn, lastTurnBilling } from './tally.js';
 import { scopeOf, scopesOfGraph } from '../graph/scopes.js';
 import { classifyToolUse, isMcpToolName, isGraftMcpTool, parseSavings, recordToolUse, type ToolKind } from './session-metrics.js';
+import { readLink } from '../brain/link.js';
+import { pickedAgents } from '../brain/push.js';
+import { readTrailSnapshot, trailContextLine } from '../brain/watch-trail.js';
+import { maybeAutopush, readTrailPushState, recordSeenSuggestions, type AutopushDeps } from '../brain/autopush.js';
 
 /** Prompts shorter than this never trigger retrieval — they are almost always
  * conversational ("yes go ahead", "thanks") and the coverage gate can't judge
@@ -416,19 +420,88 @@ function handleStop(input: any, dir: string): void {
   }
 }
 
+/** The most the session-start hook waits on Trail. */
+export const TRAIL_CHECK_CAP_MS = 3000;
+
+/**
+ * What the attached trail has waiting, as one line for the session's opening
+ * context — and, on the way, the once-a-day background push that keeps it
+ * current (brain/autopush.ts). Null when there is no trail, nothing waiting, or
+ * no answer in time.
+ *
+ * The one place a hook goes to the network, and it is fenced accordingly. Only a
+ * repo with a trail attached asks at all, so every other repo pays nothing. The
+ * requests are aborted at {@link TRAIL_CHECK_CAP_MS} — or sooner when the
+ * installed hook budget is tighter — and raced against a timer besides, so a
+ * Trail that never answers costs the session three seconds, once, and never the
+ * hook: the orientation below is emitted either way, and the hook is not
+ * killed. Anything that goes wrong is a missing line, never a thrown error.
+ *
+ * Worth the three seconds because nothing else tells anyone. Changes accepted in
+ * Trail sit there until someone remembers `graft trail pull`, and suggestions
+ * nobody has looked at sit there longer; the start of a session is when an
+ * agent can ask the person about them. Suggestions are mentioned only when
+ * there are new ones since the last session (see trailContextLine), so the
+ * line never becomes a fixture of every session.
+ */
+export async function trailAtSessionStart(
+  dir: string,
+  deps: { fetchImpl?: typeof fetch; capMs?: number; autopush?: AutopushDeps } = {},
+): Promise<string | null> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    const link = readLink(dir);
+    if (!link) return null;
+    const installed = installedHookTimeout(dir, 'SessionStart');
+    const cap = deps.capMs ?? Math.min(TRAIL_CHECK_CAP_MS, Math.max(1000, (installed ?? CHILD_TIMEOUT_MS) - HOOK_OVERHEAD_MS));
+    const ctl = new AbortController();
+    const f = deps.fetchImpl ?? fetch;
+    // Our signal replaces the per-request ones (5 and 15 s), which are all
+    // longer than the cap and would otherwise keep the process alive past it.
+    const capped = ((input: Parameters<typeof fetch>[0], init?: RequestInit) => f(input, { ...init, signal: ctl.signal })) as typeof fetch;
+    const snapshot = readTrailSnapshot(dir, link, pickedAgents(dir), capped);
+    // Started while the requests are in flight; it only spawns and returns.
+    maybeAutopush(dir, deps.autopush);
+    const late = new Promise<null>((r) => {
+      timer = setTimeout(() => {
+        ctl.abort();
+        r(null);
+      }, cap);
+    });
+    const r = await Promise.race([snapshot, late]);
+    if (!r || !r.ok) return null;
+    // Read before the new count is written: the line says what grew since the
+    // last session, and every successful check moves that mark — including one
+    // whose line was about accepted changes instead.
+    const lastSeen = readTrailPushState(dir).seenSuggested;
+    if (r.snapshot.suggested !== null) recordSeenSuggestions(dir, r.snapshot.suggested);
+    return trailContextLine(r.snapshot, lastSeen);
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function main(event: string): Promise<void> {
   const input = readStdin();
   const dir = projectDir(input);
 
   if (event === 'session-start') {
+    // The trail's quick look goes first, so its requests are in flight while the
+    // rest of this runs. It is the hook's one network call, capped and only for
+    // a repo with a trail — see trailAtSessionStart.
+    const trail = trailAtSessionStart(dir);
     // Before anything is emitted: refresh this repo's wiring if it was written by
     // an older graft, and pick up any cached "newer version on npm" answer.
-    // background:false — a hook must never touch the network; the CLI and the MCP
-    // server fill that cache, this only reads it.
+    // background:false — the registry check stays off the network here; the CLI
+    // and the MCP server fill that cache, this only reads it.
     const upkeep = runUpkeep(dir, runningVersion(), { background: false }).lines;
     // Roll up any session that ended since we were last here. Queue-only — the
-    // hook still touches no network; the CLI or the MCP server sends it later.
+    // hook still sends nothing; the CLI or the MCP server sends it later.
     flushClosedSessions(dir);
+    const trailLine = await trail;
+    if (trailLine) upkeep.push(trailLine);
     try {
       const idx = readFileSync(join(resolveContextDir(dir), 'INDEX.md'), 'utf8');
       const banner = staleBanner(indexFreshness(dir)) ?? undefined;

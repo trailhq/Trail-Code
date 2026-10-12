@@ -56,6 +56,43 @@ export function describeWrites(
   return parts.join(' · ');
 }
 
+/**
+ * The picker's and init's one-line summary: at most two repo entries, a folder
+ * written into several times shown once as `folder/` when something else sits
+ * beside it, then the count of writes outside the repo. `.claude/, .mcp.json ·
+ * + 3 in ~/` rather than five paths nobody reads.
+ */
+export function compactWrites(writes: PlannedWrite[], repo: string, home: string, maxShown = 2): string {
+  const repoPaths = writes.filter((w) => w.scope === 'repo').map((w) => relative(repo, w.path));
+  const tops = new Map<string, string[]>();
+  for (const p of repoPaths) {
+    const top = p.split(sep)[0] ?? p;
+    const list = tops.get(top) ?? [];
+    list.push(p);
+    tops.set(top, list);
+  }
+  const entries: string[] = [];
+  if (tops.size >= 2) {
+    for (const [top, paths] of tops) entries.push(paths.length >= 2 ? `${top}${sep}` : paths[0]!);
+  } else {
+    entries.push(...repoPaths);
+  }
+  const parts: string[] = [];
+  if (entries.length > 0) {
+    parts.push(
+      entries.length <= maxShown
+        ? entries.join(', ')
+        : `${entries.slice(0, maxShown).join(', ')} +${entries.length - maxShown} more`,
+    );
+  }
+  const globals = writes.filter((w) => w.scope === 'global');
+  if (globals.length > 0) {
+    const where = tilde(commonDir(globals.map((w) => w.path)), home);
+    parts.push(`+ ${globals.length} in ${where}${where.endsWith(sep) ? '' : sep}`);
+  }
+  return parts.join(' · ');
+}
+
 export interface PickerRow {
   id: string;
   detected: boolean;
@@ -85,10 +122,18 @@ export const TELEMETRY_ROW_ID = '__telemetry';
 
 export interface PickerState {
   rows: PickerRow[];
+  /** Index into {@link visibleRows}, not into `rows`. */
   cursor: number;
   checked: ReadonlySet<string>;
   done: boolean;
   aborted: boolean;
+  /** Agents graft cannot find on this machine are folded into one line until `m`. */
+  showHidden?: boolean;
+}
+
+/** The rows on screen: undetected agents only once `m` has unfolded them. */
+export function visibleRows(state: PickerState): PickerRow[] {
+  return state.rows.filter((r) => r.kind === 'setting' || r.detected || state.showHidden);
 }
 
 /**
@@ -108,7 +153,7 @@ export function initialPickerState(
     label: p.id,
     kind: 'host' as const,
     detected: p.detected,
-    summary: describeWrites(p.writes, repo, home),
+    summary: compactWrites(p.writes, repo, home),
     hasGlobal: p.writes.some((w) => w.scope === 'global'),
   }));
   const checked = new Set(plan.some((p) => p.id === 'claude') ? ['claude'] : []);
@@ -118,7 +163,7 @@ export function initialPickerState(
       label: 'anonymous usage stats',
       kind: 'setting',
       detected: true,
-      summary: 'no code, no file paths, no queries · TELEMETRY.md',
+      summary: 'no code, no file paths, no queries',
       hasGlobal: false,
     });
     checked.add(TELEMETRY_ROW_ID);
@@ -126,7 +171,7 @@ export function initialPickerState(
   return { rows, cursor: 0, checked, done: false, aborted: false };
 }
 
-export type PickerKey = 'up' | 'down' | 'space' | 'all' | 'enter' | 'abort';
+export type PickerKey = 'up' | 'down' | 'space' | 'all' | 'more' | 'enter' | 'abort';
 
 export const KEY_UP = '\x1b[A';
 export const KEY_DOWN = '\x1b[B';
@@ -140,6 +185,7 @@ export function keyOf(chunk: string): PickerKey | null {
     case KEY_DOWN: case 'j': return 'down';
     case ' ': return 'space';
     case 'a': return 'all';
+    case 'm': return 'more';
     case '\r': case '\n': return 'enter';
     case KEY_ESC: case KEY_CTRL_C: case 'q': return 'abort';
     default: return null;
@@ -173,7 +219,8 @@ export function keysOf(chunk: string): PickerKey[] {
 }
 
 export function reducePicker(state: PickerState, key: PickerKey): PickerState {
-  const n = state.rows.length;
+  const visible = visibleRows(state);
+  const n = visible.length;
   switch (key) {
     case 'up':
       return { ...state, cursor: (state.cursor - 1 + n) % n };
@@ -181,19 +228,36 @@ export function reducePicker(state: PickerState, key: PickerKey): PickerState {
       return { ...state, cursor: (state.cursor + 1) % n };
     case 'space': {
       const next = new Set(state.checked);
-      const id = state.rows[state.cursor].id;
+      const id = visible[state.cursor]!.id;
       if (next.has(id)) next.delete(id); else next.add(id);
       return { ...state, checked: next };
     }
     case 'all': {
-      // Hosts only. `a` means "wire everything"; a user who pressed it to select
-      // every agent has not thereby said anything about usage stats, so whatever
-      // they chose on that row survives untouched.
-      const hosts = state.rows.filter((r) => r.kind === 'host');
+      // The agents on screen only: `a` must never select one the user cannot
+      // see. And agents only — a user who pressed it to select every agent has
+      // not thereby said anything about usage stats, so whatever they chose on
+      // that row survives untouched.
+      const hosts = visible.filter((r) => r.kind === 'host');
       const allOn = hosts.every((r) => state.checked.has(r.id));
-      const next = new Set(state.rows.filter((r) => r.kind === 'setting' && state.checked.has(r.id)).map((r) => r.id));
-      if (!allOn) for (const r of hosts) next.add(r.id);
+      const next = new Set(state.checked);
+      for (const r of hosts) {
+        if (allOn) next.delete(r.id);
+        else next.add(r.id);
+      }
       return { ...state, checked: next };
+    }
+    case 'more': {
+      if (!state.rows.some((r) => r.kind === 'host' && !r.detected)) return state;
+      // Keep the cursor on the row it was on, wherever that row lands.
+      const at = visible[state.cursor]?.id;
+      const toggled = { ...state, showHidden: !state.showHidden };
+      const after = visibleRows(toggled);
+      // Folding away the row under the cursor puts the cursor back at the top.
+      const idx = after.findIndex((r) => r.id === at);
+      // Anything the fold hides is unchecked, so nothing invisible gets wired.
+      const checked = new Set(state.checked);
+      if (!toggled.showHidden) for (const r of state.rows) if (r.kind === 'host' && !r.detected) checked.delete(r.id);
+      return { ...toggled, cursor: idx >= 0 ? idx : 0, checked };
     }
     case 'enter':
       return { ...state, done: true };
@@ -202,33 +266,49 @@ export function reducePicker(state: PickerState, key: PickerKey): PickerState {
   }
 }
 
-export function renderPicker(state: PickerState, tty = true): string {
+export function renderPicker(state: PickerState, tty = true, opts: { title?: string | null } = {}): string {
   const dim = tty ? muted : (s: string) => s;
   const hot = tty ? indigo : (s: string) => s;
   const warn = tty ? amber : (s: string) => s;
 
+  const visible = visibleRows(state);
+  const hidden = state.rows.filter((r) => r.kind === 'host' && !r.detected);
   // Pad on the plain label so the summary column lines up regardless of which
   // rows carry the '(not detected)' tag or the cursor's colour codes.
-  const label = (r: PickerRow) => `${r.label}${r.detected ? '' : ' (not detected)'}`;
-  const width = Math.max(...state.rows.map((r) => label(r).length));
-  const lines = ['graft init — select what to wire into this repo:', ''];
+  const label = (r: PickerRow) => `${r.label}${r.detected || r.kind === 'setting' ? '' : ' (not detected)'}`;
+  const width = Math.max(...visible.filter((r) => r.kind === 'host').map((r) => label(r).length), 12);
+  const title = opts.title === undefined ? 'graft init — pick the agents your team uses:' : opts.title;
+  const lines = title ? [title, ''] : [];
   let ruled = false;
-  for (const [i, row] of state.rows.entries()) {
+  const foldLine = () => {
+    if (hidden.length === 0) return;
+    lines.push(
+      dim(
+        state.showHidden
+          ? `      m to fold the ${hidden.length} not detected`
+          : `      + ${hidden.length} not detected (${hidden.map((r) => r.label).join(', ')}) · m to show`,
+      ),
+    );
+  };
+  for (const [i, row] of visible.entries()) {
     // One rule between the agents and the settings, so the consent row reads as
     // a separate question rather than as another thing being installed.
     if (row.kind === 'setting' && !ruled) {
-      lines.push(dim(`  ${'─'.repeat(width + 24)}`));
+      foldLine();
+      lines.push(dim(`  ${'─'.repeat(40)}`));
       ruled = true;
     }
     const here = i === state.cursor;
     const box = state.checked.has(row.id) ? '[x]' : '[ ]';
-    const gap = ' '.repeat(width - label(row).length);
+    const gap = ' '.repeat(Math.max(0, width - label(row).length));
     const name = here ? hot(row.label) : row.label;
     const tag = row.detected || row.kind === 'setting' ? '' : dim(' (not detected)');
     const summary = row.hasGlobal ? warn(row.summary) : dim(row.summary);
-    lines.push(`${here ? '›' : ' '} ${box} ${name}${tag}${gap}  ${summary}`);
+    lines.push(`${here ? '›' : ' '} ${box} ${name}${tag}${gap}   ${summary}`);
   }
-  lines.push('', dim('↑↓ move · space toggle · a all · enter confirm · esc cancel'));
+  if (!ruled) foldLine();
+  const keys = ['↑↓ move', 'space toggle', 'a all', ...(hidden.length ? ['m more'] : []), 'enter confirm', 'esc cancel'];
+  lines.push('', dim(keys.join(' · ')));
   return lines.join('\n');
 }
 
@@ -265,7 +345,7 @@ export async function runPicker(
   plan: HostPlan[],
   repo: string,
   home: string,
-  opts: { offerTelemetry?: boolean } = {},
+  opts: { offerTelemetry?: boolean; title?: string | null } = {},
 ): Promise<Picked | null> {
   let state = initialPickerState(plan, repo, home, opts);
   const out = process.stderr;
@@ -274,7 +354,7 @@ export async function runPicker(
   let lastLines = 0;
   const draw = () => {
     if (lastLines > 0) out.write(`\x1b[${lastLines}A\x1b[0J`);
-    const text = renderPicker(state);
+    const text = renderPicker(state, true, { title: opts.title });
     out.write(`${text}\n`);
     lastLines = text.split('\n').length;
   };
@@ -291,7 +371,10 @@ export async function runPicker(
       const finish = (onData: (b: Buffer) => void) => {
         stdin.off('data', onData);
         stdin.off('end', onEnd);
-        draw();
+        // Erased, not redrawn: the choice is reported by what init prints next,
+        // and an interactive widget left in the scrollback is noise.
+        if (lastLines > 0) out.write(`\x1b[${lastLines}A\x1b[0J`);
+        lastLines = 0;
         resolve(state.aborted ? null : { hosts: pickedHostIds(state), telemetry: pickedTelemetry(state) });
       };
       const onData = (buf: Buffer) => {

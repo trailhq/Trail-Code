@@ -91,7 +91,7 @@ export function readLink(dir: string): BrainLink | null {
  * token — which is exactly why this is also where it gets ignored. The comment
  * on {@link BrainLink} has claimed `.graft/` was "git-ignored" since the day it
  * was written, and nothing ever made it true: `ensureGitignored` only ever ran
- * for the graph cache. Every repository anyone ran `graft brain connect` in was
+ * for the graph cache. Every repository anyone ran `graft trail connect` in was
  * therefore one `git add -A` away from publishing a credential. */
 export function writeLink(dir: string, link: BrainLink): void {
   patchBuildConfig(dir, { brain: link });
@@ -142,6 +142,39 @@ export function markRulesChecked(dir: string, now = Date.now()): void {
  */
 export function baseUrlFor(link: BrainLink): string {
   return (process.env.GRAFT_BRAIN_URL || link.baseUrl || DEFAULT_BRAIN_BASE_URL).replace(/\/+$/, '');
+}
+
+/** The API host before there is a link to read one from: signing up. */
+export function apiBaseUrl(): string {
+  return (process.env.GRAFT_BRAIN_URL || DEFAULT_BRAIN_BASE_URL).replace(/\/+$/, '');
+}
+
+/** A sign-up an agent-run push started and has not collected yet. */
+export interface PendingSignup {
+  /** The state in the link, which is what claims the trail. */
+  state: string;
+  /** The repository the link was for, so a changed remote starts over. */
+  repo: string;
+  createdAt: number;
+}
+
+/** The sign-up waiting on repo `dir`, or null when there is none or it is too
+ * old to claim, or it was for a different repository. */
+export function readPendingSignup(dir: string, repo: string, maxAgeMs: number, now = Date.now()): PendingSignup | null {
+  const p = readBuildConfig(dir)?.pendingSignup;
+  if (!p?.state || p.repo !== repo || !(now - p.createdAt < maxAgeMs)) return null;
+  return p;
+}
+
+/** Save the sign-up an agent-run push just started. Git-ignored like the link,
+ * because the state claims a read token. */
+export function writePendingSignup(dir: string, pending: PendingSignup): void {
+  patchBuildConfig(dir, { pendingSignup: pending });
+  ensureGitignored(dir, join(dir, BUILD_CONFIG_DIR), LINK_NOTE);
+}
+
+export function clearPendingSignup(dir: string): void {
+  patchBuildConfig(dir, { pendingSignup: undefined });
 }
 
 /** Timeout for one rules fetch. Short: `ask` must never block on this. */

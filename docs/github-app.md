@@ -123,7 +123,7 @@ back would mean minting a credential per build for nothing.
 
 `404` with an `error` means the App is not installed on the repository — the
 expected answer for "someone pasted a repo we cannot see", not a failure. The
-caller turns it into a choice: install the App, or run `graft init --brain`
+caller turns it into a choice: install the App, or run `graft init --trail`
 locally, where the code never leaves the machine.
 
 | Variable | Meaning |

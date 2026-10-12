@@ -46,8 +46,11 @@ The events:
 | `build_completed` | `files_bucket`, `langs`, `mode` (`fast`/`deep`), `duration_bucket`, `incremental` | A build succeeds |
 | `build_failed` | `stage`, `code` — both fixed enums | A build throws |
 | `query` | `command`, `surface` (`cli`/`mcp`/`hook`), `hit` (`ask` only) | Any query command |
-| `brain_signup_opened` | — | `graft brain push` on a repo with no brain opens your browser to make one |
-| `brain_signup_settled` | `outcome` (`linked`/`timed_out`/`no_tty`/`bad_callback`), `duration_bucket` | That handoff ends, one way or the other |
+| `brain_signup_opened` | `mode` (`terminal`/`agent`) | `graft trail push` on a repo with no brain opens your browser to make one |
+| `brain_signup_settled` | `outcome` (`linked`/`timed_out`/`bad_callback`/`stopped`, and for an agent-run push `agent_link_opened`/`still_waiting`/`expired`/`unsupported`), `mode` (`terminal`/`agent`), `duration_bucket` | That handoff ends, one way or the other — for an agent-run push, each of its runs |
+| `trail_pulled` | `outcome` (`written`/`already_present`/`nothing_accepted`/`skipped`/`error`/`dry_run`), `kinds` (which kinds of context file were written: `claude_md`, `folder_claude_md`, `agents_md`, `cursor_rule`, `skill`), `files_bucket`, `changes_bucket`, `skipped_bucket`, `suggested_bucket` (every change Trail has suggested for the wired agents' files, whatever became of it) | `graft trail pull` (or `graft claude-md pull`) finishes |
+| `trail_watch_exit` | `reason` (`suggestions`/`accepted`/`timeout`/`refused`/`no_trail`), `suggested_bucket`, `accepted_bucket`, `duration_bucket` (how long it waited) | `graft trail watch` ends |
+| `trail_autopush` | `outcome` (`started`/`skipped`), `reason` when skipped (`disabled`/`no_head`/`head_unchanged`/`throttled`/`spawn_failed`) | A Claude Code or Codex session starts in a repo with a trail attached, and the hook decides whether to refresh it with a background `graft trail push`. Repos without a trail send nothing |
 | `session_summary` | `graft_reads_bucket`, `source_reads_bucket`, `saved_tokens_bucket`, `graft_turns_bucket`, `reported_turns_bucket` | Once, after an agent session ends |
 
 Two rules govern every value above, and both are enforced in code rather than by

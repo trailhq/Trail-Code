@@ -1392,7 +1392,7 @@ export function ask(dir: string, query: string, opts: AskOptions = {}): AskResul
     result.saved = baselineFor(result.hits, corpus.graph);
     // What the team decided about the code this pack just inlined. Read from the
     // local cache only — `ask` is on the agent's hot path and must never wait on
-    // the network; `graft brain pull` and `init` are what refresh it.
+    // the network; `graft trail pull` and `init` are what refresh it.
     const applied = attachBrainRules(root, result.hits, corpus.graph);
     if (applied.length) result.rules = applied;
   }

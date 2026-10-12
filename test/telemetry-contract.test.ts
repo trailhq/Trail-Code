@@ -75,10 +75,11 @@ test('every event carries the common properties, and no identifier beyond them',
 
 // Pinned rather than counted, so adding an event is a deliberate edit here and
 // a matching row in TELEMETRY.md, never something that arrives with a feature.
-test('the contract lists exactly the nine documented events', () => {
+test('the contract lists exactly the twelve documented events', () => {
   assert.deepEqual(Object.keys(EVENTS).sort(), [
     'brain_signup_opened', 'brain_signup_settled', 'build_completed', 'build_failed',
-    'first_run', 'init_completed', 'install', 'query', 'session_summary',
+    'first_run', 'init_completed', 'install', 'query', 'session_summary', 'trail_autopush', 'trail_pulled',
+    'trail_watch_exit',
   ]);
 });
 
@@ -186,7 +187,7 @@ test('brain signup: the outcome is a category, never the sentence the user saw',
     {
       outcome: 'timed_out',
       duration_bucket: durationBucket(5 * 60 * 1000),
-      error: 'timed out waiting for the browser — run `graft brain push` again',
+      error: 'timed out waiting for the browser — run `graft trail push` again',
     },
     { home, env: OPEN },
   );
@@ -197,10 +198,11 @@ test('brain signup: the outcome is a category, never the sentence the user saw',
   assert.equal(ev?.properties.error, undefined);
 });
 
-test('brain signup: opened carries no properties of its own', () => {
+test('brain signup: opened carries only whether an agent ran it', () => {
   const home = sandbox('tel-brain-signup-opened');
-  const ev = track('brain_signup_opened', { repo: 'acme/app', port: '51234' }, { home, env: OPEN });
+  const ev = track('brain_signup_opened', { mode: 'agent', repo: 'acme/app', port: '51234' }, { home, env: OPEN });
   assert.ok(ev);
+  assert.equal(ev.properties.mode, 'agent');
   assert.equal(ev.properties.repo, undefined);
   assert.equal(ev.properties.port, undefined);
 });
@@ -208,4 +210,52 @@ test('brain signup: opened carries no properties of its own', () => {
 test('brain signup: both events are in the contract', () => {
   assert.ok(EVENTS.brain_signup_opened);
   assert.ok(EVENTS.brain_signup_settled);
+});
+
+// --- trail pull ---
+
+test('trail pull: counts travel as buckets, and a path never rides along', () => {
+  const home = sandbox('tel-trail-pulled');
+  const ev = track(
+    'trail_pulled',
+    { outcome: 'written', kinds: 'agents_md,claude_md', files_bucket: '1-4', changes_bucket: '5-19', skipped_bucket: '0', suggested_bucket: '20-49', path: 'web/CLAUDE.md' },
+    { home, env: OPEN },
+  );
+  assert.equal(ev?.properties.outcome, 'written');
+  assert.equal(ev?.properties.kinds, 'agents_md,claude_md');
+  assert.equal(ev?.properties.changes_bucket, '5-19');
+  assert.equal(ev?.properties.suggested_bucket, '20-49');
+  assert.equal(ev?.properties.path, undefined);
+});
+
+// --- the trail watcher and the background push ---
+
+test('trail_watch_exit carries buckets and a reason, never the files or the link', () => {
+  const home = sandbox('tel-trail-watch');
+  const ev = track(
+    'trail_watch_exit',
+    {
+      reason: 'accepted',
+      suggested_bucket: countBucket(9),
+      accepted_bucket: countBucket(3),
+      duration_bucket: durationBucket(61_000),
+      files: 'CLAUDE.md (Commands)',
+      review_url: 'https://app.trailhq.com/brain/b1/context-files',
+    },
+    { home, env: OPEN },
+  );
+  assert.equal(ev?.properties.reason, 'accepted');
+  assert.equal(ev?.properties.suggested_bucket, '5-19');
+  assert.equal(ev?.properties.accepted_bucket, '1-4');
+  assert.equal(ev?.properties.duration_bucket, '30s-2m');
+  assert.equal(JSON.stringify(ev).includes('CLAUDE.md'), false);
+  assert.equal(JSON.stringify(ev).includes('trailhq'), false);
+});
+
+test('trail_autopush carries only whether it started and why not', () => {
+  const home = sandbox('tel-trail-autopush');
+  const ev = track('trail_autopush', { outcome: 'skipped', reason: 'throttled', head: 'a'.repeat(40) }, { home, env: OPEN });
+  assert.equal(ev?.properties.outcome, 'skipped');
+  assert.equal(ev?.properties.reason, 'throttled');
+  assert.equal(ev?.properties.head, undefined);
 });

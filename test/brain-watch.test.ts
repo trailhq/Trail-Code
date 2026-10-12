@@ -5,7 +5,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { linesFor, stagesFrom, watchBuild, type RepoState } from '../src/brain/watch.js';
+import { failureLines, linesFor, stagesFrom, watchBuild, type RepoState } from '../src/brain/watch.js';
 import { brainUrl } from '../src/brain/signup.js';
 
 const row = (over: Partial<RepoState> = {}): RepoState => ({
@@ -62,15 +62,23 @@ test('done means the rules are in the brain, not just that the row closed', () =
 
 // This is a log, not a redrawn frame: a line per poll for a stage that is merely
 // still running would bury the four that matter under a hundred that do not.
-test('only settled stages print, and each prints once', () => {
+test('only finished stages print, each once, in the past tense', () => {
   const printed = new Set<string>();
-  const first = linesFor(stagesFrom(row({ commitCount: 412, threadCount: 89 })), printed);
-  assert.equal(first.length, 2, 'reach and read have settled; mine and file have not');
-  assert.match(first[1], /412 commits, 89 discussions/);
-  assert.deepEqual(linesFor(stagesFrom(row({ commitCount: 412, threadCount: 89 })), printed), [], 'nothing reprints');
-  const later = linesFor(stagesFrom(row({ status: 'completed', commitCount: 412, threadCount: 89, ruleCount: 42 })), printed);
-  assert.equal(later.length, 2, 'mine and file settle later and print then');
-  assert.match(later.join('\n'), /42 rules/);
+  const reading = row({ commitCount: 412, threadCount: 89 });
+  const first = linesFor(stagesFrom(reading), printed, reading);
+  assert.deepEqual(first, ['  ✓ reached the repository', '  ✓ read its history'], 'reach and read have settled; mine has not');
+  assert.deepEqual(linesFor(stagesFrom(reading), printed, reading), [], 'nothing reprints');
+  const done = row({ status: 'completed', commitCount: 412, threadCount: 89, ruleCount: 42 });
+  const later = linesFor(stagesFrom(done), printed, done);
+  assert.deepEqual(later, ['  ✓ mined the first 42 rules'], 'filing is left to the closing line');
+});
+
+test('a failure says where it stopped, that nothing was lost, and the server\'s own words', () => {
+  const view = stagesFrom(row({ status: 'failed', commitCount: 412, errorMessage: 'parse response: unexpected end of JSON input' }));
+  assert.deepEqual(failureLines(view), [
+    '✗ the build stopped while mining rules · nothing was lost — run graft trail push again',
+    '  parse response: unexpected end of JSON input',
+  ]);
 });
 
 // --- the watcher ------------------------------------------------------------
@@ -109,8 +117,8 @@ test('the watcher holds until the brain is built', async () => {
     ]),
   });
   assert.equal(outcome, 'completed');
-  assert.match(lines.join('\n'), /reaching the repository/);
-  assert.match(lines.join('\n'), /42 rules/);
+  assert.match(lines.join('\n'), /reached the repository/);
+  assert.match(lines.join('\n'), /mined the first 42 rules/);
 });
 
 test('the watcher reports a failure rather than waiting out the clock', async () => {
@@ -201,7 +209,7 @@ test('the watcher hands the prompt back on the first rules, while the job runs o
     ]),
   });
   assert.equal(outcome, 'building');
-  assert.match(lines.join('\n'), /mining the rules — 62 rules so far/);
+  assert.match(lines.join('\n'), /mined the first 62 rules/);
 });
 
 // A graft pointed at a Trail that does not send the in-flight counts must fall

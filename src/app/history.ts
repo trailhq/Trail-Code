@@ -64,6 +64,10 @@ export interface RepoDigest {
    * rather than a field per kind, so adding a source is adding an entry. */
   sources: HistorySource[];
   auto_approve: boolean;
+  /** The agents `graft init` wired this repo for (claude, cursor, agents, …).
+   * Trail shows only the context files those agents read. Absent or empty
+   * means "not known", and Trail then shows every kind. */
+  agents?: string[];
 }
 
 /** Field separators inside one `git log` record. Chosen for being bytes no
@@ -127,11 +131,48 @@ export function readCommits(root: string, max = MAX_COMMITS): HistoryCommit[] {
 const MAX_THREADS = 200;
 const MAX_COMMENT_PAGES = 3;
 /** How many threads' comments are fetched at once. Two requests per pull
- * request, so this is the real cost of a repository read; 8 keeps it quick
- * without crowding an installation's rate limit. */
-const THREAD_FETCH_CONCURRENCY = 8;
+ * request, so this is the real cost of a repository read. A pool of 24 (so at
+ * most 48 requests in flight) stays well under GitHub's secondary limit on
+ * concurrent requests, and a slow thread no longer holds up the seven that
+ * happened to share its batch. */
+export const THREAD_FETCH_CONCURRENCY = 24;
 
-interface PullListItem {
+/**
+ * What one push has already asked GitHub, shared between its reads.
+ *
+ * The early upload reads the newest pull requests and the full read reads them
+ * again as part of the 200. Promises rather than results, so a full read that
+ * starts while the early one is still in flight waits on the same request
+ * instead of sending a second — and threads with no discussion are remembered
+ * too, which a map of finished threads could not say.
+ */
+export interface ThreadReadCache {
+  /** Pages of the closed-pull-request list, by page number. */
+  pages: Map<number, Promise<PullListItem[] | null>>;
+  /** One pull request's discussion, by number; null when it had none. */
+  threads: Map<number, Promise<HistoryThread | null>>;
+}
+
+export function newThreadReadCache(): ThreadReadCache {
+  return { pages: new Map(), threads: new Map() };
+}
+
+/** Run `fn` over `items` with at most `limit` in flight, results in input order. */
+export async function mapPool<T, R>(items: readonly T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const worker = async () => {
+    for (;;) {
+      const i = next++;
+      if (i >= items.length) return;
+      out[i] = await fn(items[i]!, i);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(Math.max(1, limit), items.length) }, worker));
+  return out;
+}
+
+export interface PullListItem {
   number?: number;
   title?: string;
   body?: string | null;
@@ -169,51 +210,82 @@ export async function readThreads(
   fetchImpl: Fetch,
   api = "https://api.github.com",
   max = MAX_THREADS,
+  // Threads already read (the early upload's newest ones), reused rather than
+  // fetched a second time.
+  known: ReadonlyMap<number, HistoryThread> = new Map(),
+  // Everything this push has already asked GitHub, in flight or finished. See
+  // ThreadReadCache; a fresh one when the caller has nothing to share.
+  cache: ThreadReadCache = newThreadReadCache(),
 ): Promise<HistoryThread[]> {
   const headers = ghHeaders(token);
+
+  const readPage = (page: number): Promise<PullListItem[] | null> => {
+    const cached = cache.pages.get(page);
+    if (cached) return cached;
+    const pending = (async () => {
+      const res = await fetchImpl(
+        `${api}/repos/${owner}/${repo}/pulls?state=closed&sort=updated&direction=desc&per_page=100&page=${page}`,
+        { headers },
+      );
+      if (!res.ok) return null;
+      const batch = JSON.parse(await res.text()) as PullListItem[];
+      return Array.isArray(batch) ? batch : null;
+    })();
+    // A failed page is forgotten, so the next read asks again rather than
+    // inheriting one blip for the rest of the push.
+    pending.catch(() => cache.pages.delete(page));
+    cache.pages.set(page, pending);
+    return pending;
+  };
 
   const pulls: PullListItem[] = [];
   // 100 per page, up to the cap. Sorted by GitHub as most-recently-updated,
   // which is the right window: rules decided two years ago that still hold get
   // restated in newer threads, and ones that do not are usually superseded.
   for (let page = 1; pulls.length < max && page <= Math.ceil(max / 100); page++) {
-    const res = await fetchImpl(
-      `${api}/repos/${owner}/${repo}/pulls?state=closed&sort=updated&direction=desc&per_page=100&page=${page}`,
-      { headers },
-    );
-    if (!res.ok) break;
-    const batch = JSON.parse(await res.text()) as PullListItem[];
-    if (!Array.isArray(batch) || batch.length === 0) break;
+    const batch = await readPage(page);
+    if (!batch || batch.length === 0) break;
     pulls.push(...batch);
   }
 
-  const candidates = pulls.filter((p): p is PullListItem & { number: number } => typeof p.number === "number").slice(0, max);
+  // Deduplicated: a pull request updated between two page reads moves up the
+  // list and would otherwise be read, and sent, twice.
+  const seenNumbers = new Set<number>();
+  const candidates = pulls
+    .filter((p): p is PullListItem & { number: number } => typeof p.number === "number")
+    .filter((p) => !seenNumbers.has(p.number) && (seenNumbers.add(p.number), true))
+    .slice(0, max);
 
-  // Bounded concurrency rather than one at a time: two requests per pull
-  // request over 200 of them is 400 sequential round trips, which is minutes of
-  // a person waiting on a progress screen.
-  const threads: HistoryThread[] = [];
-  for (let i = 0; i < candidates.length; i += THREAD_FETCH_CONCURRENCY) {
-    const slice = candidates.slice(i, i + THREAD_FETCH_CONCURRENCY);
-    const fetched = await Promise.all(
-      slice.map(async (p) => {
-        const [issueComments, reviewComments] = await Promise.all([
-          readComments(`${api}/repos/${owner}/${repo}/issues/${p.number}/comments`, headers, fetchImpl),
-          readComments(`${api}/repos/${owner}/${repo}/pulls/${p.number}/comments`, headers, fetchImpl),
-        ]);
-        const comments = [...issueComments, ...reviewComments];
-        if (comments.length === 0) return null;
-        return {
-          number: p.number,
-          title: (p.title ?? "").trim(),
-          body: (p.body ?? "").trim(),
-          mergeSha: (p.merge_commit_sha ?? "").trim(),
-          comments,
-        } satisfies HistoryThread;
-      }),
-    );
-    for (const t of fetched) if (t) threads.push(t);
-  }
+  const readThread = (p: PullListItem & { number: number }): Promise<HistoryThread | null> => {
+    const seen = known.get(p.number);
+    if (seen) return Promise.resolve(seen);
+    const cached = cache.threads.get(p.number);
+    if (cached) return cached;
+    const pending = (async () => {
+      const [issueComments, reviewComments] = await Promise.all([
+        readComments(`${api}/repos/${owner}/${repo}/issues/${p.number}/comments`, headers, fetchImpl),
+        readComments(`${api}/repos/${owner}/${repo}/pulls/${p.number}/comments`, headers, fetchImpl),
+      ]);
+      const comments = [...issueComments, ...reviewComments];
+      if (comments.length === 0) return null;
+      return {
+        number: p.number,
+        title: (p.title ?? "").trim(),
+        body: (p.body ?? "").trim(),
+        mergeSha: (p.merge_commit_sha ?? "").trim(),
+        comments,
+      } satisfies HistoryThread;
+    })();
+    pending.catch(() => cache.threads.delete(p.number));
+    cache.threads.set(p.number, pending);
+    return pending;
+  };
+
+  // A pool rather than one at a time: two requests per pull request over 200
+  // of them is 400 sequential round trips, which is minutes of a person
+  // waiting on a progress screen.
+  const fetched = await mapPool(candidates, THREAD_FETCH_CONCURRENCY, readThread);
+  const threads: HistoryThread[] = fetched.filter((t): t is HistoryThread => t !== null);
 
   // Most-discussed first, because the digest renderer spends its budget in this
   // order and a twenty-comment thread contains an argument while a one-comment
@@ -295,6 +367,7 @@ export function buildDigest(input: {
   symbols: HistorySymbol[];
   sources: HistorySource[];
   autoApprove: boolean;
+  agents?: string[];
 }): RepoDigest {
   const byPath = new Map<string, string[]>();
   for (const s of input.symbols) {
@@ -329,6 +402,7 @@ export function buildDigest(input: {
     symbols: input.symbols,
     sources: input.sources,
     auto_approve: input.autoApprove,
+    ...(input.agents?.length ? { agents: input.agents } : {}),
   };
 }
 

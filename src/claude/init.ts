@@ -41,7 +41,9 @@ export function buildGraphIfMissing(dir: string, opts: { build?: boolean; cliPat
   // alone would call it unbuilt and rebuild every child on each init.
   if (opts.build === false || !opts.cliPath || hasGraftIndex(dir)) return false;
   try {
-    execFileSync(process.execPath, [opts.cliPath, 'build', '.'], { cwd: dir, stdio: 'inherit', timeout: 300000 });
+    // execArgv carries the loader graft itself was started with (tsx, when run
+    // from source), so the child can run a .ts entry point too.
+    execFileSync(process.execPath, [...process.execArgv, opts.cliPath, 'build', '.'], { cwd: dir, stdio: 'inherit', timeout: 300000 });
     return true;
   } catch {
     return false;

@@ -15,7 +15,7 @@ import { writeBrainSections, type BrainWrite } from './wire.js';
 import { basename } from 'node:path';
 
 /**
- * Parse the `--brain` value.
+ * Parse the `--trail` value.
  *
  * The onboarding page hands over one string so there is one thing to copy. Two
  * accepted shapes:
@@ -29,19 +29,19 @@ import { basename } from 'node:path';
  */
 export function parseBrainArg(value: string): BrainLink | { error: string } {
   const raw = value.trim();
-  if (!raw) return { error: 'empty --brain value' };
+  if (!raw) return { error: 'empty --trail value' };
   const cut = raw.indexOf(':');
   if (cut > 0) {
     const brainId = raw.slice(0, cut).trim();
     const token = raw.slice(cut + 1).trim();
-    if (!brainId || !token) return { error: 'expected --brain <brainId>:<token>' };
+    if (!brainId || !token) return { error: 'expected --trail <brainId>:<token>' };
     return { brainId, token };
   }
   const envToken = process.env.GRAFT_BRAIN_TOKEN;
   if (!envToken) {
     return {
       error:
-        'expected --brain <brainId>:<token>, or a bare brain id with the token in GRAFT_BRAIN_TOKEN',
+        'expected --trail <brainId>:<token>, or a bare brain id with the token in GRAFT_BRAIN_TOKEN',
     };
   }
   return { brainId: raw, token: envToken };
@@ -61,7 +61,7 @@ export interface ConnectResult {
  *
  * The link is stored even when the pull fails. That is deliberate: a token
  * typed correctly against a brain that is momentarily unreachable should not
- * have to be pasted again — `graft brain pull` retries, and `ask` degrades to
+ * have to be pasted again — `graft trail pull` retries, and `ask` degrades to
  * the code-only answer meanwhile.
  */
 export async function connectBrain(
@@ -77,7 +77,7 @@ export async function connectBrain(
       ruleCount: 0,
       writes: [],
       warning:
-        'could not reach the brain to pull its rules — the link is saved; run `graft brain pull` to retry',
+        'could not reach the brain to pull its rules — the link is saved; run `graft trail pull` to retry',
     };
   }
   writeRulesCache(repo, { brainId: link.brainId, fetchedAt: Date.now(), rules });
@@ -98,7 +98,7 @@ export async function pullBrain(
   return connectBrain(repo, link, opts);
 }
 
-/** The linked brain and its cached rule set, for `graft brain status`. */
+/** The linked brain and its cached rule set, for `graft trail status`. */
 export function brainStatus(repo: string): {
   link: BrainLink | null;
   rules: BrainRule[];

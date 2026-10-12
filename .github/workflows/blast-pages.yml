@@ -72,7 +72,7 @@ jobs:
             '"number=\(.number)", "base_ref=\(.base.ref)", "base_sha=\(.base.sha)", "author=\(.user.login)"' >> "$GITHUB_OUTPUT"
 
       # 1. The tooling, from the base branch — never from the PR.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: base
           persist-credentials: false
@@ -92,7 +92,7 @@ jobs:
       # file: the checkout is credential-less, lands in its own directory, and
       # nothing below executes anything from it (the CLI that reads it was built
       # from the base commit above). Without the flag every fork PR fails here.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: refs/pull/${{ steps.pr.outputs.number }}/merge
           path: pr
