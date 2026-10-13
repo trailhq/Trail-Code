@@ -4,6 +4,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { createFileFilter, DEFAULT_MAX_FILE_BYTES, type FileFilter } from "./filters.js";
 
 /** Directories that are dependency/build output, never source. */
 export const SKIP_DIRS = new Set([
@@ -24,8 +25,9 @@ export const SKIP_DIRS = new Set([
   "venv",
 ]);
 
-/** Files above this size are generated/vendored in practice, not hand-written code. */
-export const MAX_FILE_BYTES = 1_000_000;
+/** Default size cap: files above this are generated/vendored in practice, not
+ * hand-written code. `GRAFT_MAX_FILE_BYTES` overrides it (see `./filters.ts`). */
+export const MAX_FILE_BYTES = DEFAULT_MAX_FILE_BYTES;
 
 /**
  * Whether a directory named `name` should be skipped when walking a repo tree:
@@ -56,7 +58,10 @@ export function shouldSkipDir(name: string, includes?: ReadonlySet<string>): boo
 /**
  * Recursively list all files under a directory. Skips dot-directories,
  * dependency/build directories (node_modules, dist, …) not named in
- * `includes`, and files over 1 MB.
+ * `includes`, files over the size cap (1 MB, or `GRAFT_MAX_FILE_BYTES`), paths
+ * excluded by `.graftignore`-style rules, and — with `GRAFT_SKIP_MINIFIED=1` —
+ * minified JavaScript bundles (see `./filters.ts`). Unlike `.gitignore`, the
+ * graftignore rules apply to TRACKED files too: that is their whole point.
  * In a Git worktree, tracked files plus untracked, non-ignored files come from
  * `git ls-files`; this gives indexing exactly Git's nested `.gitignore`,
  * negation, and global-exclude semantics. Non-Git directories retain the plain
@@ -158,7 +163,12 @@ export function walkDir(
 ): string[] {
   const requested = resolve(dir);
   const root = canonicalWalkRoot(requested);
-  const files = gitVisibleFiles(root, includes, opts) ?? walkFilesystem(root, includes);
+  // Env and ignore files are read once per walk, so every path below — and the
+  // fingerprint probe, refreshes and hooks, which all enumerate through here —
+  // apply the identical filter.
+  const filter = createFileFilter(root);
+  const files =
+    gitVisibleFiles(root, includes, opts, undefined, filter) ?? walkFilesystem(root, includes, filter);
   return remapWalkPaths(requested, root, files);
 }
 
@@ -170,13 +180,14 @@ function gitVisibleFiles(
   includes?: ReadonlySet<string>,
   opts: WalkOptions = {},
   traversal?: { topRoot: string; activeRoots: Set<string> },
+  filter: FileFilter = createFileFilter(dir),
 ): string[] | null {
   const root = resolve(dir);
   // The recursive path costs an extra `-t --stage` classification, so take it
   // only when at least one boundary-crossing opt-in is on. With both off the
   // walk is byte-for-byte the historical one.
   if (opts.followSubmodules !== true && opts.followNestedRepos !== true) {
-    return gitVisibleFilesShallow(root, includes);
+    return gitVisibleFilesShallow(root, includes, filter);
   }
 
   const state = traversal ?? { topRoot: root, activeRoots: new Set<string>() };
@@ -245,6 +256,7 @@ function gitVisibleFiles(
     // mounted at vendor/ or build/ would bypass the parent's skip policy when
     // recursion resets its relative root.
     if (skippedPath(relative(state.topRoot, abs), includes)) continue;
+    if (filter.ignored(abs, entry.gitlink || entry.nested)) continue;
 
     const followChild =
       (entry.gitlink && opts.followSubmodules === true) ||
@@ -255,7 +267,7 @@ function gitVisibleFiles(
       // Requiring the child's own .git prevents duplicate, mis-prefixed parent
       // files and recursive loops.
       if (!existsSync(join(abs, ".git"))) continue;
-      let childFiles = gitVisibleFiles(abs, includes, opts, state);
+      let childFiles = gitVisibleFiles(abs, includes, opts, state, filter);
       if (childFiles === null) {
         // Do not let one broken child recreate a "healthy but incomplete"
         // graph. Match the top-level fail-soft contract locally: fall back to
@@ -265,7 +277,7 @@ function gitVisibleFiles(
         // top-level Git command fails and walkDir uses its filesystem fallback.
         // Let an unreadable filesystem fallback surface rather than claiming a
         // healthy graph that silently omitted the child again.
-        childFiles = walkFilesystem(abs, includes);
+        childFiles = walkFilesystem(abs, includes, filter);
       }
       for (const file of childFiles) out.add(file);
       continue;
@@ -273,7 +285,7 @@ function gitVisibleFiles(
 
     try {
       const stat = lstatSync(abs);
-      if (!stat.isFile() || stat.size > MAX_FILE_BYTES) continue;
+      if (!stat.isFile() || !filter.admits(abs, stat)) continue;
     } catch {
       // A tracked file deleted from the working tree is still printed by
       // `--cached`; absence means it is not part of the current source set.
@@ -289,7 +301,11 @@ function gitVisibleFiles(
 /** The historical, non-recursive Git path. Kept separate so the default does
  * exactly the same command, filtering, ordering, and duplicate handling as it
  * did before submodule support existed. */
-function gitVisibleFilesShallow(root: string, includes?: ReadonlySet<string>): string[] | null {
+function gitVisibleFilesShallow(
+  root: string,
+  includes?: ReadonlySet<string>,
+  filter: FileFilter = createFileFilter(root),
+): string[] | null {
   const result = spawnSync(
     "git",
     ["ls-files", "--cached", "--others", "--exclude-standard", "-z", "--"],
@@ -306,9 +322,10 @@ function gitVisibleFilesShallow(root: string, includes?: ReadonlySet<string>): s
   for (const rel of result.stdout.split("\0")) {
     if (!rel || skippedPath(rel, includes)) continue;
     const abs = resolve(root, rel);
+    if (filter.ignored(abs)) continue;
     try {
       const stat = lstatSync(abs);
-      if (!stat.isFile() || stat.size > MAX_FILE_BYTES) continue;
+      if (!stat.isFile() || !filter.admits(abs, stat)) continue;
     } catch {
       // A tracked file deleted from the working tree is still printed by
       // `--cached`; absence means it is not part of the current source set.
@@ -326,17 +343,25 @@ function skippedPath(path: string, includes?: ReadonlySet<string>): boolean {
   return path.replace(/\\/g, "/").split("/").some((segment) => shouldSkipDir(segment, includes));
 }
 
-function walkFilesystem(dir: string, includes?: ReadonlySet<string>): string[] {
+function walkFilesystem(
+  dir: string,
+  includes?: ReadonlySet<string>,
+  filter: FileFilter = createFileFilter(dir),
+): string[] {
   const out: string[] = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = join(dir, entry.name);
     if (entry.isDirectory()) {
       if (shouldSkipDir(entry.name, includes)) continue;
-      out.push(...walkFilesystem(full, includes));
+      // An excluded directory is pruned whole, as in Git: nothing under it can
+      // be re-included.
+      if (filter.ignored(full, true)) continue;
+      out.push(...walkFilesystem(full, includes, filter));
     } else if (entry.isFile()) {
       if (entry.name.startsWith(".")) continue; // dot-files are not source either
+      if (filter.ignored(full)) continue;
       try {
-        if (statSync(full).size > MAX_FILE_BYTES) continue;
+        if (!filter.admits(full, statSync(full))) continue;
       } catch {
         continue;
       }
