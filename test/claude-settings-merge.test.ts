@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mergeGraftSettings } from '../src/claude/settings-merge.js';
+import { mergeGraftSettings, mergeGraftHooks } from '../src/claude/settings-merge.js';
 
 const SL = 'node "${CLAUDE_PROJECT_DIR:-.}/.claude/helpers/graft-statusline.cjs"';
 
@@ -136,4 +136,73 @@ test('permissions object with no allow key gets one added; other keys preserved'
   const { merged } = mergeGraftSettings(existing);
   assert.deepEqual(merged.permissions.deny, ['Bash(rm:*)']);
   assert.deepEqual(merged.permissions.allow, ['Bash(graft:*)', 'Bash(npx graft:*)', 'Bash(graft-dev:*)', 'Bash(node dist/cli.js:*)']);
+});
+
+// --- trailhq/Graft#283: hook timeouts are seconds, not ms ------------------
+
+test('fresh init writes hook timeouts in seconds, not ms (trailhq/Graft#283)', () => {
+  const { merged } = mergeGraftSettings({});
+  assert.equal(merged.hooks.PostToolUse[0].hooks[0].timeout, 10, 'post-edit');
+  assert.equal(merged.hooks.PostToolUse[1].hooks[0].timeout, 8, 'tool-savings');
+  assert.equal(merged.hooks.UserPromptSubmit[0].hooks[0].timeout, 15, 'prompt');
+  assert.equal(merged.hooks.SessionStart[0].hooks[0].timeout, 8, 'session-start');
+  assert.equal(merged.hooks.Stop[0].hooks[0].timeout, 8, 'stop');
+});
+
+test('a pre-fix ms-shaped timeout (8000/10000/15000) is corrected, not preserved (trailhq/Graft#283)', () => {
+  const preFix = mergeGraftSettings({}).merged;
+  // Simulate a repo wired by a graft version that still had the #283 bug.
+  preFix.hooks.PostToolUse[0].hooks[0].timeout = 10000;
+  preFix.hooks.UserPromptSubmit[0].hooks[0].timeout = 15000;
+  const { merged } = mergeGraftSettings(preFix);
+  assert.equal(merged.hooks.PostToolUse[0].hooks[0].timeout, 10, 'corrected, not "preserved" as a 10000 raise');
+  assert.equal(merged.hooks.UserPromptSubmit[0].hooks[0].timeout, 15, 'corrected, not "preserved" as a 15000 raise');
+});
+
+test('a genuine hand-raised sane timeout survives a re-merge (trailhq/Graft#366 part 2)', () => {
+  const raised = mergeGraftSettings({}).merged;
+  // The operator deliberately raised post-edit's budget from the template's 10s.
+  raised.hooks.PostToolUse[0].hooks[0].timeout = 20;
+  const { merged } = mergeGraftSettings(raised);
+  assert.equal(merged.hooks.PostToolUse[0].hooks[0].timeout, 20, 'the raise survived the refresh');
+  // A raise never lowers below the current template either.
+  raised.hooks.PostToolUse[0].hooks[0].timeout = 3;
+  const lowered = mergeGraftSettings(raised).merged;
+  assert.equal(lowered.hooks.PostToolUse[0].hooks[0].timeout, 10, 'a value below the template floor is not "preserved" downward');
+});
+
+test('the LARGEST of two matching prior blocks survives, not just the first one found (trailhq/Graft#485 review finding 4)', () => {
+  const prior = mergeGraftSettings({}).merged;
+  const postEditCommand = prior.hooks.PostToolUse[0].hooks[0].command;
+  // Simulate a hand-edited prior settings.json with TWO separate post-edit
+  // blocks (distinct matchers, same subcommand) — the template's own is left
+  // at its default 10s, and a second, narrower block carries the operator's
+  // real deliberate raise to 60s. Order matters for the bug: the smaller,
+  // unraised value comes first in the array.
+  prior.hooks.PostToolUse.splice(1, 0, {
+    matcher: 'Edit',
+    hooks: [{ type: 'command', command: postEditCommand, timeout: 60 }],
+  });
+  const { merged } = mergeGraftSettings(prior);
+  assert.equal(
+    merged.hooks.PostToolUse[0].hooks[0].timeout,
+    60,
+    'the larger raise (60) must win, not the first-found entry (10, the unraised template default)',
+  );
+});
+
+test('mergeGraftHooks (the global-install variant) has the same #283/#366 behavior', () => {
+  const { merged: fresh } = mergeGraftHooks({}, '/abs/helpers');
+  assert.equal(fresh.hooks.PostToolUse[0].hooks[0].timeout, 10);
+  assert.equal(fresh.hooks.UserPromptSubmit[0].hooks[0].timeout, 15);
+
+  const legacy = mergeGraftHooks({}, '/abs/helpers').merged;
+  legacy.hooks.UserPromptSubmit[0].hooks[0].timeout = 15000;
+  const { merged: corrected } = mergeGraftHooks(legacy, '/abs/helpers');
+  assert.equal(corrected.hooks.UserPromptSubmit[0].hooks[0].timeout, 15, 'legacy ms value corrected, not preserved');
+
+  const withRaise = mergeGraftHooks({}, '/abs/helpers').merged;
+  withRaise.hooks.Stop[0].hooks[0].timeout = 30;
+  const { merged: keptRaise } = mergeGraftHooks(withRaise, '/abs/helpers');
+  assert.equal(keptRaise.hooks.Stop[0].hooks[0].timeout, 30, 'sane hand-raise survives here too');
 });

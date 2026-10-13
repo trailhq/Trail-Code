@@ -23,6 +23,12 @@ export function runSync(dir: string, build: (d: string) => void = realBuild): vo
     if (!w) { patchStats(dir, { syncing: false }); return; } // build ran but output unreadable — stay dirty, retry
     patchStats(dir, {
       dirty: false, staleCount: 0, syncing: false, syncedAt: new Date().toISOString(),
+      // A successful full sync is a reasonable "maybe it'll answer now" reset
+      // point for trailhq/Graft#483's skip flag — see checkStaleCount in
+      // hooks.ts. If `check` is still too slow for this repo it will set the
+      // flag again on the very next edit; this isn't a retry-storm, just one
+      // retry per completed sync rather than zero ever again.
+      checkTimedOut: false,
       ...computeStats(w),
     });
   } catch {

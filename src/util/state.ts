@@ -17,13 +17,22 @@ export interface Stats {
   totalCount: number; readyCount: number;
   staleCount: number; dirty: boolean; syncing: boolean;
   syncedAt: string | null; lastFile: string | null;
+  /** The post-edit hook's `graft check` child (trailhq/Graft#483) timed out
+   * last time it ran. A repo whose `check` needs longer than its installed
+   * budget will need that long again on the very next edit — that cost
+   * scales with repo size (a full fingerprint walk), not with how much
+   * actually changed — so `checkStaleCount` skips retrying until the next
+   * successful full sync (`sync-run.ts`) clears this, rather than paying a
+   * guaranteed-to-fail synchronous wait on every single edit. */
+  checkTimedOut: boolean;
 }
 
 export const LOCK_STALE_MS = 300000;
 
 export function emptyStats(): Stats {
   return { nodeCount: 0, edgeCount: 0, languages: [], totalCount: 0, readyCount: 0,
-    staleCount: 0, dirty: false, syncing: false, syncedAt: null, lastFile: null };
+    staleCount: 0, dirty: false, syncing: false, syncedAt: null, lastFile: null,
+    checkTimedOut: false };
 }
 
 const LOCK_FILE = '.sync.lock';

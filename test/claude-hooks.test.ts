@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { underGraft, main, lastFileScopeHint, promptAskTimeout } from '../src/claude/hooks.js';
+import { underGraft, main, lastFileScopeHint, promptAskTimeout, postEditCheckTimeout } from '../src/claude/hooks.js';
 import { readStats, readSession } from '../src/claude/state.js';
 import { runSync } from '../src/claude/sync-run.js';
 import { savingsLine } from '../src/context/savings.js';
@@ -20,13 +20,54 @@ test('post-edit marks dirty and records lastFile', async () => {
   mkdirSync(join(d, 'graft', '.graph'), { recursive: true });
   writeFileSync(join(d, 'graft', '.graph', 'wiring.json'),
     JSON.stringify({ meta: { nodeCount: 0, edgeCount: 0, languages: [] }, nodes: [], edges: [] }));
-  // post-edit no longer runs `graft check` at all (removed: too slow on large repos) — just dirty + lastFile.
   process.env.CLAUDE_PROJECT_DIR = d;
   const stdin = JSON.stringify({ tool_input: { file_path: join(d, 'src', 'auth.ts') } });
   await runWithStdin(stdin, () => main('post-edit'));
   const s = readStats(d)!;
   assert.equal(s.dirty, true);
   assert.equal(s.lastFile, 'auth.ts');
+});
+
+/**
+ * trailhq/Graft#483: on a large repo, `graft check`'s cost comes from walking
+ * the whole tree to fingerprint it, not from how much changed — so a repo
+ * that times out on one edit will time out again on the very next one
+ * regardless of how small that edit is. Once `checkStaleCount` fails/times
+ * out, `handlePostEdit` must stop retrying it on every subsequent edit until
+ * a successful full sync (`sync-run.ts`) gives it one more chance.
+ */
+test('post-edit skips checkStaleCount after it previously timed out, and keeps the last known staleCount (trailhq/Graft#483)', async () => {
+  const d = mkdtempSync(join(tmpdir(), 'graft-hooks-'));
+  mkdirSync(join(d, 'graft', '.graph'), { recursive: true });
+  writeFileSync(join(d, 'graft', '.graph', 'wiring.json'),
+    JSON.stringify({ meta: { nodeCount: 0, edgeCount: 0, languages: [] }, nodes: [], edges: [] }));
+  writeStats(d, { ...emptyStats(), staleCount: 3, checkTimedOut: true });
+  process.env.CLAUDE_PROJECT_DIR = d;
+  process.env.GRAFT_TEST_CLI = join(tmpdir(), 'graft-hooks-nonexistent-cli.js'); // graftJson must never even be asked to run
+  try {
+    const stdin = JSON.stringify({ tool_input: { file_path: join(d, 'src', 'auth.ts') } });
+    await runWithStdin(stdin, () => main('post-edit'));
+  } finally {
+    delete process.env.GRAFT_TEST_CLI;
+  }
+  const s = readStats(d)!;
+  assert.equal(s.dirty, true);
+  assert.equal(s.lastFile, 'auth.ts');
+  assert.equal(s.staleCount, 3, 'the last known count survives — never falsely reset to 0');
+  assert.equal(s.checkTimedOut, true, 'still marked timed-out; only a successful sync clears it');
+});
+
+test('runSync clears checkTimedOut on a successful sync, giving the repo one more chance', () => {
+  const d = mkdtempSync(join(tmpdir(), 'graft-sync-'));
+  writeStats(d, { ...emptyStats(), dirty: true, checkTimedOut: true });
+  const fakeBuild = (dir: string) => writeFileSync(join(dir, 'graft', '.graph', 'wiring.json'),
+    JSON.stringify({ meta: { nodeCount: 1, edgeCount: 0, languages: ['typescript'] }, nodes: [{ id: 'a' }], edges: [] }),
+    { flag: 'w' });
+  mkdirSync(join(d, 'graft', '.graph'), { recursive: true });
+  runSync(d, fakeBuild);
+  const s = readStats(d)!;
+  assert.equal(s.dirty, false);
+  assert.equal(s.checkTimedOut, false);
 });
 
 test('post-edit ignores edits inside graft/', async () => {
@@ -601,8 +642,11 @@ test('promptAskTimeout is derived from the installed hook budget', () => {
     assert.equal(promptAskTimeout(withSettings(8000)), 6000);
     // A repo wired after.
     assert.equal(promptAskTimeout(withSettings(15000)), 13000);
-    // Never so small the child has no chance.
-    assert.equal(promptAskTimeout(withSettings(1000)), 4000);
+    // A 1000ms installed budget is itself so small there's no room for the
+    // usual MIN_CHILD_TIMEOUT_MS floor without outliving the hook's own
+    // external deadline (trailhq/Graft#485 review finding 1) — capped at
+    // budget minus MIN_WRITE_RESERVE_MS instead.
+    assert.equal(promptAskTimeout(withSettings(1000)), 500);
 
     // Nothing readable: assume the conservative 8s budget the other hooks carry.
     assert.equal(promptAskTimeout(withSettings(undefined)), 6000);
@@ -646,6 +690,129 @@ test('promptAskTimeout reads a user-level hook when the repo declares none', () 
     // Nothing anywhere still means the conservative default.
     process.env.CLAUDE_CONFIG_DIR = withUserSettings(undefined);
     assert.equal(promptAskTimeout(mkdtempSync(join(tmpdir(), 'graft-nosettings-'))), 6000);
+  } finally {
+    if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = previous;
+  }
+});
+
+/**
+ * trailhq/Graft#283: post-fix, `settings-merge.ts` writes the SANE (seconds)
+ * value, and this must convert it to ms before subtracting the ms-denominated
+ * overhead — not treat it as already-ms, which is the bug (it floors every
+ * realistic seconds value to MIN_CHILD_TIMEOUT_MS regardless of what's
+ * actually configured).
+ */
+test('promptAskTimeout converts a sane seconds budget to ms (trailhq/Graft#283)', () => {
+  const previous = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = mkdtempSync(join(tmpdir(), 'graft-nouser-'));
+  try {
+    assert.equal(promptAskTimeout(withSettings(20)), 18000);
+    assert.equal(promptAskTimeout(withSettings(15)), 13000);
+    // Exactly at the legacy/sane boundary: 600 is still sane seconds (Claude
+    // Code's own documented default), not a legacy ms artifact.
+    assert.equal(promptAskTimeout(withSettings(600)), 598000);
+    // One tick over the boundary flips to "this is a leftover ms value" —
+    // used as-is (601ms), which is itself too small to leave any room for the
+    // MIN_CHILD_TIMEOUT_MS floor (trailhq/Graft#485 review finding 1): capped
+    // at 601 - MIN_WRITE_RESERVE_MS instead of overshooting the hook's own
+    // 601ms external deadline.
+    assert.equal(promptAskTimeout(withSettings(601)), 101);
+  } finally {
+    if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = previous;
+  }
+});
+
+/** Two graft subcommands share the `PostToolUse` event with independent
+ * budgets — see the header comment on `graftBlocks` in settings-merge.ts. */
+function withPostToolUseSettings(postEditTimeout: unknown, toolSavingsTimeout: unknown, swapOrder = false): string {
+  const d = mkdtempSync(join(tmpdir(), 'graft-hooktimeout-'));
+  mkdirSync(join(d, '.claude'), { recursive: true });
+  const postEdit = { matcher: 'Write|Edit|MultiEdit', hooks: [{ type: 'command', command: 'node ".claude/helpers/graft-hooks.cjs" post-edit', timeout: postEditTimeout }] };
+  const toolSavings = { matcher: 'Bash|mcp__graft__|Read|Grep|Glob', hooks: [{ type: 'command', command: 'node ".claude/helpers/graft-hooks.cjs" tool-savings', timeout: toolSavingsTimeout }] };
+  const PostToolUse = swapOrder ? [toolSavings, postEdit] : [postEdit, toolSavings];
+  writeFileSync(join(d, '.claude', 'settings.json'), JSON.stringify({ hooks: { PostToolUse } }));
+  return d;
+}
+
+test('postEditCheckTimeout reads the post-edit subcommand, not tool-savings sharing its event (trailhq/Graft#366)', () => {
+  const previous = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = mkdtempSync(join(tmpdir(), 'graft-nouser-'));
+  try {
+    // post-edit=20s, tool-savings=8s: picking up the wrong entry would give 6000
+    // (8s legacy-tolerant path) instead of 18000.
+    assert.equal(postEditCheckTimeout(withPostToolUseSettings(20, 8)), 18000);
+    // Array order must not matter — matching is by subcommand name, not position.
+    assert.equal(postEditCheckTimeout(withPostToolUseSettings(20, 8, true)), 18000);
+    // Legacy ms-shaped values still tolerated, same as promptAskTimeout.
+    assert.equal(postEditCheckTimeout(withPostToolUseSettings(10000, 8000)), 8000);
+    // Nothing declared: the same conservative default promptAskTimeout falls back to.
+    assert.equal(postEditCheckTimeout(mkdtempSync(join(tmpdir(), 'graft-nosettings-'))), 6000);
+  } finally {
+    if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = previous;
+  }
+});
+
+// ── trailhq/Graft#485 review findings ─────────────────────────────────────
+
+test('postEditCheckTimeout never gives the child more time than the hook itself has left (review finding 1)', () => {
+  const previous = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = mkdtempSync(join(tmpdir(), 'graft-nouser-'));
+  try {
+    // A hand-set 3-second post-edit budget used to still get MIN_CHILD_TIMEOUT_MS
+    // (4000ms) from the floor alone — outliving the hook's own 3000ms external
+    // deadline, so Claude Code's SIGKILL fired before the check could ever write
+    // `dirty`/`checkTimedOut` back, and every subsequent edit retried a doomed
+    // check forever. Must now stay under 3000 - MIN_WRITE_RESERVE_MS.
+    assert.equal(postEditCheckTimeout(withPostToolUseSettings(3, 8)), 2500);
+    // Ordinary values are unaffected: still well above the floor either way.
+    assert.equal(postEditCheckTimeout(withPostToolUseSettings(10, 8)), 8000);
+  } finally {
+    if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = previous;
+  }
+});
+
+test('promptAskTimeout matches a hand-written command with a trailing shell redirect (review finding 2)', () => {
+  const previous = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = mkdtempSync(join(tmpdir(), 'graft-nouser-'));
+  try {
+    const d = mkdtempSync(join(tmpdir(), 'graft-redirect-'));
+    mkdirSync(join(d, '.claude'), { recursive: true });
+    const command = 'node ".claude/helpers/graft-hooks.cjs" prompt 2>/dev/null';
+    const hooks = { UserPromptSubmit: [{ hooks: [{ type: 'command', command, timeout: 20 }] }] };
+    writeFileSync(join(d, '.claude', 'settings.json'), JSON.stringify({ hooks }));
+    // Naively taking the literal last whitespace token would read "2>/dev/null"
+    // as the subcommand, fail to match "prompt", and silently fall back to the
+    // conservative 6000 default instead of the real 18000 the repo configured.
+    assert.equal(promptAskTimeout(d), 18000);
+  } finally {
+    if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = previous;
+  }
+});
+
+test('promptAskTimeout takes the smallest of two matching entries in one file (review finding 3)', () => {
+  const previous = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = mkdtempSync(join(tmpdir(), 'graft-nouser-'));
+  try {
+    const d = mkdtempSync(join(tmpdir(), 'graft-twoprompts-'));
+    mkdirSync(join(d, '.claude'), { recursive: true });
+    // Two distinct commands (different shim paths), both resolving to the
+    // "prompt" subcommand, with different timeouts. Claude Code runs both;
+    // this process can't tell which one launched it, so — same reasoning as
+    // installedHookTimeout's cross-FILE minimum — the smaller must win even
+    // when both entries are in the SAME file.
+    const hooks = {
+      UserPromptSubmit: [
+        { hooks: [{ type: 'command', command: 'node ".claude/helpers/graft-hooks.cjs" prompt', timeout: 60 }] },
+        { hooks: [{ type: 'command', command: 'node "/some/other/graft-hooks.cjs" prompt', timeout: 8 }] },
+      ],
+    };
+    writeFileSync(join(d, '.claude', 'settings.json'), JSON.stringify({ hooks }));
+    assert.equal(promptAskTimeout(d), 6000);
   } finally {
     if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR;
     else process.env.CLAUDE_CONFIG_DIR = previous;

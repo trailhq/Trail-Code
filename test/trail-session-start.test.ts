@@ -141,6 +141,60 @@ test('a Trail that does not answer costs the cap and no more', async () => {
   assert.ok(Date.now() - t0 < 1000, `took ${Date.now() - t0} ms`);
 });
 
+/** A fetch that holds every request back by `ms` — past the 1000 ms floor the
+ * cap can never sink below, comfortably inside the 3000 ms a seconds-shaped
+ * budget buys, so which of the two won is exactly what the tests below pin. */
+function slowTrail(ms: number, suggested: number): typeof fetch {
+  const { f } = fakeTrail(suggested);
+  return (async (u: string, init?: RequestInit) => {
+    await new Promise((r) => setTimeout(r, ms));
+    return f(u, init);
+  }) as typeof fetch;
+}
+
+/** Wire a graft session-start hook entry with this `timeout` into the repo's
+ * own settings, pointing CLAUDE_CONFIG_DIR at a scratch dir so the machine's
+ * real user-level settings can't contribute a smaller cross-file minimum. */
+function withSessionStartTimeout(root: string, timeout: number): void {
+  mkdirSync(join(root, '.claude'), { recursive: true });
+  writeFileSync(join(root, '.claude', 'settings.json'), JSON.stringify({ hooks: {
+    SessionStart: [{ hooks: [{ type: 'command', command: 'node ".claude/helpers/graft-hooks.cjs" session-start', timeout }] }],
+  } }));
+}
+
+test('a seconds-shaped installed budget still buys the full cap', async () => {
+  // The settings `timeout` is seconds since #283; read raw, a `"timeout": 10`
+  // looks like 10 ms and floors the cap at its 1000 ms minimum, cutting off a
+  // Trail that answers well inside the budget the hook actually has.
+  const root = linkedRepo('ss-seconds');
+  withSessionStartTimeout(root, 10);
+  const previous = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = join(root, 'no-user-settings');
+  try {
+    const line = await trailAtSessionStart(root, { fetchImpl: slowTrail(1300, 3), autopush: noPush().deps });
+    assert.match(line ?? '', /^Trail: 3 suggestions/);
+  } finally {
+    if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = previous;
+  }
+});
+
+test('a hand-tightened seconds budget shortens the cap too', async () => {
+  // `"timeout": 3` is a 3 s budget; the trail check must not outlive it any
+  // more than the ask/check children may — 3 s minus overhead caps the wait
+  // at 1000 ms, so a Trail answering at 1300 ms is already too late.
+  const root = linkedRepo('ss-tight');
+  withSessionStartTimeout(root, 3);
+  const previous = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = join(root, 'no-user-settings');
+  try {
+    assert.equal(await trailAtSessionStart(root, { fetchImpl: slowTrail(1300, 3), autopush: noPush().deps }), null);
+  } finally {
+    if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = previous;
+  }
+});
+
 test('a failing Trail is a missing line, never an error', async () => {
   const root = linkedRepo('ss-down');
   const down = (async () => {
