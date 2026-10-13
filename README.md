@@ -386,6 +386,8 @@ graft build --follow-submodules      # include initialized submodules; persist t
 graft build --no-follow-submodules   # exclude submodules again and persist that choice (the default)
 graft build --follow-nested-repos    # include nested git clones the index doesn't track; persist the choice
 graft build --no-follow-nested-repos # exclude nested clones again and persist that choice (the default)
+graft build --no-gitignore           # don't add graft/ to .gitignore (same as GRAFT_NO_GITIGNORE=1)
+graft build --no-ignore              # don't write the root .ignore that re-admits graft/ to ripgrep (same as GRAFT_NO_IGNORE=1)
 
 graft ask "<task>" [dir]             # query the graph — ranked nodes + exact file:line (no LLM, no key)
 graft ask "<task>" --json            # machine-readable result
@@ -455,6 +457,31 @@ graft upgrade                        # npm install -g the latest published versi
 graft --dir <path>                   # use a context dir other than <repo>/graft
 graft --version, -v                  # print the installed version and exit
 ```
+
+#### Who honours `GRAFT_NO_GITIGNORE` / `GRAFT_NO_IGNORE`
+
+These two (and the equivalent `--no-gitignore` / `--no-ignore` flags, which just
+set them for the one invocation) are **per-invocation and never persisted**. They
+are read by the commands that write the ignore files, and by nothing else:
+
+| Process | Reads them? |
+|---|---|
+| `graft build` | yes — writes both |
+| `graft build` in a workspace parent | `GRAFT_NO_GITIGNORE` only, additionally for the parent's `graft/workspace.json` |
+| `graft trail connect` | `GRAFT_NO_GITIGNORE` only, for the token-holding `.graft/` dir |
+| the Claude Code / Codex `Stop` hook's rebuild | yes — it shells out to a plain `graft build` |
+| `graft ask` / `grep` / `callers` / `map` auto-refresh | **no** |
+| MCP server tool refresh | **no** |
+
+So exporting them changes what the next *build* writes and nothing else. The
+refresh paths split two ways here: the query auto-refresh (`ask`, `grep`,
+`callers`, `map`) and the MCP tools run a graph-only rebuild that writes just
+the graph and the ask sidecar, so they never write `.gitignore` or `.ignore` and
+cannot undo the setting — but the `Stop` hook runs a full `graft build`, so it
+*does* honour the variables, and it inherits whatever environment Claude Code
+itself was started with. Note the asymmetry with `--follow-submodules` and
+`--follow-nested-repos`, which *are* persisted to `.graft/config.json` precisely
+so the flagless refresh path matches the invocation that set them.
 
 Method calls resolve through the receiver's type — constructor assignments
 (`self.router = APIRouter()`) and type annotations, not just the call-site
