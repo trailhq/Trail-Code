@@ -66,6 +66,7 @@
 - [CLI](#cli)
 - [Search & orient](#search--orient-graft-grep--graft-map) (`graft grep` / `graft map`)
 - [Monorepos & multi-repo folders](#monorepos--multi-repo-folders)
+- [Choosing which files get indexed](#choosing-which-files-get-indexed)
 - [Visualize it](#visualize-it-graft-viz) (`graft viz`)
 - [Tested on your popular repos](#tested-on-your-popular-repos)
 - [Development](#development)
@@ -424,6 +425,11 @@ graft upgrade                        # npm install -g the latest published versi
 # global
 graft --dir <path>                   # use a context dir other than <repo>/graft
 graft --version, -v                  # print the installed version and exit
+
+# which files are indexed (see "Choosing which files get indexed"):
+#   GRAFT_MAX_FILE_BYTES=2000000     # raise the 1 MB per-file cap
+#   GRAFT_SKIP_MINIFIED=1            # skip minified JS bundles
+#   .graftignore                     # gitignore-style excludes that also apply to tracked files
 ```
 
 Method calls resolve through the receiver's type — constructor assignments
@@ -500,6 +506,47 @@ the parent gets the federated view; one started in a child sees that repo alone.
 Commands also find the graph from a subdirectory: with no `[dir]` argument they
 walk up to the nearest `graft/`, so `graft ask` works from `src/deep/inside/`
 without a `cd` to the repo root.
+
+## Choosing which files get indexed
+
+Git decides the visible file set: tracked files plus untracked files your
+`.gitignore` does not exclude. On top of that graft always skips dot-paths,
+dependency/build directories (`node_modules`, `dist`, `vendor`, … — lift one
+with `--include-dir`) and files over 1 MB. Three settings adjust this; all of
+them are read on every walk, so `graft build`, the pre-query refresh, the MCP
+server and the Claude Code hooks always agree on the same file set.
+
+| Setting | Effect |
+| --- | --- |
+| `GRAFT_MAX_FILE_BYTES=<n>` | Size cap in bytes (default `1000000`). A value that is not a positive integer is ignored with a warning. |
+| `.graftignore` | Exclude paths with gitignore-style patterns — **tracked files included**, which `.gitignore` cannot do. |
+| `GRAFT_SKIP_MINIFIED=1` | Skip minified/bundled JavaScript: a `.js`/`.mjs`/`.cjs` of at least 100 KB whose longest line exceeds 20,000 characters. Off by default. |
+
+Ignore rules are read from three files, lowest precedence first; later rules
+override earlier ones, as in Git:
+
+1. `~/.graft/ignore` — user-wide, applies to every repo.
+2. `$GIT_COMMON_DIR/info/graftignore` (usually `.git/info/graftignore`) —
+   this clone only, never committed, and shared by all of its worktrees.
+3. `.graftignore` at the repository root — committed with the code.
+
+Patterns are relative to the repository root and follow `.gitignore`
+syntax: `#` comments, `*`, `?`, `[a-z]`, `**`, a leading `/` or an inner `/`
+anchors to the root, a trailing `/` matches directories only, `!` re-includes,
+and the last matching rule wins. As in Git, a file cannot be re-included when
+a parent directory is excluded. Matching is case-sensitive; rules from a
+submodule's own `.graftignore` are not read (write submodule paths in the
+superproject's file).
+
+```gitignore
+# .graftignore
+**/*.min.js
+public/assets/bundles/
+!public/assets/bundles/keep-this.js
+```
+
+Changing any of these is picked up by the next query's freshness check: files
+that drop out are removed from the graph on the following refresh.
 
 ## Visualize it (`graft viz`)
 
