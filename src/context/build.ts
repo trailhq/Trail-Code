@@ -66,6 +66,9 @@ export interface BuildOptions {
    * Same prefix semantics as the wiring walk. When omitted, falls back to the
    * whitelist recorded in the graph fingerprint (mirrors `checkGraph`). */
   onlyDirs?: string[];
+  /** Extra ignore files beyond the repo's own `.graftignore` / `.cursorignore`
+   * (`--ignore-file`). Same fallback to the fingerprint as `onlyDirs`. */
+  ignoreFiles?: string[];
   /** Human label for the model, recorded in the manifest (e.g. "openrouter:openai/gpt-4o-mini"). */
   model: string;
   summarizer: Summarizer;
@@ -100,6 +103,13 @@ function resolveOnlyDirs(outDir: string, explicit?: readonly string[]): Set<stri
   return list.length > 0 ? new Set(list) : undefined;
 }
 
+/** Same source-of-truth split as {@link resolveOnlyDirs}: the CLI/API's explicit
+ * list wins, else the one recorded in the graph fingerprint. */
+function resolveIgnoreFiles(outDir: string, explicit?: readonly string[]): readonly string[] | undefined {
+  const list = explicit && explicit.length > 0 ? explicit : (readFingerprint(outDir)?.ignoreFiles ?? []);
+  return list.length > 0 ? list : undefined;
+}
+
 /**
  * Files the concept pass summarizes (and `checkContext` re-hashes): the same
  * walk as before (`--include-dir` / submodule flags from state, minus the
@@ -111,10 +121,12 @@ export function listContextFiles(
   outDir: string,
   exts: readonly string[],
   explicitOnlyDirs?: readonly string[],
+  explicitIgnoreFiles?: readonly string[],
 ): string[] {
   const walked = walkDir(root, readIncludeDirs(root), {
     followSubmodules: readFollowSubmodules(root),
     followNestedRepos: readFollowNestedRepos(root),
+    ignoreFiles: resolveIgnoreFiles(outDir, explicitIgnoreFiles),
   })
     .filter((f) => exts.some((e) => f.toLowerCase().endsWith(e)))
     .filter((f) => !f.startsWith(outDir));
@@ -151,7 +163,7 @@ export async function buildContext(dir: string, opts: BuildOptions): Promise<Bui
   // Tier-2 concept pipeline sees exactly the same directories and submodules.
   // `--only-dir` is applied with the same prefix match as wiring (CLI/API, else
   // the fingerprint) so out-of-scope files are never summarized or synthesized.
-  const files = listContextFiles(root, outDir, exts, opts.onlyDirs);
+  const files = listContextFiles(root, outDir, exts, opts.onlyDirs, opts.ignoreFiles);
 
   const cache = loadCache(outDir);
   // Flush the summary cache to disk during phase 1 so a build interrupted

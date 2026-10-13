@@ -61,20 +61,31 @@ export function filterByOnlyDirs(
   });
 }
 
+/**
+ * When `repoFiles` is passed it must already carry the ignore-file filter
+ * (it comes from a walk that applied it) — `ignoreFiles` then applies only to
+ * the default walk. Callers doing their own enumeration pass one or the other,
+ * never both.
+ */
 export function listSourceFiles(
   root: string,
   outDir: string,
-  repoFiles: string[] = walkDir(root, readIncludeDirs(resolve(root)), {
-    followSubmodules: readFollowSubmodules(resolve(root)),
-    followNestedRepos: readFollowNestedRepos(resolve(root)),
-  }),
+  repoFiles?: string[],
   onlyDirs?: ReadonlySet<string>,
+  ignoreFiles?: readonly string[],
 ): string[] {
+  const files =
+    repoFiles ??
+    walkDir(root, readIncludeDirs(resolve(root)), {
+      followSubmodules: readFollowSubmodules(resolve(root)),
+      followNestedRepos: readFollowNestedRepos(resolve(root)),
+      ignoreFiles,
+    });
   // A file is a source file if a depth-tier grammar (languageOf), a breadth-tier
   // grammar (genericLangOf) or a container (containerLangOf) claims its extension.
   // All three must agree here or `build` and `check` would enumerate different sets.
   return filterByOnlyDirs(
-    repoFiles.filter(
+    files.filter(
       (f) =>
         !f.startsWith(outDir) &&
         (languageOf(f) !== null || genericLangOf(f) !== null || containerLangOf(f) !== null),
@@ -105,9 +116,10 @@ export function listSourceStats(
   outDir: string,
   repoFiles?: string[],
   onlyDirs?: ReadonlySet<string>,
+  ignoreFiles?: readonly string[],
 ): SourceStat[] {
   const out: SourceStat[] = [];
-  for (const abs of listSourceFiles(root, outDir, repoFiles, onlyDirs)) {
+  for (const abs of listSourceFiles(root, outDir, repoFiles, onlyDirs, ignoreFiles)) {
     let s: { size: number; mtimeMs: number };
     try {
       s = statSync(abs);

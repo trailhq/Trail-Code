@@ -30,6 +30,9 @@ export interface InitOptions {
   extensions?: string[];
   /** Repo-relative directory prefixes to limit the concept pass (`--only-dir`). */
   onlyDirs?: string[];
+  /** Extra ignore files beyond the repo's own `.graftignore` / `.cursorignore`
+   * (`--ignore-file`), repo-relative or absolute. Additive. */
+  ignoreFiles?: string[];
   /** Progress callback for long builds. */
   onProgress?: (info: BuildProgress) => void;
 }
@@ -49,6 +52,9 @@ export interface GraphRunOptions {
   lsp?: boolean;
   /** Repo-relative directory prefixes to limit the build to (`--only-dir`). */
   onlyDirs?: string[];
+  /** Extra ignore files beyond the repo's own `.graftignore` / `.cursorignore`
+   * (`--ignore-file`), repo-relative or absolute. Additive. */
+  ignoreFiles?: string[];
   onProgress?: GraphBuildOptions["onProgress"];
 }
 
@@ -65,6 +71,7 @@ export class Graft {
       contextDir: this.cfg.contextDir,
       extensions: opts.extensions,
       onlyDirs: opts.onlyDirs,
+      ignoreFiles: opts.ignoreFiles,
       model: this.modelLabel(),
       summarizer: this.summarizer(),
       synthesizer: this.synthesizer(),
@@ -96,6 +103,7 @@ export class Graft {
       reuse: opts.reuse,
       lsp: opts.lsp,
       onlyDirs: opts.onlyDirs,
+      ignoreFiles: opts.ignoreFiles,
       onProgress: opts.onProgress,
     });
   }

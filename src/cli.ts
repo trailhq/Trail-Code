@@ -6,7 +6,9 @@
  */
 import "dotenv/config";
 import { Command } from "commander";
-import { join, relative, resolve } from "node:path";
+import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import { existsSync, statSync, writeFileSync } from "node:fs";
+import { GRAFTIGNORE_NAME, GRAFTIGNORE_STARTER } from "./ingest/ignore.js";
 import { fileURLToPath } from "node:url";
 import { Graft } from "./engine.js";
 import { resolveConfig, type EngineConfig } from "./ai/providers.js";
@@ -400,8 +402,18 @@ program
     (val: string, prev: string[]) => [...prev, val],
     [] as string[],
   )
+  .option(
+    "--ignore-file <path>",
+    "extra ignore file in .gitignore syntax, on top of the repo's .graftignore (and .cursorignore " +
+      "when Cursor is wired in) — repeatable; later files may re-include with `!` what earlier ones " +
+      "exclude. Not persisted: recorded in the graph fingerprint instead, so the drift probe and " +
+      "auto-refresh keep the same file set without the flag",
+    (val: string, prev: string[]) => [...prev, val],
+    [] as string[],
+  )
   .option("--no-gitignore", "skip writing graft/ into .gitignore (same as GRAFT_NO_GITIGNORE=1)")
   .option("--no-ignore", "skip writing .ignore for ripgrep re-admit (same as GRAFT_NO_IGNORE=1)")
+  .option("--no-graftignore", "skip reading — and creating — .graftignore (same as GRAFT_NO_GRAFTIGNORE=1)")
   .action(async (
     dir: string,
     opts: {
@@ -413,16 +425,19 @@ program
       allowPartial?: boolean;
       includeDir?: string[];
       onlyDir?: string[];
+      ignoreFile?: string[];
       followSubmodules?: boolean;
       followNestedRepos?: boolean;
       gitignore?: boolean;
       ignore?: boolean;
+      graftignore?: boolean;
     },
     command: Command,
   ) => {
     const buildStartedAt = Date.now();
     if (opts.gitignore === false) process.env.GRAFT_NO_GITIGNORE = "1";
     if (opts.ignore === false) process.env.GRAFT_NO_IGNORE = "1";
+    if (opts.graftignore === false) process.env.GRAFT_NO_GRAFTIGNORE = "1";
     const concurrency = opts.concurrency ? Math.max(1, Number(opts.concurrency)) : undefined;
     if (opts.concurrency && !Number.isFinite(concurrency)) {
       console.error(`✗ --concurrency must be a number, got "${opts.concurrency}"`);
@@ -468,6 +483,26 @@ program
       }
       onlyDirs = normalized;
     }
+    // --ignore-file is the same shape: a path, relative to the repo (or
+    // absolute), that MUST exist — a typo that silently ignored nothing is the
+    // worst possible failure for a filter. Normalized to repo-relative posix so
+    // the fingerprint records one canonical form, and so the probe, which never
+    // sees the flag, re-applies the very same file.
+    let ignoreFiles: string[] | undefined;
+    if (opts.ignoreFile && opts.ignoreFile.length > 0) {
+      const root = resolve(dir);
+      const normalized: string[] = [];
+      for (const raw of opts.ignoreFile) {
+        const abs = isAbsolute(raw) ? resolve(raw) : resolve(root, raw);
+        if (!existsSync(abs) || !statSync(abs).isFile()) {
+          console.error(`✗ --ignore-file "${raw}": no such file`);
+          process.exit(1);
+        }
+        const rel = relative(root, abs).replace(/\\/g, "/");
+        normalized.push(rel || basename(abs));
+      }
+      ignoreFiles = normalized;
+    }
     const followSubmodulesWasExplicit = command.getOptionValueSource("followSubmodules") === "cli";
     if (followSubmodulesWasExplicit && typeof opts.followSubmodules === "boolean") {
       buildConfigPatch.followSubmodules = opts.followSubmodules;
@@ -506,6 +541,21 @@ program
     // Workspace parent: build each child into its OWN graft/ + a workspace index.
     const buildRoot = resolve(dir);
     const buildGlobalDir = program.opts<GlobalOpts>().dir;
+    if (!isWorkspaceBuildRoot(buildRoot, buildGlobalDir) && process.env.GRAFT_NO_GRAFTIGNORE !== "1") {
+      // The explicit CLI build is the one entry point that may CREATE the
+      // repo's .graftignore — the query-path refresh must never write into the
+      // source repo, and --no-graftignore / GRAFT_NO_GRAFTIGNORE suppress the
+      // write (and the read) alike. A comments-only starter, so it changes
+      // nothing until a rule is added; the user commits it to share it.
+      const graftignore = join(buildRoot, GRAFTIGNORE_NAME);
+      if (!existsSync(graftignore)) {
+        try {
+          writeFileSync(graftignore, GRAFTIGNORE_STARTER);
+        } catch {
+          // Unwritable repo — the file is optional, the build is not.
+        }
+      }
+    }
     if (isWorkspaceBuildRoot(buildRoot, buildGlobalDir)) {
       await runWorkspaceBuild(buildRoot, {
         deep: !!deep,
@@ -516,6 +566,7 @@ program
         includeDirs: opts.includeDir,
         followSubmodules: followSubmodulesWasExplicit ? opts.followSubmodules : undefined,
         followNestedRepos: followNestedReposWasExplicit ? opts.followNestedRepos : undefined,
+        ignoreFiles,
       });
       return;
     }
@@ -527,6 +578,7 @@ program
       const c = await engine.init(dir, {
         extensions: opts.extensions,
         onlyDirs,
+        ignoreFiles,
         onProgress: ({ phase, index, total, file }) =>
           process.stderr.write(
             `\r${phase === "summarize" ? "reading" : "writing"} concepts ${index + 1}/${total}: ${file.slice(0, 40).padEnd(40)}`,
@@ -552,6 +604,7 @@ program
       reuse: opts.reuse,
       lsp: opts.lsp,
       onlyDirs,
+      ignoreFiles,
       onProgress: ({ phase, index, total, file }) =>
         process.stderr.write(
           `\r${phase === "enrich" ? "summarizing" : "parsing"} ${index + 1}/${total}: ${file.slice(0, 50).padEnd(50)}`,

@@ -81,12 +81,15 @@ export async function checkGraph(
   }
 
   // Freshly extract Tier-1 nodes from the code on disk (same file set as build).
-  // A `--only-dir` build records its whitelist in the fingerprint; read it back
-  // so `check` diffs the same limited set instead of flagging every excluded
-  // file as "added".
-  const fpOnlyDirs = readFingerprint(outDir)?.onlyDirs;
+  // A `--only-dir` build records its whitelist and a `--ignore-file` build its
+  // explicit ignore list in the fingerprint; read both back so `check` diffs
+  // the same limited set instead of flagging every excluded file as "added".
+  const fingerprint = readFingerprint(outDir);
+  const fpOnlyDirs = fingerprint?.onlyDirs;
   const onlyDirs = fpOnlyDirs && fpOnlyDirs.length > 0 ? new Set(fpOnlyDirs) : undefined;
-  const sourceFiles = listSourceFiles(root, outDir, undefined, onlyDirs);
+  const fpIgnoreFiles = fingerprint?.ignoreFiles;
+  const ignoreFiles = fpIgnoreFiles && fpIgnoreFiles.length > 0 ? fpIgnoreFiles : undefined;
+  const sourceFiles = listSourceFiles(root, outDir, undefined, onlyDirs, ignoreFiles);
   await warmGenericGrammars(
     new Set(sourceFiles.map((f) => genericLangOf(f)?.name).filter((n): n is string => !!n)),
   );

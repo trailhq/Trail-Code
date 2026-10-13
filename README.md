@@ -357,8 +357,10 @@ graft build --extensions .ts .py     # only include these code extensions
 graft build --no-reuse               # re-parse every file instead of replaying unchanged ones from cache
 graft build --follow-submodules      # include initialized submodules; persist the choice for builds + MCP refresh
 graft build --no-follow-submodules   # exclude submodules again and persist that choice (the default)
-graft build --follow-nested-repos    # include nested git clones the index doesn't track; persist the choice
-graft build --no-follow-nested-repos # exclude nested clones again and persist that choice (the default)
+ graft build --follow-nested-repos    # include nested git clones the index doesn't track; persist the choice
+ graft build --no-follow-nested-repos # exclude nested clones again and persist that choice (the default)
+ graft build --ignore-file <path>     # extra ignore file (gitignore syntax), repeatable, on top of .graftignore
+ graft build --no-graftignore         # skip reading — and creating — .graftignore (same as GRAFT_NO_GRAFTIGNORE=1)
 
 graft ask "<task>" [dir]             # query the graph — ranked nodes + exact file:line (no LLM, no key)
 graft ask "<task>" --json            # machine-readable result
@@ -503,6 +505,24 @@ the parent gets the federated view; one started in a child sees that repo alone.
 Commands also find the graph from a subdirectory: with no `[dir]` argument they
 walk up to the nearest `graft/`, so `graft ask` works from `src/deep/inside/`
 without a `cd` to the repo root.
+
+## Keep files out of the graph
+
+Graft's file set is Git's file set, and Git's ignore rules only gate
+*untracked* files — so a committed file cannot be kept out of the index with
+`.gitignore`. For that there is `.graftignore` (gitignore syntax): files it
+lists are never parsed, indexed, or searchable, even though Git still tracks
+and commits them. The first `graft build` creates a comments-only starter;
+commit the file to share exclusions with the team.
+
+- `.cursorignore` is honored too, when this repo is wired for Cursor
+  (`graft init` picked Cursor) — same syntax, no extra flag.
+- `graft build --ignore-file <path>` adds any other file (repeatable,
+  additive: a later file may re-include with `!` what an earlier one
+  excluded). The list is recorded in the graph fingerprint, so the drift
+  probe and the pre-query auto-refresh keep the same file set without the
+  flag.
+- `--no-graftignore` (or `GRAFT_NO_GRAFTIGNORE=1`) skips the file entirely.
 
 ## Visualize it (`graft viz`)
 

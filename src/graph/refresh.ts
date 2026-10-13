@@ -209,11 +209,14 @@ export async function ensureFreshGraph(root: string, opts: RefreshOptions = {}):
       // else. The markdown projections under `graft/` stay the `Stop` hook's job —
       // a query has no business rewriting the repo's `.gitignore` or churning every
       // card's mtime, and skipping them is most of what keeps this cheap.
-      // A `--only-dir` build recorded its whitelist in the fingerprint; re-apply it
-      // here so an auto-rebuild keeps the same limited file set instead of silently
+      // A `--only-dir` build recorded its whitelist, and a `--ignore-file` build
+      // recorded its explicit ignore list, in the fingerprint; re-apply both here
+      // so an auto-rebuild keeps the same limited file set instead of silently
       // widening to the whole tree.
-      const onlyDirs = readFingerprint(outDir)?.onlyDirs;
-      await buildGraph(dir, { contextDir: opts.contextDir, graphOnly: true, onlyDirs });
+      const fingerprint = readFingerprint(outDir);
+      const onlyDirs = fingerprint?.onlyDirs;
+      const ignoreFiles = fingerprint?.ignoreFiles;
+      await buildGraph(dir, { contextDir: opts.contextDir, graphOnly: true, onlyDirs, ignoreFiles });
       invalidateGraphCaches(outDir);
       return { refreshed: true, drift: drift ?? undefined, note: seedNote };
     } finally {

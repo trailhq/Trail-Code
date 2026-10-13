@@ -40,6 +40,11 @@ export interface WorkspaceBuildOptions {
   followSubmodules?: boolean;
   /** An explicit CLI nested-clone choice to persist into every child repo. */
   followNestedRepos?: boolean;
+  /** The CLI's `--ignore-file` list, passed to EVERY child build. Children are
+   * independent repos, so a relative path is resolved against each child's own
+   * root and a file missing in a child is skipped there (the child's own
+   * .graftignore still applies). */
+  ignoreFiles?: string[];
 }
 
 /** Build every git child into its own committable `graft/`, then replace the
@@ -63,8 +68,8 @@ export async function runWorkspaceBuild(root: string, opts: WorkspaceBuildOption
       patchBuildConfig(childDir, childConfigPatch);
     }
     const engine = new Graft({ ...opts.childConfig, contextDir: undefined });
-    if (opts.deep) await engine.init(childDir, { extensions: opts.extensions });
-    const g = await engine.graph(childDir, { llm: opts.deep, concurrency: opts.concurrency });
+    if (opts.deep) await engine.init(childDir, { extensions: opts.extensions, ignoreFiles: opts.ignoreFiles });
+    const g = await engine.graph(childDir, { llm: opts.deep, concurrency: opts.concurrency, ignoreFiles: opts.ignoreFiles });
     console.log(`✓ ${childName}/: ${g.nodes} nodes, ${g.edges} edges, ${g.cards} cards [${g.languages.join(", ")}]`);
     for (const e of g.errors) console.error(`✗ ${childName}/: ${e}`);
   };

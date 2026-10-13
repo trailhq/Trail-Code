@@ -4,6 +4,8 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { matcherFor } from "./ignore.js";
+import { relPosix } from "../util/paths.js";
 
 /** Directories that are dependency/build output, never source. */
 export const SKIP_DIRS = new Set([
@@ -84,6 +86,10 @@ export interface WalkOptions {
   followSubmodules?: boolean;
   /** Include nested Git clones the parent index does not track. Default false. */
   followNestedRepos?: boolean;
+  /** Extra ignore files, repo-relative or absolute, on top of the repo's own
+   * `.graftignore` (and `.cursorignore` when Cursor is a wired host) — the
+   * `--ignore-file` list. Additive: later files may negate earlier rules. */
+  ignoreFiles?: readonly string[];
 }
 
 /**
@@ -150,6 +156,10 @@ function remapWalkPaths(requested: string, canonical: string, files: string[]): 
  * `../` escape through the physical path (macOS `/tmp` → `/private/tmp`).
  * Symlinks *inside* the tree are not followed: git still `lstat`s each listed
  * path, and the filesystem walk still requires `Dirent.isFile` / `isDirectory`.
+ *
+ * The repo's ignore files (`.graftignore`, `.cursorignore` when Cursor is a
+ * wired host, and `opts.ignoreFiles`) are applied to the ENUMERATED set, after
+ * git/`readdir` — see {@link filterIgnored} for why it cannot be a git flag.
  */
 export function walkDir(
   dir: string,
@@ -159,7 +169,31 @@ export function walkDir(
   const requested = resolve(dir);
   const root = canonicalWalkRoot(requested);
   const files = gitVisibleFiles(root, includes, opts) ?? walkFilesystem(root, includes);
-  return remapWalkPaths(requested, root, files);
+  return remapWalkPaths(requested, root, filterIgnored(root, files, opts.ignoreFiles));
+}
+
+/** Report a bad ignore rule once per process: the walk runs several times per
+ * build, and a typo in `.graftignore` should produce one line, not three. */
+const warnedIgnoreErrors = new Set<string>();
+
+/** Apply the repo's ignore files to an enumerated set, dropping matches.
+ *
+ * The filter runs AFTER enumeration, deliberately: the rules must exclude
+ * TRACKED files too, and `git ls-files --exclude-standard` still emits a file
+ * that a `.gitignore` matches (Git's ignore rules only gate untracked files).
+ * There is no git argument that hides a committed file from this listing, so
+ * filtering the result is the only way. Applied to the final list, the same
+ * matcher covers the Git path, the filesystem fallback, and the files of
+ * followed submodules/nested clones alike. */
+function filterIgnored(root: string, files: string[], extra: readonly string[] | undefined): string[] {
+  const matcher = matcherFor(root, extra);
+  for (const e of matcher.errors()) {
+    const key = `${e.line}:${e.pattern}:${e.message}`;
+    if (warnedIgnoreErrors.has(key)) continue;
+    warnedIgnoreErrors.add(key);
+    console.error(`⚠ ignore: line ${e.line}: ${e.message} ("${e.pattern}") — rule skipped`);
+  }
+  return files.filter((abs) => !matcher.isIgnored(relPosix(root, abs)));
 }
 
 /** Git's canonical working-tree file set, relative to `dir`. Tracked files are

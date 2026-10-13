@@ -60,6 +60,8 @@ export function checkContext(dir: string, opts: CheckOptions = {}): CheckResult 
   // so this freshness check never disagrees with buildContext about what
   // "current" means.
   const current = new Map<string, string>(); // rel → hash
+  // `listContextFiles` applies the same fingerprint fallback for `--only-dir`
+  // and `--ignore-file` as the build, so a no-flag check diffs the same set.
   for (const file of listContextFiles(root, outDir, exts)) {
     try {
       const source = readSourceFile(file);
