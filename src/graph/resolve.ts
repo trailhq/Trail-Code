@@ -128,6 +128,10 @@ export function resolveEdges(
   // node ids. A `use App\Models\User` names a PSR-4 class whose file mirrors the namespace
   // tail under some (unknown) source root, so the suffix is the portable key.
   const phpFilesBySuffix = new Map<string, string[]>();
+  // Gleam module resolution: a file's path-suffix (`app/thing.gleam`) → its file
+  // node ids. A Gleam package roots every module at its own `src/` (or `test/`),
+  // so an `import app/thing` is exactly that suffix under some unknown root.
+  const gleamFilesBySuffix = new Map<string, string[]>();
   const hasGoModules = !!opts.goModules?.length;
   for (const n of nodes) {
     if (n.kind === "file") {
@@ -149,6 +153,10 @@ export function resolveEdges(
       if (n.path.endsWith(".php")) {
         const parts = toPosixPath(n.path).split("/");
         for (let i = 0; i < parts.length; i++) push(phpFilesBySuffix, parts.slice(i).join("/"), n.id);
+      }
+      if (n.path.endsWith(".gleam")) {
+        const parts = toPosixPath(n.path).split("/");
+        for (let i = 0; i < parts.length; i++) push(gleamFilesBySuffix, parts.slice(i).join("/"), n.id);
       }
       {
         const p = toPosixPath(n.path);
@@ -216,7 +224,9 @@ export function resolveEdges(
                 ? resolveRustUse(e.specifier, e.file, byId, rustCrateRoots)
                 : e.file.endsWith(".php")
                   ? resolvePhpUse(e.specifier, phpFilesBySuffix)
-                  : resolveImport(e.specifier, e.file, byId);
+                  : e.file.endsWith(".gleam")
+                    ? resolveGleamImport(e.specifier, gleamFilesBySuffix)
+                    : resolveImport(e.specifier, e.file, byId);
       add(e.source, target, "imports", "extracted");
     } else if (e.relation === "extends" || e.relation === "implements") {
       // `implements` also resolves to a `trait` — PHP models trait composition
@@ -232,9 +242,11 @@ export function resolveEdges(
         // same-named symbol elsewhere in the repo cannot become a false edge.
         const targetFile = e.file.endsWith(".php")
           ? resolvePhpUse(e.specifier, phpFilesBySuffix)
-          : resolveImport(e.specifier, e.file, byId);
+          : e.file.endsWith(".gleam")
+            ? resolveGleamImport(e.specifier, gleamFilesBySuffix)
+            : resolveImport(e.specifier, e.file, byId);
         if (!byId.has(targetFile)) continue; // external or unresolved module
-        const candidates = perFileName.get(targetFile)?.get(e.name) ?? [];
+        const candidates = narrowGleamByKind(perFileName.get(targetFile)?.get(e.name) ?? [], e.file, TYPE_KINDS);
         if (candidates.length === 1) add(e.source, candidates[0].id, "references", "extracted");
       } else if (e.file.endsWith(".php") && byId.get(e.source)?.origin === "ast") {
         // PHP attribute without a `use` import (same-file or globally unique class).
@@ -268,6 +280,19 @@ export function resolveEdges(
         if (hit && hit.id !== e.source) add(e.source, hit.id, "references", hit.confidence);
       }
     } else if (e.relation === "calls") {
+      // Gleam (generic.ts's module pass): the call carries the module it targets —
+      // a qualified `list.map(…)` or a `{ … }`-imported bare name. That is both
+      // halves of a sound resolution, so look the name up in that module's file
+      // alone. A module that is not an in-repo file is the stdlib or a hex
+      // dependency: there is nothing to point at, and its labels (`map`, `try`,
+      // `new`) collide with in-repo names constantly, so the call drops.
+      if (e.specifier && e.file.endsWith(".gleam")) {
+        const targetFile = resolveGleamImport(e.specifier, gleamFilesBySuffix);
+        if (!byId.has(targetFile)) continue;
+        const candidates = narrowGleamByKind(perFileName.get(targetFile)?.get(e.name!) ?? [], e.file, CALLABLE_KINDS);
+        if (candidates.length === 1) add(e.source, candidates[0].id, "calls", "extracted");
+        continue;
+      }
       if (e.viaMember) {
         if (!e.recvType) continue;
         const hit = resolveTypedMember(e.recvType, e.name!, e.file, ownerMethod, classParents, classTraits, e.argCount);
@@ -579,6 +604,41 @@ function resolvePhpUse(fqn: string, bySuffix: Map<string, string[]>): string {
     if (hits && hits.length > 1) break; // ambiguous at the most specific level — do not guess
   }
   return fqn;
+}
+
+const CALLABLE_KINDS: Kind[] = ["function", "method"];
+const TYPE_KINDS: Kind[] = ["class", "interface", "struct", "enum", "type", "module"];
+
+/**
+ * A Gleam type and its constructor idiomatically share a name — `pub type Cfg {
+ * Cfg(…) }` defines both — so a module-scoped lookup finds two candidates and
+ * would drop the edge for the single most common shape in the language. The use
+ * site says which one it meant: `thing.Cfg(…)` applies the constructor,
+ * `x: thing.Cfg` annotates the type. Narrow by kind ONLY when the name is
+ * genuinely doubled, so a lone match still resolves whatever its kind, and only
+ * for Gleam, leaving every other language's specifier lookup untouched.
+ */
+function narrowGleamByKind(candidates: NodeV1[], file: string, kinds: Kind[]): NodeV1[] {
+  if (candidates.length <= 1 || !file.endsWith(".gleam")) return candidates;
+  const narrowed = candidates.filter((c) => kinds.includes(c.kind));
+  return narrowed.length ? narrowed : candidates;
+}
+
+/**
+ * Resolve a Gleam `import app/thing` to the in-repo module file. A Gleam package
+ * roots every module at its `src/` (tests at `test/`), so the import path IS the
+ * file's path-suffix — `app/thing` → `…/app/thing.gleam` — with no per-package
+ * config to consult. Only a unique match resolves; the stdlib, a hex dependency,
+ * and a module name that two packages in one repo both define all stay the raw
+ * module path, so an import never becomes a guessed file edge.
+ */
+function resolveGleamImport(spec: string, bySuffix: Map<string, string[]>): string {
+  const file = `${toPosixPath(spec)}.gleam`;
+  const hits = bySuffix.get(file);
+  // A file's own full path names it exactly (generic.ts scopes same-file names
+  // this way), even when a nested package has a file ending in the same path.
+  if (hits?.includes(file)) return file;
+  return hits && hits.length === 1 ? hits[0] : spec;
 }
 
 /**

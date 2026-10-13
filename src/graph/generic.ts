@@ -58,6 +58,7 @@ export const GENERIC_LANGS: readonly GenericLang[] = [
   { name: "clojure", exts: [".clj", ".cljs", ".cljc", ".bb"], wasm: "clojure" },
   { name: "nix", exts: [".nix"], wasm: "nix" },
   { name: "lua", exts: [".lua"], wasm: "lua" },
+  { name: "gleam", exts: [".gleam"], wasm: "gleam" },
 ];
 
 const byExt = new Map<string, GenericLang>();
@@ -215,6 +216,15 @@ function fileNode(rel: string, source: string): NodeV1 {
 
 interface Def { id: string; startIndex: number; endIndex: number }
 
+/** The innermost definition whose span covers the token at byte offset `at` —
+ * the caller a reference found there belongs to. Shared by the tags.scm path and
+ * the per-language passes below so both attribute edges the same way. */
+function enclosingDef(defs: Def[], at: number): Def | undefined {
+  return defs
+    .filter((d) => d.startIndex <= at && at < d.endIndex)
+    .sort((a, b) => (a.endIndex - a.startIndex) - (b.endIndex - b.startIndex))[0];
+}
+
 /** Extract a single generic-tier file. Synchronous; needs the grammar pre-warmed.
  * Uses the grammar's compiled tags.scm when present (symbols + call edges);
  * otherwise falls back to a node-kind tree walker (symbols only) so ANY warmed
@@ -281,6 +291,7 @@ export function extractGeneric(rel: string, source: string, langName: string): E
   if (langName === "c" || langName === "cpp") extractIncludes(tree.rootNode as TsNode, rel, rawEdges);
   else if (langName === "rust") extractUses(tree.rootNode as TsNode, rel, rawEdges);
   else if (langName === "php") extractPhpUses(tree.rootNode as TsNode, rel, rawEdges);
+  else if (langName === "gleam") extractGleamModules(tree.rootNode as TsNode, rel, defs, rawEdges);
   return { nodes, rawEdges };
 }
 
@@ -373,6 +384,187 @@ function extractIncludes(root: TsNode, rel: string, rawEdges: RawEdge[]): void {
   visit(root);
 }
 
+/**
+ * Gleam's module system IS its dependency graph, and it is unusually exact: an
+ * `import app/thing` names one module file, every reference to another module
+ * goes through a qualifier that import binds (`thing.helper()`), and there is no
+ * ambient global scope for a name to arrive from. This pass reads that table and
+ * uses it for two things.
+ *
+ * First, a file→file `imports` raw edge per import, which resolve.ts settles
+ * against the repo's `.gleam` files (`app/thing` → `…/src/app/thing.gleam`).
+ *
+ * Second, precision on calls. tags.scm sees `list.map(…)` as the bare label
+ * `map`, and because EVERY stdlib call in Gleam is spelled that way, resolving
+ * those by name alone is a false-edge machine — `map`, `filter`, `try`, `new`
+ * and `to_string` all collide with in-repo functions. So qualified calls are
+ * emitted here instead, stamped with the module the qualifier names: resolve.ts
+ * then looks the label up in that one file, or drops the call when the module is
+ * out of repo (the stdlib, a hex dependency). Unqualified imports
+ * (`import app/thing.{helper}`, then a bare `helper()`) give the same two halves,
+ * so the bare edge tags.scm already emitted is upgraded in place.
+ *
+ * A function is as often piped into or handed over as it is called outright
+ * (`xs |> thing.helper`, `list.map(xs, thing.helper)`), and neither is a
+ * `function_call` node, so both are read here too: a pipe's right side is a
+ * call, a name passed as a value is a `references` edge.
+ */
+function extractGleamModules(root: TsNode, rel: string, defs: Def[], rawEdges: RawEdge[]): void {
+  // `list` in `list.map(…)` → the module path it was bound to. The qualifier is
+  // the `as` alias when there is one, else the module path's last segment.
+  const byQualifier = new Map<string, string>();
+  // `helper` from `import app/thing.{helper}` (or its `as` alias) → that module.
+  const byName = new Map<string, string>();
+  for (let i = 0; i < (root.namedChildCount ?? 0); i++) {
+    const imp = root.namedChild?.(i);
+    if (imp?.type !== "import") continue;
+    const mod = imp.childForFieldName?.("module")?.text;
+    if (!mod) continue;
+    rawEdges.push({ source: rel, relation: "imports", specifier: mod, file: rel });
+    byQualifier.set(imp.childForFieldName?.("alias")?.text || mod.slice(mod.lastIndexOf("/") + 1), mod);
+    const unqualified = imp.childForFieldName?.("imports");
+    for (let j = 0; j < (unqualified?.namedChildCount ?? 0); j++) {
+      const u = unqualified?.namedChild?.(j);
+      if (u?.type !== "unqualified_import") continue;
+      // `{ other as o }` binds `o`; `{ type Handler }` binds a type, harmless here.
+      const local = u.childForFieldName?.("alias")?.text ?? u.childForFieldName?.("name")?.text;
+      if (local) byName.set(local, mod);
+    }
+  }
+  // This file's own functions, and the module path that names this file, so a
+  // name that can only be local resolves in this file alone.
+  const ownFns = new Set<string>();
+  for (let i = 0; i < (root.namedChildCount ?? 0); i++) {
+    const fn = root.namedChild?.(i);
+    const name = fn?.type === "function" ? fn.childForFieldName?.("name")?.text : undefined;
+    if (name) ownFns.add(name);
+  }
+  const ownModule = rel.replace(/\.gleam$/, "");
+  const ownNames = new Set(defs.map((d) => d.id.slice(rel.length + 1).replace(/~\d+$/, "")));
+
+  // A bare name in Gleam is this file's own definition, an unqualified import, or
+  // a local — there is nowhere else for it to come from. So every bare edge
+  // tags.scm emitted is pinned to the one module it can mean, and one that means
+  // neither (a parameter being called, a prelude `Ok` or `Int`) is dropped rather
+  // than left to match a same-named definition somewhere else in the repo.
+  for (let i = rawEdges.length - 1; i >= 0; i--) {
+    const e = rawEdges[i];
+    if ((e.relation !== "calls" && e.relation !== "references") || e.specifier || !e.name) continue;
+    const mod = byName.get(e.name) ?? (ownNames.has(e.name) ? ownModule : undefined);
+    if (mod) e.specifier = mod;
+    else rawEdges.splice(i, 1);
+  }
+
+  // Every name a function binds — parameters, `let`, `use` and `case` patterns,
+  // at any depth. There is no scope analysis here, so a name bound ANYWHERE in
+  // the function is treated as a local throughout it. Coarser than real scoping,
+  // and only ever in the direction of dropping an edge.
+  const boundIn = (fn: TsNode): Set<string> => {
+    const bound = new Set<string>();
+    const names = (n: TsNode | null | undefined): void => {
+      // `thing.Busy(x)` and `x: thing.State` spell a module, not a binding.
+      if (!n || n.type === "remote_constructor_name" || n.type === "remote_type_identifier") return;
+      if (n.type === "identifier") bound.add(n.text);
+      // `Busy(since:)` is shorthand for `Busy(since: since)` — the label binds.
+      if (n.type === "record_pattern_argument" && n.namedChildCount === 1 && n.namedChild?.(0)?.type === "label")
+        bound.add(n.namedChild(0)!.text);
+      for (let i = 0; i < (n.namedChildCount ?? 0); i++) names(n.namedChild?.(i));
+    };
+    const walk = (n: TsNode): void => {
+      if (n.type === "function_parameters" || n.type === "use_assignments" || n.type === "case_clause_patterns") names(n);
+      else if (n.type === "let" || n.type === "let_assert") names(n.childForFieldName?.("pattern"));
+      for (let i = 0; i < (n.namedChildCount ?? 0); i++) {
+        const c = n.namedChild?.(i);
+        if (c) walk(c);
+      }
+    };
+    walk(fn);
+    return bound;
+  };
+  const same = (a: TsNode | null | undefined, b: TsNode): boolean =>
+    !!a && a.startIndex === b.startIndex && a.endIndex === b.endIndex;
+  // `xs |> thing.helper` — the right of a pipe is applied, with or without `()`.
+  const piped = (n: TsNode, parent: TsNode | null): boolean =>
+    parent?.type === "binary_expression" &&
+    parent.childForFieldName?.("operator")?.type === "|>" &&
+    same(parent.childForFieldName?.("right"), n);
+  // Where a bare name is a value being handed on rather than a binding or a call.
+  const passed = (n: TsNode, parent: TsNode | null): boolean =>
+    parent?.type === "argument" || parent?.type === "list" || parent?.type === "tuple" ||
+    ((parent?.type === "let" || parent?.type === "let_assert") && same(parent.childForFieldName?.("value"), n));
+
+  const NONE = new Set<string>();
+  // The ways a Gleam file names something in another module. All carry the
+  // qualifier, so all get scoped to one file rather than guessed by name.
+  const emit = (
+    qualifier: TsNode | null,
+    name: TsNode | null,
+    relation: "calls" | "references",
+    locals: Set<string> = NONE,
+  ): void => {
+    // Only a bare identifier can be a module qualifier. `field_access` is also how
+    // the grammar spells record access, so `cfg.handler.run()` is a field chain,
+    // and a qualifier no import bound is a record field holding a function.
+    // Neither names a module, and neither gets a guessed edge.
+    const mod =
+      qualifier?.type === "identifier" && name && !locals.has(qualifier.text) ? byQualifier.get(qualifier.text) : undefined;
+    if (!mod || !name) return;
+    const enc = enclosingDef(defs, name.startIndex);
+    if (relation === "references" && !enc) return; // no sound source to hang it on
+    rawEdges.push({ source: enc ? enc.id : rel, relation, file: rel, name: name.text, specifier: mod });
+  };
+  const visit = (n: TsNode, parent: TsNode | null, bound: Set<string>): void => {
+    if (n.type === "function") bound = boundIn(n);
+    if (n.type === "function_call") {
+      // `list.map(…)` — a remote function call.
+      const fn = n.childForFieldName?.("function");
+      if (fn?.type === "field_access")
+        emit(fn.childForFieldName?.("record") ?? null, fn.childForFieldName?.("field") ?? null, "calls");
+    } else if (n.type === "field_access") {
+      // `thing.helper` with no call around it: applied when it sits on the right
+      // of a pipe, otherwise named as a value — a callback (`list.map(xs,
+      // thing.helper)`) or a constant (`thing.limit`). Either way the module's
+      // symbol is in use, and without the edge it reads as dead code.
+      //
+      // A local may share the module's name (`fn show(user: User)` under `import
+      // app/user`), and Gleam then reads `user.x` as the record's field first and
+      // the module's `x` only if there is no such field. Applied, that is nearly
+      // always the module (`user.to_string(user)`), so calls keep their edge; read
+      // as a value it is nearly always the field (`user.name`), so that is dropped.
+      if (!(parent?.type === "function_call" && same(parent.childForFieldName?.("function"), n))) {
+        const record = n.childForFieldName?.("record") ?? null;
+        const field = n.childForFieldName?.("field") ?? null;
+        if (piped(n, parent)) emit(record, field, "calls");
+        else emit(record, field, "references", bound);
+      }
+    } else if (n.type === "identifier" && !bound.has(n.text)) {
+      // The same two shapes for a bare name, which is only ever this file's own
+      // function or an unqualified import — anything a local could be is dropped.
+      const enc = enclosingDef(defs, n.startIndex);
+      const mod = byName.get(n.text) ?? (ownFns.has(n.text) ? ownModule : undefined);
+      if (!mod || !enc || enc.id === `${rel}#${n.text}`) {
+        // not a function this file can name, or the function naming itself
+      } else if (piped(n, parent)) {
+        rawEdges.push({ source: enc.id, relation: "calls", file: rel, name: n.text, specifier: mod });
+      } else if (passed(n, parent)) {
+        rawEdges.push({ source: enc.id, relation: "references", file: rel, name: n.text, specifier: mod });
+      }
+    } else if (n.type === "remote_constructor_name") {
+      // `thing.Busy(since: 1)`, a record update, or a `case` pattern — all apply
+      // or take apart the same callable, the way the local forms do in tags.scm.
+      emit(n.childForFieldName?.("module") ?? null, n.childForFieldName?.("name") ?? null, "calls");
+    } else if (n.type === "remote_type_identifier") {
+      // `thing.State` in an annotation — names the type without calling it.
+      emit(n.childForFieldName?.("module") ?? null, n.childForFieldName?.("name") ?? null, "references");
+    }
+    for (let i = 0; i < (n.namedChildCount ?? 0); i++) {
+      const c = n.namedChild?.(i);
+      if (c) visit(c, n, bound);
+    }
+  };
+  visit(root, null, NONE);
+}
+
 /** tags.scm path: @definition.<kind> → nodes, @reference.call/@reference.send →
  * bare-name call edges attributed to the innermost enclosing definition. */
 function tagsExtract(
@@ -413,19 +605,14 @@ function tagsExtract(
          "reference.implementation" in cap || "reference.module" in cap) && cap.name)
       refs.push({ name: cap.name.text, at: cap.name.startIndex });
   }
-  // innermost enclosing definition of a token at byte offset `at`
-  const enclosing = (at: number) =>
-    defs
-      .filter((d) => d.startIndex <= at && at < d.endIndex)
-      .sort((a, b) => (a.endIndex - a.startIndex) - (b.endIndex - b.startIndex))[0];
   for (const c of calls) {
     if (defNameAt.has(c.at)) continue;
-    const enc = enclosing(c.at);
+    const enc = enclosingDef(defs, c.at);
     rawEdges.push({ source: enc ? enc.id : rel, relation: "calls", file: rel, name: c.name });
   }
   for (const r of refs) {
     if (defNameAt.has(r.at)) continue;
-    const enc = enclosing(r.at);
+    const enc = enclosingDef(defs, r.at);
     if (!enc) continue; // a reference with no enclosing definition has no sound source
     rawEdges.push({ source: enc.id, relation: "references", file: rel, name: r.name });
   }

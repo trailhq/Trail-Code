@@ -50,6 +50,19 @@ function buildOpts() {
   return { model: "fake", ...fakeProviders() };
 }
 
+test("init includes Gleam sources by default", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ctxgraph-gleam-"));
+  try {
+    writeFileSync(join(dir, "app.gleam"), "pub fn main() { Nil }\n");
+
+    const r = await buildContext(dir, buildOpts());
+
+    assert.equal(r.files, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("init builds one markdown node per entity, with links and a manifest", async () => {
   const dir = makeFixture();
   try {
