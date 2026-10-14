@@ -335,3 +335,27 @@ test('hosts sharing one path produce a single retraction, not one each', () => {
   const rs = runRetract(d, { global: false }).filter((r) => r.path === agents);
   assert.equal(rs.length, 1, `AGENTS.md should be queued once, got ${rs.length}`);
 });
+
+// ---------------------------------------------------------------------------
+// Issue #546: retract removes dotted subtables, not just the parent table
+// ---------------------------------------------------------------------------
+
+test('[mcp_servers.graft.env] orphan does not survive retract', () => {
+  const d = fresh();
+  const toml = write(d, join('.grok', 'config.toml'),
+    '[mcp_servers.graft]\ncommand = "npx"\nargs = ["-y","@nanonets/graft","mcp"]\n\n[mcp_servers.graft.env]\nDO_NOT_TRACK = "1"\n\n[mcp_servers.keepme]\ncommand = "y"\n');
+  runRetract(d, { apply: true, global: false });
+  const text = readFileSync(toml, 'utf8');
+  assert.ok(!text.includes('mcp_servers.graft'), 'no graft residue of any depth');
+  assert.ok(text.includes('[mcp_servers.keepme]'), 'foreign table preserved');
+});
+
+test('orphan-only graft subtable is removed by retract', () => {
+  const d = fresh();
+  const toml = write(d, join('.grok', 'config.toml'),
+    '[mcp_servers.other]\ncommand = "x"\n\n[mcp_servers.graft.env]\nDO_NOT_TRACK = "1"\n');
+  runRetract(d, { apply: true, global: false });
+  const text = readFileSync(toml, 'utf8');
+  assert.ok(!text.includes('mcp_servers.graft'), 'orphan gone via uninstall path');
+  assert.ok(text.includes('[mcp_servers.other]'), 'foreign preserved');
+});

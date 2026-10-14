@@ -7,7 +7,7 @@ process.env.GRAFT_MCP_NPX = '1';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { registerMcpConfigs, serverEntry } from '../src/hosts/mcp-config.js';
+import { registerMcpConfigs, serverEntry, stripTomlSection } from '../src/hosts/mcp-config.js';
 
 function fresh(): string { return mkdtempSync(join(tmpdir(), 'graft-mcpcfg-')); }
 
@@ -109,4 +109,104 @@ test('serverEntry prefers the installed binary and falls back to npx', () => {
 test('GRAFT_MCP_NPX overrides an installed binary', () => {
   process.env.GRAFT_MCP_NPX = '1';
   assert.equal(serverEntry({ onPath: true }).command, 'npx', 'the escape hatch wins');
+});
+
+// ---------------------------------------------------------------------------
+// Issue #546: dotted subtables belong to the parent table
+// ---------------------------------------------------------------------------
+
+test('stripTomlSection removes dotted subtables of [mcp_servers.graft]', () => {
+  const text = [
+    '[mcp_servers.graft]',
+    'command = "graft"',
+    '',
+    '[mcp_servers.graft.env]',
+    'DO_NOT_TRACK = "1"',
+    '',
+    '[mcp_servers.other]',
+    'command = "x"',
+    '',
+  ].join('\n');
+  const { rest, found } = stripTomlSection(text);
+  assert.equal(found, true);
+  assert.ok(!rest.includes('[mcp_servers.graft]'), 'parent table gone');
+  assert.ok(!rest.includes('[mcp_servers.graft.env]'), 'env subtable gone');
+  assert.ok(!rest.includes('DO_NOT_TRACK'), 'subtable content gone');
+  assert.ok(rest.includes('[mcp_servers.other]'), 'foreign table preserved');
+});
+
+test('stripTomlSection removes deeper dotted subtables', () => {
+  const text = [
+    '[mcp_servers.graft]',
+    'command = "graft"',
+    '',
+    '[mcp_servers.graft.env.extra]',
+    'X = "1"',
+    '',
+  ].join('\n');
+  const { rest } = stripTomlSection(text);
+  assert.ok(!rest.includes('mcp_servers.graft'), 'deep subtable gone');
+});
+
+test('stripTomlSection keeps similarly-named foreign tables', () => {
+  for (const header of ['[mcp_servers.graft2]', '[other.graft]', '[graft]']) {
+    const text = [`[mcp_servers.graft]\ncommand = "graft"\n`, `${header}\ncommand = "y"\n`].join('\n');
+    const { rest, found } = stripTomlSection(text);
+    assert.equal(found, true);
+    assert.ok(!rest.includes('[mcp_servers.graft]\n'), 'own table gone');
+    assert.ok(rest.includes(header), `${header} preserved`);
+  }
+});
+
+test('stripTomlSection leaves files without graft untouched', () => {
+  const text = '[mcp_servers.other]\ncommand = "x"\n';
+  const { rest, found } = stripTomlSection(text);
+  assert.equal(found, false);
+  assert.equal(rest, text, 'byte-identical');
+});
+
+test('stripTomlSection removes non-contiguous family tables', () => {
+  const text = [
+    '[mcp_servers.other]',
+    'command = "x"',
+    '',
+    '[mcp_servers.graft]',
+    'command = "graft"',
+    '',
+    '[mcp_servers.graft2]',
+    'command = "y"',
+    '',
+    '[mcp_servers.graft.env]',
+    'DO_NOT_TRACK = "1"',
+    '',
+    '[mcp_servers.graft.foo.bar]',
+    'Z = "2"',
+    '',
+    '[other.graft]',
+    'command = "z"',
+    '',
+  ].join('\n');
+  const { rest, found } = stripTomlSection(text);
+  assert.equal(found, true);
+  assert.ok(!rest.includes('mcp_servers.graft]'), 'no graft residue');
+  assert.ok(!rest.includes('mcp_servers.graft.'), 'no graft subtable residue');
+  assert.ok(!rest.includes('DO_NOT_TRACK'), 'subtable content gone');
+  assert.ok(rest.includes('[mcp_servers.other]'), 'other preserved');
+  assert.ok(rest.includes('[mcp_servers.graft2]'), 'graft2 preserved');
+  assert.ok(rest.includes('[other.graft]'), 'other.graft preserved');
+});
+
+test('stripTomlSection removes orphan-only subtable without parent', () => {
+  const text = [
+    '[mcp_servers.other]',
+    'command = "x"',
+    '',
+    '[mcp_servers.graft.env]',
+    'DO_NOT_TRACK = "1"',
+    '',
+  ].join('\n');
+  const { rest, found } = stripTomlSection(text);
+  assert.equal(found, true);
+  assert.ok(!rest.includes('mcp_servers.graft'), 'orphan gone');
+  assert.ok(rest.includes('[mcp_servers.other]'), 'foreign preserved');
 });
