@@ -712,7 +712,17 @@ export async function splitWorkspace(
   buildChild: (childDir: string, childName: string) => Promise<void>,
   onStart?: (info: { children: string[]; migrated: boolean }) => void,
 ): Promise<{ children: string[]; migrated: boolean }> {
-  const children = discoverWorkspaceChildren(root).slice().sort();
+  const discovered = discoverWorkspaceChildren(root).slice().sort();
+  // Union, not replace: a child already in the registry that immediate-dir
+  // discovery can't see (nested deeper, or added by hand) survives a re-split
+  // — discovery is immediate-dirs only, so without this a rebuild silently
+  // drops it. Entries that would escape `root` (absolute, or `..`) and
+  // registered children whose target lost its `.git` are pruned, so the
+  // registry stays a list of real git children of this parent.
+  const registered = readWorkspace(root, override)?.children ?? [];
+  const children = [...new Set(discovered.concat(registered))]
+    .filter((c) => !c.startsWith("/") && !c.split("/").includes("..") && existsSync(join(root, c, ".git")))
+    .sort();
   const migrated = hasMegaGraph(root, override);
   onStart?.({ children, migrated });
   for (const child of children) await buildChild(join(root, child), child);
