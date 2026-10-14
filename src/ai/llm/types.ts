@@ -113,6 +113,28 @@ export interface ChatModel {
 }
 
 /**
+ * How much hidden reasoning a reasoning-capable model should spend before
+ * answering. Mirrors the OpenAI-compatible `reasoning_effort` parameter;
+ * `"none"` disables reasoning entirely.
+ */
+export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high";
+
+/**
+ * Provider-specific request parameters, merged verbatim into the JSON body of an
+ * OpenAI-compatible request.
+ *
+ * The typed fields cover what the OpenAI schema itself names, but a gateway in
+ * front of another server routinely needs a parameter that schema has no name
+ * for — and the same intent can need a different shape on each hop. A LiteLLM
+ * proxy fronting vLLM drops a top-level `reasoning_effort` during its own param
+ * mapping yet forwards anything under `extra_body` to the server untouched,
+ * while a vLLM server reached directly wants `chat_template_kwargs:
+ * { enable_thinking: false }` instead. Rather than model each gateway's quirks,
+ * let the caller state the body their own stack needs.
+ */
+export type ExtraBody = Record<string, unknown>;
+
+/**
  * How many times the transport retries a failed request before the error reaches
  * the caller. Both SDKs retry only what is worth retrying (429 and 5xx, honouring
  * `Retry-After`) with exponential backoff, so this is the knob that separates a

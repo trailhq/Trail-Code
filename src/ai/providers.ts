@@ -3,6 +3,7 @@ import type { Synthesizer } from "./synthesize.js";
 import type { CruxSummarizer } from "./crux.js";
 import type { ChatModel } from "./llm/types.js";
 import type { ProviderKind } from "./llm/factory.js";
+import type { ExtraBody, ReasoningEffort } from "./llm/types.js";
 
 /**
  * User-facing configuration. Anything omitted falls back to environment
@@ -26,6 +27,20 @@ export interface EngineConfig {
   model?: string;
   /** Base URL for OpenAI-compatible endpoints. Env: GRAFT_BASE_URL. */
   baseUrl?: string;
+  /**
+   * Hidden-reasoning budget for reasoning-capable models, on OpenAI-compatible
+   * providers. Env: GRAFT_REASONING_EFFORT. Unset leaves the model's own default.
+   * Set "none" against a server that spends the whole token budget on reasoning
+   * and returns empty content.
+   */
+  reasoningEffort?: ReasoningEffort;
+  /**
+   * Provider-specific parameters merged into the request body on
+   * OpenAI-compatible providers. Env: GRAFT_LLM_EXTRA_BODY, as a JSON object.
+   * Accepts a JSON string too, so the env var and `--extra-body` parse in one
+   * place. See {@link ExtraBody} for why the typed fields are not always enough.
+   */
+  extraBody?: ExtraBody | string;
 
   // --- advanced: bring your own components ---
   /** Override the whole transport (skips provider/apiKey/baseUrl). */
@@ -45,6 +60,8 @@ export interface ResolvedConfig {
   apiKey?: string;
   model: string;
   baseUrl?: string;
+  reasoningEffort?: ReasoningEffort;
+  extraBody?: ExtraBody;
   headers?: Record<string, string>;
   /** True when the key came from the deprecated OPENROUTER_* fallback. */
   usedLegacyEnv: boolean;
@@ -71,6 +88,33 @@ export const DEFAULTS = {
   provider: "openai" as ProviderKind,
   model: DEFAULT_MODELS.openai,
 } as const;
+
+/**
+ * Parse an extra-body value that may arrive as an object (a programmatic caller)
+ * or as JSON text (the env var and the CLI flag).
+ *
+ * Throws rather than ignoring bad input: a passthrough exists precisely because
+ * the request fails without it, so silently dropping a malformed one would send
+ * the very request the user was trying to avoid — and they would see whatever
+ * their gateway does with it, not what they got wrong here.
+ */
+export function parseExtraBody(value: ExtraBody | string | undefined, source: string): ExtraBody | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") return value;
+  const text = value.trim();
+  if (text === "") return undefined;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (err) {
+    throw new Error(`${source} must be valid JSON: ${(err as Error).message}`);
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`${source} must be a JSON object, e.g. '{"extra_body":{"reasoning_effort":"none"}}'`);
+  }
+  return parsed as ExtraBody;
+}
 
 /** Merge user config with environment variables and defaults. */
 export function resolveConfig(config: EngineConfig = {}): ResolvedConfig {
@@ -101,12 +145,22 @@ export function resolveConfig(config: EngineConfig = {}): ResolvedConfig {
       ? { "X-Title": "graft" }
       : undefined;
 
+  const reasoningEffort =
+    config.reasoningEffort ?? (env.GRAFT_REASONING_EFFORT as ReasoningEffort | undefined);
+
+  const extraBody =
+    config.extraBody !== undefined
+      ? parseExtraBody(config.extraBody, "extraBody")
+      : parseExtraBody(env.GRAFT_LLM_EXTRA_BODY, "GRAFT_LLM_EXTRA_BODY");
+
   return {
     contextDir: config.contextDir ?? env.GRAFT_DIR,
     provider,
     apiKey,
     model,
     baseUrl,
+    reasoningEffort,
+    extraBody,
     headers,
     usedLegacyEnv,
     chatModel: config.chatModel,

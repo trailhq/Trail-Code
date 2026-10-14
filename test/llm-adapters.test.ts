@@ -179,6 +179,123 @@ test("openai: does NOT paper over a rejected object tool_choice when multiple to
   assert.equal(callCount, 1); // no ambiguous retry — the caller asked for "a" specifically
 });
 
+test("openai: reasoningEffort is sent when set, and omitted when not", async () => {
+  const { client, box } = fakeOpenAI(openAiResp());
+  const req: ChatRequest = { messages: [{ role: "user", content: "hi" }] };
+
+  await new OpenAIChatModel({ apiKey: "k", model: "m", client }).create(req);
+  assert.equal("reasoning_effort" in box.params!, false, "omitted by default");
+
+  await new OpenAIChatModel({ apiKey: "k", model: "m", client, reasoningEffort: "none" }).create(req);
+  assert.equal(box.params!.reasoning_effort, "none");
+
+  await new OpenAIChatModel({ apiKey: "k", model: "m", client, reasoningEffort: "high" }).create(req);
+  assert.equal(box.params!.reasoning_effort, "high");
+});
+
+test("openai: reasoningEffort rides alongside a forced tool_choice", async () => {
+  // The reasoning fallback in createChatCompletion only fires on a 400. This is
+  // the up-front path, so both must be present on the very first request.
+  const { client, box } = fakeOpenAI(
+    openAiResp({
+      choices: [
+        {
+          message: {
+            content: null,
+            tool_calls: [{ type: "function", id: "1", function: { name: "emit_json", arguments: '{"a":1}' } }],
+          },
+          finish_reason: "tool_calls",
+        },
+      ],
+    }),
+  );
+  await new OpenAIChatModel({ apiKey: "k", model: "m", client, reasoningEffort: "none" }).create({
+    messages: [{ role: "user", content: "hi" }],
+    responseFormat: { kind: "json" },
+  });
+  assert.equal(box.params!.reasoning_effort, "none");
+  assert.deepEqual(box.params!.tool_choice, { type: "function", function: { name: "emit_json" } });
+});
+
+test("openai: extraBody is merged into the request body, and absent when unset", async () => {
+  const { client, box } = fakeOpenAI(openAiResp());
+  const req: ChatRequest = { messages: [{ role: "user", content: "hi" }] };
+
+  await new OpenAIChatModel({ apiKey: "k", model: "m", client }).create(req);
+  assert.equal("extra_body" in box.params!, false, "nothing added by default");
+
+  // The LiteLLM-fronting-vLLM shape: the gateway drops a top-level
+  // reasoning_effort during its own param mapping, but forwards extra_body to
+  // the server untouched.
+  await new OpenAIChatModel({
+    apiKey: "k",
+    model: "m",
+    client,
+    extraBody: { extra_body: { reasoning_effort: "none" } },
+  }).create(req);
+  assert.deepEqual(box.params!.extra_body, { reasoning_effort: "none" });
+
+  // The direct-vLLM shape: a chat-template switch, which no OpenAI-schema field
+  // can express at all.
+  await new OpenAIChatModel({
+    apiKey: "k",
+    model: "m",
+    client,
+    extraBody: { chat_template_kwargs: { enable_thinking: false } },
+  }).create(req);
+  assert.deepEqual(box.params!.chat_template_kwargs, { enable_thinking: false });
+});
+
+test("openai: extraBody overrides a param graft also sets", async () => {
+  const { client, box } = fakeOpenAI(openAiResp());
+  await new OpenAIChatModel({
+    apiKey: "k",
+    model: "m",
+    client,
+    reasoningEffort: "high",
+    extraBody: { reasoning_effort: "none", temperature: 0 },
+  }).create({ messages: [{ role: "user", content: "hi" }], temperature: 0.7 });
+
+  assert.equal(box.params!.reasoning_effort, "none", "caller's spelling wins over graft's");
+  assert.equal(box.params!.temperature, 0);
+});
+
+test("openai: extraBody cannot overwrite the keys the adapter owns", async () => {
+  const warnings: string[] = [];
+  const realWarn = console.warn;
+  console.warn = (...args: unknown[]) => void warnings.push(args.join(" "));
+  const { client, box } = fakeOpenAI(
+    openAiResp({
+      choices: [
+        {
+          message: {
+            content: null,
+            tool_calls: [{ type: "function", id: "1", function: { name: "emit_json", arguments: '{"a":1}' } }],
+          },
+          finish_reason: "tool_calls",
+        },
+      ],
+    }),
+  );
+  try {
+    await new OpenAIChatModel({
+      apiKey: "k",
+      model: "m",
+      client,
+      extraBody: { model: "someone-elses-model", tool_choice: "auto", stream: true, top_p: 0.5 },
+    }).create({ messages: [{ role: "user", content: "hi" }], responseFormat: { kind: "json" } });
+  } finally {
+    console.warn = realWarn;
+  }
+
+  assert.equal(box.params!.model, "m");
+  assert.deepEqual(box.params!.tool_choice, { type: "function", function: { name: "emit_json" } });
+  assert.equal("stream" in box.params!, false);
+  assert.equal(box.params!.top_p, 0.5, "unreserved keys still get through");
+  assert.equal(warnings.length, 1, "warned once, at construction");
+  assert.match(warnings[0], /model.*tool_choice.*stream|tool_choice/);
+});
+
 // --- Anthropic adapter ------------------------------------------------------
 
 function fakeAnthropic(resp: unknown) {
