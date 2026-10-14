@@ -47,6 +47,7 @@ fn helper() -> String {
 test("genericLangOf routes .rs to the breadth tier (and not depth-tier extensions)", () => {
   assert.equal(genericLangOf("src/main.rs")?.name, "rust");
   assert.equal(genericLangOf("src/init.lua")?.name, "lua");
+  assert.equal(genericLangOf("src/DRM.jl")?.name, "julia");
   assert.equal(genericLangOf("src/app.ts"), null); // depth tier owns .ts
   assert.equal(genericLangOf("README.md"), null);
 });
@@ -123,6 +124,16 @@ const SNIPPETS: Array<{ lang: string; file: string; src: string; defs: string[];
     lang: "lua", file: "a.lua",
     src: `local function helper()\n  return 1\nend\n\nlocal assigned = function()\n  return helper()\nend\n\nlocal handlers = { draw = function() return helper() end }\n\nfunction Widget:run()\n  return helper()\nend\n\nlocal function launch()\n  return Widget:run()\nend\n`,
     defs: ["function:assigned", "function:draw", "function:helper", "function:launch", "method:run"], call: ["launch", "run"],
+  },
+  {
+    // Julia: long-form `function f(x) ... end`, short-form `f(x) = ...`, a
+    // qualified `Base.show(...)` method (last path segment), a `where` clause,
+    // a macro-annotated one-liner (`@inline`), structs / abstract types with a
+    // supertype, and `const`. A call on the LEFT of `=` is a definition; on the
+    // right it is a reference.
+    lang: "julia", file: "a.jl",
+    src: `module Foo\nabstract type AbstractModel end\nstruct Bar{T} <: AbstractModel\n  x::T\nend\nconst K = 3\nfunction fit(m::Bar, y)\n  helper(y) .+ K\nend\nhelper(y) = sum(y)\nBase.show(io::IO, b::Bar) = print(io, "Bar")\nf(x::T) where {T} = x\n@inline g(x) = f(x)\nend\n`,
+    defs: ["constant:K", "function:f", "function:fit", "function:g", "function:helper", "function:show", "module:Foo", "struct:Bar", "type:AbstractModel"], call: ["fit", "helper"],
   },
   {
     // Nix: a binding whose value is a lambda (let-bound or attrset field) becomes
