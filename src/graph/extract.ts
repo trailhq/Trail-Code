@@ -275,6 +275,15 @@ const KINDS_BY_LANG: Record<Language, Record<string, Kind>> = {
   php: PHP_KINDS,
 };
 
+/** The two element shapes a JSX component usage takes. Named once so the call table
+ * and `calleeName` cannot drift apart. `jsx_closing_element` is deliberately absent:
+ * `</Widget>` is the tail of the same usage the opening tag already recorded, and
+ * counting it would double every JSX edge. */
+const JSX_ELEMENT_TYPES: ReadonlySet<string> = new Set([
+  "jsx_opening_element",
+  "jsx_self_closing_element",
+]);
+
 /**
  * The node type(s) that constitute a call site, per language.
  *
@@ -283,10 +292,19 @@ const KINDS_BY_LANG: Record<Language, Record<string, Kind>> = {
  * codebase's constructor calls are a large share of its real edges. PHP is
  * likewise multi-shape: a call is a function / member / nullsafe-member / scoped
  * call, never a single `call_expression`.
+ *
+ * JSX is that same argument in a React codebase (#382). `<Widget/>` is how a
+ * component gets invoked — the runtime calls the function and passes it props —
+ * but it parses as `jsx_opening_element` / `jsx_self_closing_element`, so a
+ * component's consumers produced no edges at all and `callers`/`blast` went
+ * structurally blind across the whole component layer, the one place a "you
+ * changed this, these break" answer is worth most. Only the `tsx` grammar can
+ * reach these node types; `.ts` and `.js` are parsed by `typescript`, which has
+ * no JSX at all, so widening it would be dead weight.
  */
 const CALL_TYPES: Record<Language, ReadonlySet<string>> = {
   typescript: new Set(["call_expression"]),
-  tsx: new Set(["call_expression"]),
+  tsx: new Set(["call_expression", ...JSX_ELEMENT_TYPES]),
   python: new Set(["call"]),
   go: new Set(["call_expression"]),
   java: new Set(["method_invocation", "object_creation_expression"]),
@@ -2267,6 +2285,48 @@ if (lang === "kotlin") {
   }
 
   if (lang === "php") return phpCallee(node);
+
+  if (lang === "tsx" && JSX_ELEMENT_TYPES.has(node.type)) {
+    // `<Widget>…</Widget>` and `<Widget/>`: the element's `name` field is the
+    // callee. React calls the component with the props as its argument, so this
+    // is the same "X invokes Y" fact as `Widget({children})` — it just does not
+    // spell it as a `call_expression`. There is no receiver to type: an element
+    // name is a value in lexical scope, exactly like a bare call's callee.
+    //
+    // Casing is not a heuristic, and the test is deliberately for the INTRINSIC
+    // side rather than the component side. JSX's rule, as TypeScript's own
+    // `isIntrinsicJsxName` states it, is `ch >= 'a' && ch <= 'z' || name.includes("-")`:
+    // a name starting with an ASCII lowercase letter is a host element React
+    // forwards to the DOM as a string, and so is any hyphenated name (a custom
+    // element). EVERYTHING else is an ordinary binding in lexical scope.
+    //
+    // Asking "does it start A-Z" instead is not the same question, and gets three
+    // real cases wrong: `<Écran/>` (uppercase, but not ASCII), `<_Widget/>` and
+    // `<$Widget/>` — all three are bindings the grammar hands back as plain
+    // `identifier`, and all three would vanish silently. The ASCII range is correct
+    // here precisely because it is the lowercase half: TypeScript restricts the
+    // intrinsic test to a-z, so a non-ASCII initial is a component by definition.
+    //
+    // A namespaced name (`<svg:circle/>`) arrives as `jsx_namespace_name`, not
+    // `identifier`, so the type check above already excludes it — which is right,
+    // since TypeScript treats those as intrinsic too.
+    //
+    // A dotted element name (`<UI.Button/>`, `<Widget.Slot/>`) is a
+    // `member_expression`, not an `identifier`, and is left alone on purpose: it
+    // needs a receiver type the way `ui.button()` does, and the namespace import
+    // it usually comes from binds none — the same wall qualified construction
+    // hits in Java (see javaConstructedTypeName). Resolving the trailing segment
+    // on its own is the guess this module does not make.
+    //
+    // `kinds` rather than the function-only default: a class component
+    // (`class Boundary extends React.Component`) is as much a component as a
+    // function one, and this is scoped to element names, so an ordinary
+    // `Widget()` call in the same file still resolves against functions alone.
+    const name = node.childForFieldName("name");
+    if (name?.type !== "identifier") return null;
+    if (/^[a-z]/.test(name.text) || name.text.includes("-")) return null;
+    return { name: name.text, viaMember: false, kinds: ["function", "class"] };
+  }
 
   const fn = node.childForFieldName("function");
   if (!fn) return null;
