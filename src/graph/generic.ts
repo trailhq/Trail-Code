@@ -4,7 +4,7 @@
  * graft covers the long tail of languages for ~one registry row each, instead of
  * a hand-written extractor per language (the depth tier in extract.ts).
  *
- * Grammars are WASM (`tree-sitter-wasm` bundle) loaded via `web-tree-sitter`, so
+ * Grammars are WASM (`tree-sitter-wasm` bundle or a vendored artifact) loaded via `web-tree-sitter`, so
  * a new language needs no native node-gyp build. Loading is async (WASM init), so
  * callers MUST `await warmGenericGrammars([...])` once before the synchronous
  * `extractGeneric()` is used in a build/check loop. If a grammar isn't warmed,
@@ -29,9 +29,10 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
 // queries/ ships beside the compiled JS (copied by the build); fall back to src.
 const QUERY_DIRS = [join(HERE, "queries"), join(HERE, "..", "..", "src", "graph", "queries")];
+const GRAMMAR_DIRS = [join(HERE, "grammars"), join(HERE, "..", "..", "src", "graph", "grammars")];
 
-/** A breadth-tier language: graft name, file extensions, and the wasm basename
- * in tree-sitter-wasm/<wasm>/tree-sitter-<wasm>.wasm. One row per language. */
+/** A breadth-tier language: graft name, file extensions, and the wasm basename.
+ * Grammar bytes come from tree-sitter-wasm or graph/grammars. One row per language. */
 export interface GenericLang {
   name: string;
   exts: string[];
@@ -58,6 +59,7 @@ export const GENERIC_LANGS: readonly GenericLang[] = [
   { name: "clojure", exts: [".clj", ".cljs", ".cljc", ".bb"], wasm: "clojure" },
   { name: "nix", exts: [".nix"], wasm: "nix" },
   { name: "lua", exts: [".lua"], wasm: "lua" },
+  { name: "luau", exts: [".luau"], wasm: "luau" },
 ];
 
 const byExt = new Map<string, GenericLang>();
@@ -91,14 +93,20 @@ let tsMod: typeof import("web-tree-sitter") | null = null;
 let initPromise: Promise<void> | null = null;
 
 function requireWasm(wasm: string): Buffer | null {
-  // Resolve the grammar wasm from the tree-sitter-wasm bundle (its package.json
-  // `exports` maps the bare "<lang>/…" subpath to the actual "out/<lang>/…" file).
+  // The bundle maps "<lang>/…" to its out/ directory. A language absent from the
+  // bundle can instead keep its reviewed WASM artifact beside the compiled extractor.
   try {
-    const p = require.resolve(`tree-sitter-wasm/${wasm}/tree-sitter-${wasm}.wasm`);
-    return readFileSync(p);
+    return readFileSync(require.resolve(`tree-sitter-wasm/${wasm}/tree-sitter-${wasm}.wasm`));
   } catch {
-    return null;
+    for (const dir of GRAMMAR_DIRS) {
+      try {
+        return readFileSync(join(dir, `tree-sitter-${wasm}.wasm`));
+      } catch {
+        /* try the next source/dist directory */
+      }
+    }
   }
+  return null;
 }
 
 function loadQuery(name: string): string | null {
@@ -165,7 +173,7 @@ export function swapGrammarForTest(name: string, entry: Loaded | null): Loaded |
   return prev;
 }
 
-/** Load one grammar from the tree-sitter-wasms bundle, initialising
+/** Load one grammar from the supported tree-sitter WASM packages, initialising
  * web-tree-sitter on first call. Null when the wasm is missing or won't
  * instantiate — never throws, so a caller degrades instead of failing the build.
  *
@@ -489,6 +497,7 @@ function walkExtract(root: TsNode, mkDef: (name: string, kind: Kind, whole: TsNo
 export interface TsNode {
   type: string;
   text: string;
+  hasError?: boolean;
   startIndex: number;
   endIndex: number;
   startPosition: { row: number; column: number };

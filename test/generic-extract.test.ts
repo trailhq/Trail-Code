@@ -44,9 +44,10 @@ fn helper() -> String {
 }
 `;
 
-test("genericLangOf routes .rs to the breadth tier (and not depth-tier extensions)", () => {
+test("genericLangOf routes breadth-tier extensions", () => {
   assert.equal(genericLangOf("src/main.rs")?.name, "rust");
   assert.equal(genericLangOf("src/init.lua")?.name, "lua");
+  assert.equal(genericLangOf("src/init.luau")?.name, "luau");
   assert.equal(genericLangOf("src/app.ts"), null); // depth tier owns .ts
   assert.equal(genericLangOf("README.md"), null);
 });
@@ -118,11 +119,18 @@ const SNIPPETS: Array<{ lang: string; file: string; src: string; defs: string[];
     defs: ["function:helper", "function:run", "module:my.core"], call: ["run", "helper"],
   },
   {
-    // Lua functions can be declarations, assigned expressions, or table fields;
-    // colon syntax defines and calls methods.
     lang: "lua", file: "a.lua",
-    src: `local function helper()\n  return 1\nend\n\nlocal assigned = function()\n  return helper()\nend\n\nlocal handlers = { draw = function() return helper() end }\n\nfunction Widget:run()\n  return helper()\nend\n\nlocal function launch()\n  return Widget:run()\nend\n`,
-    defs: ["function:assigned", "function:draw", "function:helper", "function:launch", "method:run"], call: ["launch", "run"],
+    src: `local function helper(value)\n  return value + 1\nend\n\nlocal function run()\n  return helper(1)\nend\n`,
+    defs: ["function:helper", "function:run"], call: ["run", "helper"],
+  },
+  {
+    // Luau gets its own grammar: types, casts, compound assignment, if expressions,
+    // interpolation, generics, and continue must parse structurally instead of relying
+    // on Lua error recovery. Functions can still be declarations, expressions, fields,
+    // or methods, and exported/local type aliases become graph symbols.
+    lang: "luau", file: "a.luau",
+    src: `--!strict\n\nexport type Handler<T> = (value: T) -> T\ntype State = { value: number } & { ready: boolean }\n\nlocal function identity<T>(value: T): T\n  return value\nend\n\nlocal assigned = function(value: unknown): number\n  local count = value :: number\n  count += 1\n  local label = if count > 1 then \`count {count}\` else "none"\n  print(label)\n  return identity(count)\nend\n\nlocal handlers = { draw = function(value: number): number return identity(value) end }\n\nfunction Widget:run(value: number): number\n  return assigned(value)\nend\n\nlocal function scan(values: {number}): number\n  local total = 0\n  for _, value in values do\n    if value < 0 then continue end\n    total += value\n  end\n  return total\nend\n\nlocal function launch(): number\n  return Widget:run(1)\nend\n`,
+    defs: ["function:assigned", "function:draw", "function:identity", "function:launch", "function:scan", "method:run", "type:Handler", "type:State"], call: ["launch", "run"],
   },
   {
     // Nix: a binding whose value is a lambda (let-bound or attrset field) becomes
@@ -147,6 +155,21 @@ for (const s of SNIPPETS) {
     assert.equal(call?.target, `${s.file}#${s.call[1]}`, `${s.lang}: resolved ${s.call[0]}→${s.call[1]}`);
   });
 }
+
+test("dedicated Luau grammar parses syntax extensions without error recovery", async () => {
+  const snippet = SNIPPETS.find((s) => s.lang === "luau");
+  assert.ok(snippet, "Luau fixture exists");
+  const language = await loadWasmLanguage("luau");
+  assert.ok(language, "tree-sitter-luau must ship its WASM grammar");
+  const root = parseWasm(language, snippet.src);
+  assert.ok(root, "Luau source parses");
+  assert.equal(root.hasError, false, "Luau extensions parse without ERROR nodes");
+
+  await warmGenericGrammars(["luau"]);
+  const { rawEdges } = extractGeneric(snippet.file, snippet.src, "luau");
+  const callNames = rawEdges.filter((edge) => edge.relation === "calls").map((edge) => edge.name);
+  assert.ok(!callNames.some((name) => name.includes("`")), "interpolation never becomes a bogus call");
+});
 
 // Structural references the grammar already marks — a supertype (extends), an
 // implemented interface, an object creation — become `references` edges the resolver
