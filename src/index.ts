@@ -36,6 +36,14 @@ export { OpenAIChatModel } from "./ai/llm/openai.js";
 export { AnthropicChatModel } from "./ai/llm/anthropic.js";
 export { LiteLLMChatModel, listLiteLLMModels, DEFAULT_LITELLM_BASE_URL } from "./ai/llm/litellm.js";
 export { OrcaRouterChatModel, listOrcaRouterModels, DEFAULT_ORCAROUTER_BASE_URL } from "./ai/llm/orcarouter.js";
+export {
+  withRetry,
+  classifyError,
+  parseRetryAfterMs,
+  type RetryInfo,
+  type RetryOptions,
+  type Failure,
+} from "./ai/llm/retry.js";
 
 // Engine ops, for advanced/custom setups.
 export { ChatSynthesizer } from "./ai/synthesize.js";

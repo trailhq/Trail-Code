@@ -15,7 +15,7 @@
  *     signatures survive a multi-turn loop.
  */
 import Anthropic from "@anthropic-ai/sdk";
-import { transportRetries } from "./types.js";
+import { withRetry } from "./retry.js";
 import type { ChatModel, ChatRequest, ChatResponse, Message, ToolCall, ToolSpec, Usage } from "./types.js";
 
 const PROVIDER = "anthropic";
@@ -44,7 +44,12 @@ export class AnthropicChatModel implements ChatModel {
     this.label = opts.label ?? `${PROVIDER}:${opts.model}`;
     this.client =
       opts.client ??
-      new Anthropic({ apiKey: opts.apiKey, baseURL: opts.baseUrl, maxRetries: transportRetries() });
+      new Anthropic({
+        apiKey: opts.apiKey,
+        baseURL: opts.baseUrl,
+        // graft owns retry/backoff (see retry.ts); the SDK must not double-retry.
+        maxRetries: 0,
+      });
   }
 
   async create(req: ChatRequest): Promise<ChatResponse> {
@@ -98,7 +103,7 @@ export class AnthropicChatModel implements ChatModel {
       params.tools = tools;
     }
 
-    const resp = await this.client.messages.create(params);
+    const resp = await withRetry(() => this.client.messages.create(params));
     return this.fromResponse(resp, fmt.kind);
   }
 

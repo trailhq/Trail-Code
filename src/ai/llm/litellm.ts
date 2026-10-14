@@ -10,7 +10,7 @@
  */
 import OpenAI from "openai";
 import { OpenAIChatModel, type OpenAIChatModelOptions } from "./openai.js";
-import { transportRetries } from "./types.js";
+import { withRetry } from "./retry.js";
 
 /** Conventional local address of a self-hosted LiteLLM proxy. */
 export const DEFAULT_LITELLM_BASE_URL = "http://localhost:4000";
@@ -47,8 +47,8 @@ export async function listLiteLLMModels(opts: {
     new OpenAI({
       apiKey: opts.apiKey,
       baseURL: opts.baseUrl ?? DEFAULT_LITELLM_BASE_URL,
-      maxRetries: transportRetries(),
+      maxRetries: 0,
     });
-  const res = await client.models.list();
+  const res = await withRetry(() => client.models.list());
   return res.data.map((m) => m.id);
 }

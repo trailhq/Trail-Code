@@ -10,7 +10,7 @@
  */
 import OpenAI from "openai";
 import { OpenAIChatModel, type OpenAIChatModelOptions } from "./openai.js";
-import { transportRetries } from "./types.js";
+import { withRetry } from "./retry.js";
 
 /** Public endpoint of the OrcaRouter AI gateway. */
 export const DEFAULT_ORCAROUTER_BASE_URL = "https://api.orcarouter.ai/v1";
@@ -47,8 +47,8 @@ export async function listOrcaRouterModels(opts: {
     new OpenAI({
       apiKey: opts.apiKey,
       baseURL: opts.baseUrl ?? DEFAULT_ORCAROUTER_BASE_URL,
-      maxRetries: transportRetries(),
+      maxRetries: 0,
     });
-  const res = await client.models.list();
+  const res = await withRetry(() => client.models.list());
   return res.data.map((m) => m.id);
 }

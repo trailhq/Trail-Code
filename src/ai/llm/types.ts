@@ -113,12 +113,12 @@ export interface ChatModel {
 }
 
 /**
- * How many times the transport retries a failed request before the error reaches
- * the caller. Both SDKs retry only what is worth retrying (429 and 5xx, honouring
- * `Retry-After`) with exponential backoff, so this is the knob that separates a
- * transient rate limit from a real failure — #127 lost whole files to the first
- * 429 a shared gateway threw. Env-overridable because a metered corporate gateway
- * may want fewer, and a flaky local proxy more.
+ * How many times a failed request is retried before the error reaches the
+ * caller. The retry loop itself lives in `retry.ts` (graft owns it for every
+ * provider, so it can honour `retry-after-ms`, HTTP-date `Retry-After`, and the
+ * `x-ratelimit-reset-*` hints the SDKs drop); this is the attempt-count knob.
+ * Env-overridable because a metered corporate gateway may want fewer, and a
+ * flaky local proxy more. Set to 0 to disable retries entirely.
  */
 export function transportRetries(): number {
   const raw = Number(process.env.GRAFT_LLM_RETRIES);

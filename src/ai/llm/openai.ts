@@ -10,7 +10,7 @@
  * input count so {@link Usage.input} is uncached-only.
  */
 import OpenAI from "openai";
-import { transportRetries } from "./types.js";
+import { withRetry } from "./retry.js";
 import type { ChatModel, ChatRequest, ChatResponse, Message, ToolCall, ToolSpec, Usage } from "./types.js";
 
 const PROVIDER = "openai";
@@ -144,7 +144,8 @@ export class OpenAIChatModel implements ChatModel {
         apiKey: opts.apiKey,
         baseURL: opts.baseUrl,
         defaultHeaders: opts.headers,
-        maxRetries: transportRetries(),
+        // graft owns retry/backoff (see retry.ts); the SDK must not double-retry.
+        maxRetries: 0,
       });
   }
 
@@ -190,7 +191,7 @@ export class OpenAIChatModel implements ChatModel {
     // Bounded: one retry per known incompatibility below, never an open loop.
     for (let i = 0; i < 4; i++) {
       try {
-        return await this.client.chat.completions.create(attempt);
+        return await withRetry(() => this.client.chat.completions.create(attempt));
       } catch (err) {
         // Checked before the tool_choice fallback below: a reasoning refusal
         // also names tool_choice, and turning reasoning off keeps the caller's
@@ -216,7 +217,7 @@ export class OpenAIChatModel implements ChatModel {
         throw err;
       }
     }
-    return this.client.chat.completions.create(attempt);
+    return withRetry(() => this.client.chat.completions.create(attempt));
   }
 
   private fromResponse(
