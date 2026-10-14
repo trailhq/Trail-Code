@@ -34,6 +34,49 @@ export class FileBindings {
 
 const FN_VALUE_TYPES = new Set(["arrow_function", "function", "function_expression", "generator_function"]);
 
+// Duplicated from extract.ts's own CS_METHOD_TYPES/CS_TYPE_KINDS (keys only) —
+// same no-value-import-of-extract rule as goReceiverTypeOf below. `defName` also
+// handles `property_declaration`/`local_function_statement`, which extract.ts
+// recognizes individually rather than through either set.
+const CS_METHOD_TYPES = new Set(["method_declaration", "constructor_declaration", "destructor_declaration"]);
+const CS_TYPE_NODE_TYPES = new Set([
+  "class_declaration",
+  "struct_declaration",
+  "interface_declaration",
+  "record_declaration",
+  "enum_declaration",
+  "delegate_declaration",
+]);
+
+/** Resolve a C# type-reference node to a bare type name. Duplicated from
+ * extract.ts's own `csTypeName` (same no-value-import-of-extract rule). */
+function csTypeNameOf(node: Parser.SyntaxNode | null | undefined): string | null {
+  if (!node) return null;
+  switch (node.type) {
+    case "identifier":
+    case "predefined_type":
+      return node.text;
+    case "generic_name":
+      return node.namedChildren.find((c) => c.type === "identifier")?.text ?? null;
+    case "qualified_name": {
+      const name = node.childForFieldName("name");
+      return name ? csTypeNameOf(name) : null;
+    }
+    case "nullable_type":
+      return csTypeNameOf(node.namedChildren[0]);
+    default:
+      return null;
+  }
+}
+
+/** The interface name qualifying an explicit interface implementation
+ * (`void IFoo.Bar() {}` → `"IFoo"`), else null. Duplicated from extract.ts's own
+ * `csExplicitInterface`. */
+function csExplicitInterfaceOf(node: Parser.SyntaxNode): string | null {
+  const spec = node.namedChildren.find((c) => c.type === "explicit_interface_specifier");
+  return csTypeNameOf(spec?.namedChildren[0]);
+}
+
 /** Definition-node types that push a new scope segment, mirroring extract.ts's
  * `describe()` closely enough to keep the two scope stacks in lockstep — but
  * duplicated here (not imported) to keep bindings.ts free of a value import on
@@ -60,6 +103,18 @@ export function defName(node: Parser.SyntaxNode, lang: Language): string | null 
   }
   if (lang === "r") return rDefName(node);
   if (lang === "swift") return swiftDefName(node);
+  if (lang === "csharp") {
+    if (CS_METHOD_TYPES.has(node.type) || node.type === "property_declaration") {
+      const name = node.childForFieldName("name")?.text;
+      if (!name) return null;
+      const iface = csExplicitInterfaceOf(node);
+      return iface ? `${iface}.${name}` : name;
+    }
+    if (CS_TYPE_NODE_TYPES.has(node.type) || node.type === "local_function_statement") {
+      return node.childForFieldName("name")?.text ?? null;
+    }
+    return null;
+  }
   if (lang === "php") {
     const phpDefTypes = new Set([
       "class_declaration",
@@ -231,6 +286,16 @@ function isClassNode(node: Parser.SyntaxNode, lang: Language): boolean {
   if (lang === "typescript" || lang === "tsx") {
     return node.type === "class_declaration" || node.type === "abstract_class_declaration";
   }
+  if (lang === "csharp") {
+    // Interfaces included too: C# has no implicit-`this` field access to bind for
+    // one, but default interface methods can still call sibling members bare.
+    return (
+      node.type === "class_declaration" ||
+      node.type === "struct_declaration" ||
+      node.type === "record_declaration" ||
+      node.type === "interface_declaration"
+    );
+  }
   // Swift: class_declaration covers class/struct/enum/actor/extension — all can
   // hold members whose `self.field` bindings live at the type's scope.
   if (lang === "swift") {
@@ -307,6 +372,7 @@ function visit(
   else if (lang === "java") handleJava(node, scope, classScope, bindings);
   else if (lang === "swift") handleSwift(node, scope, classScope, bindings);
   else if (lang === "php") handlePhp(node, scope, bindings);
+  else if (lang === "csharp") handleCSharp(node, scope, classScope, bindings);
   else handleTs(node, scope, classScope, bindings, aliases);
 
   const name = defName(node, lang);
@@ -723,5 +789,61 @@ function handleGo(node: Parser.SyntaxNode, scope: string[], bindings: FileBindin
       if (fn?.type === "identifier" && /^New[A-Z]/.test(fn.text)) typeName = fn.text.slice(3);
     }
     if (typeName) bindings.set(scopePath, nameNode.text, typeName);
+  }
+}
+
+/** C# binds every declared-type site it can read cheaply: fields, properties,
+ * parameters, and locals (explicit type, or `var` with a `new T()` initializer).
+ * Fields/properties are set under both the bare name and a `this.`-prefixed name —
+ * C# needs no `this.` to reach its own members, so a bare receiver (`_foo.Bar()`)
+ * must resolve too, not just an explicit `this._foo.Bar()` (which resolveRecvType
+ * already checks the `this.`-prefixed key for, same as TS/Python). */
+function handleCSharp(node: Parser.SyntaxNode, scope: string[], classScope: string | null, bindings: FileBindings): void {
+  const scopePath = scope.join(".");
+  if (node.type === "field_declaration") {
+    const varDecl = node.namedChildren.find((c) => c.type === "variable_declaration");
+    const typeName = csTypeNameOf(varDecl?.childForFieldName("type"));
+    if (!typeName || !varDecl) return;
+    const target = classScope ?? scopePath;
+    for (const decl of varDecl.namedChildren.filter((c) => c.type === "variable_declarator")) {
+      const name = decl.childForFieldName("name")?.text;
+      if (!name) continue;
+      bindings.set(target, name, typeName);
+      bindings.set(target, `this.${name}`, typeName);
+    }
+    return;
+  }
+  if (node.type === "property_declaration") {
+    const typeName = csTypeNameOf(node.childForFieldName("type"));
+    const name = node.childForFieldName("name")?.text;
+    if (!typeName || !name) return;
+    const target = classScope ?? scopePath;
+    bindings.set(target, name, typeName);
+    bindings.set(target, `this.${name}`, typeName);
+    return;
+  }
+  if (node.type === "parameter") {
+    const typeName = csTypeNameOf(node.childForFieldName("type"));
+    const name = node.childForFieldName("name")?.text;
+    if (typeName && name) bindings.set(scopePath, name, typeName);
+    return;
+  }
+  if (node.type !== "local_declaration_statement") return;
+  const varDecl = node.namedChildren.find((c) => c.type === "variable_declaration");
+  if (!varDecl) return;
+  const typeNode = varDecl.childForFieldName("type");
+  for (const decl of varDecl.namedChildren.filter((c) => c.type === "variable_declarator")) {
+    const nameField = decl.childForFieldName("name");
+    const name = nameField?.text;
+    if (!name) continue;
+    let typeName: string | null = null;
+    if (typeNode && typeNode.type !== "implicit_type") {
+      typeName = csTypeNameOf(typeNode);
+    } else {
+      // `var x = new Foo();` — infer from the initializer's constructed type.
+      const init = decl.namedChildren.find((c) => c !== nameField);
+      if (init?.type === "object_creation_expression") typeName = csTypeNameOf(init.childForFieldName("type"));
+    }
+    if (typeName) bindings.set(scopePath, name, typeName);
   }
 }

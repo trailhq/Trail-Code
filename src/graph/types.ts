@@ -14,13 +14,14 @@
 /** What a node represents. LSP SymbolKind, narrowed to what our extractors produce. */
 export type Kind =
   | "file"
-  | "class"
-  | "function"
+  | "class" // + C# `record` / `record class`
+  | "function" // + C# local function
   | "method"
-  | "interface" // TS + Go
-  | "type" // TS + Go (type alias / named type)
-  | "enum" // TS + PHP + Java
-  | "struct" // Go only
+  | "property" // C#
+  | "interface" // TS + Go + C#
+  | "type" // TS + Go (type alias / named type) + C# (delegate)
+  | "enum" // TS + PHP + Java + C#
+  | "struct" // Go + C# (including `record struct`)
   | "trait" // PHP only
   // The generic (tags.scm) breadth tier also emits these — every tree-sitter
   // grammar's tags.scm uses the tree-sitter tags @definition.<X> vocabulary, and

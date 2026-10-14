@@ -223,8 +223,16 @@ export function resolveEdges(
       // (`use SomeTrait;`) as an implements edge, and a trait is a valid target.
       const kinds: Kind[] = e.relation === "implements" ? ["interface", "trait"] : ["class", "interface"];
       const hit = resolveName(e.name!, e.file, kinds, perFileName, globalName);
+      // C#'s `base_list` can't syntactically tell a base class from an interface, so
+      // extract.ts emits every entry as "extends" and the resolved target's own kind
+      // settles it here. Restricted to C# on purpose: TS/Python already emit the right
+      // relation at extraction, and TS declaration merging (`interface Foo` alongside
+      // `class Foo`) can legitimately resolve a real `extends` to the interface half.
+      // An unresolved base — always an external type — stays "extends", as before.
+      const relation: Relation =
+        e.relation === "extends" && e.file.endsWith(".cs") && hit?.kind === "interface" ? "implements" : e.relation;
       // an unresolved base is usually an external/imported type — keep the name.
-      add(e.source, hit?.id ?? e.name!, e.relation, hit?.confidence ?? "inferred");
+      add(e.source, hit?.id ?? e.name!, relation, hit?.confidence ?? "inferred");
     } else if (e.relation === "references" && e.name) {
       if (e.specifier) {
         // A named import gives both halves needed for sound resolution: the module
@@ -353,6 +361,8 @@ function ownerFromMethodId(id: string): string | undefined {
 /**
  * Resolve a bare symbol name: same-file match first (certain → `extracted`),
  * else a unique cross-file match (→ `inferred`), else null (ambiguous/unknown).
+ * The matched node's own `kind` comes back with the hit — a heritage edge needs
+ * it to tell an interface base from a class one.
  */
 function resolveName(
   name: string,
@@ -360,21 +370,21 @@ function resolveName(
   kinds: Kind[],
   perFileName: Map<string, Map<string, NodeV1[]>>,
   globalName: Map<string, NodeV1[]>,
-): { id: string; confidence: EdgeV1["confidence"] } | null {
+): { id: string; kind: Kind; confidence: EdgeV1["confidence"] } | null {
   const local = (perFileName.get(file)?.get(name) ?? []).filter((n) => kinds.includes(n.kind));
   // Same-file requires a UNIQUE match, exactly as the cross-file branch below does.
   // Returning `local[0]` meant a file holding two same-named types (`Alpha.Builder` and
   // `Beta.Builder`, `Alpha.Inner` and `Beta.Inner`) silently resolved to whichever came
   // first in document order — and labelled it `extracted`, i.e. certain. That is the
   // guess this module's header says it does not make.
-  if (local.length === 1) return { id: local[0].id, confidence: "extracted" };
+  if (local.length === 1) return { id: local[0].id, kind: local[0].kind, confidence: "extracted" };
   // Cross-file: also require a language that could actually reach this one.
   // Without it a unique name match ANYWHERE in the repo wins, which is how a Go
   // builtin ended up resolving into a TypeScript test — see FAMILIES above.
   const global = (globalName.get(name) ?? []).filter(
     (n) => kinds.includes(n.kind) && reachable(file, n.path),
   );
-  if (global.length === 1) return { id: global[0].id, confidence: "inferred" };
+  if (global.length === 1) return { id: global[0].id, kind: global[0].kind, confidence: "inferred" };
   return null;
 }
 

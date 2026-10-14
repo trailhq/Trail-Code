@@ -15,12 +15,23 @@ import Java from "tree-sitter-java";
 import Kotlin from "tree-sitter-kotlin";
 import Swift from "tree-sitter-swift";
 import PHP from "tree-sitter-php";
+import CSharp from "tree-sitter-c-sharp";
 import { basename } from "node:path";
 import { contentHash } from "../util/id.js";
 import { collectBindings, goReceiverVarOf, resolveRecvType, type FileBindings } from "./bindings.js";
 import type { Kind, NodeV1, Relation } from "./types.js";
 
-export type Language = "typescript" | "tsx" | "python" | "go" | "java" | "kotlin" | "swift" | "php" | "r";
+export type Language =
+  | "typescript"
+  | "tsx"
+  | "python"
+  | "go"
+  | "csharp"
+  | "java"
+  | "kotlin"
+  | "swift"
+  | "php"
+  | "r";
 
 /**
  * Extension → the tree-sitter grammar that parses it, and the label a human expects
@@ -49,6 +60,7 @@ const EXTENSIONS: ReadonlyArray<{ ext: string; grammar: Language; label: string 
   { ext: ".pyi", grammar: "python", label: "python" },
   { ext: ".py", grammar: "python", label: "python" },
   { ext: ".go", grammar: "go", label: "go" },
+  { ext: ".cs", grammar: "csharp", label: "csharp" },
   { ext: ".java", grammar: "java", label: "java" },
   { ext: ".kt", grammar: "kotlin", label: "kotlin" },
   { ext: ".kts", grammar: "kotlin", label: "kotlin" },
@@ -263,11 +275,17 @@ const PHP_KINDS: Record<string, Kind> = {
   enum_declaration: "enum",
 };
 
+// C# is handled dynamically in describeCSharp() (method-shaped nodes need
+// explicit-interface-qualified idName, same as Go's receiver qualifying), so
+// this map is unused — kept only so every Language has an entry.
+const CS_KINDS: Record<string, Kind> = {};
+
 const KINDS_BY_LANG: Record<Language, Record<string, Kind>> = {
   typescript: TS_KINDS,
   tsx: TS_KINDS,
   python: PY_KINDS,
   go: GO_KINDS,
+  csharp: CS_KINDS,
   r: R_KINDS,
   java: JAVA_KINDS,
   kotlin: KOTLIN_KINDS,
@@ -299,6 +317,7 @@ const CALL_TYPES: Record<Language, ReadonlySet<string>> = {
     "scoped_call_expression",
   ]),
   r: new Set(["call"]),
+  csharp: new Set(["invocation_expression"]),
 };
 
 const FUNCTION_VALUE_TYPES = new Set([
@@ -316,6 +335,7 @@ const GRAMMARS: Record<Language, unknown> = {
   tsx: TypeScript.tsx,
   python: Python,
   go: Go,
+  csharp: CSharp,
   r: R,
   java: Java,
   kotlin: Kotlin,
@@ -592,17 +612,19 @@ function walk(node: Parser.SyntaxNode, ctx: WalkCtx, out: NodeV1[], edges: RawEd
           ? !desc.name.startsWith("_")
           : ctx.lang === "go"
             ? goExported(desc.name)
-            : ctx.lang === "r"
-              ? rExported(desc.name, ctx, node)
-              : ctx.lang === "java"
-                ? javaExported(node)
-                : ctx.lang === "kotlin"
-                  ? kotlinExported(node)
-                  : ctx.lang === "swift"
-                    ? swiftExported(node)
-                    : ctx.lang === "php"
-                      ? phpExported(node)
-                      : tsExported(node),
+            : ctx.lang === "csharp"
+              ? csExported(node)
+              : ctx.lang === "r"
+                ? rExported(desc.name, ctx, node)
+                : ctx.lang === "java"
+                  ? javaExported(node)
+                  : ctx.lang === "kotlin"
+                    ? kotlinExported(node)
+                    : ctx.lang === "swift"
+                      ? swiftExported(node)
+                      : ctx.lang === "php"
+                        ? phpExported(node)
+                        : tsExported(node),
       origin: "ast",
       body_hash: contentHash(desc.hashNode.text),
       body_text: searchBody(desc.hashNode.text),
@@ -617,20 +639,24 @@ function walk(node: Parser.SyntaxNode, ctx: WalkCtx, out: NodeV1[], edges: RawEd
     edges.push({ source: ctx.parentId, relation: "contains", targetId: id, file: ctx.rel });
     // class heritage — in Java an interface may also `extends`, and a record/enum
     // may `implements`, so every type declaration is a heritage site, not just a class.
+    // C# structs/interfaces likewise carry a heritage clause (unlike TS/Python/Go,
+    // where only "class" does).
     const javaTypeDecl = ctx.lang === "java" && JAVA_TYPE_KINDS.has(desc.kind);
     const kotlinTypeDecl = ctx.lang === "kotlin" && KOTLIN_TYPE_KINDS.has(desc.kind);
     const swiftTypeDecl = ctx.lang === "swift" && SWIFT_TYPE_KINDS.has(desc.kind);
-    if (desc.kind === "class" || javaTypeDecl || kotlinTypeDecl || swiftTypeDecl)
-      edges.push(...heritageEdges(node, id, ctx));
+    const csharpTypeDecl =
+      ctx.lang === "csharp" && (desc.kind === "struct" || desc.kind === "interface");
+    const isClassLike =
+      desc.kind === "class" || javaTypeDecl || kotlinTypeDecl || swiftTypeDecl || csharpTypeDecl;
+    if (isClassLike) edges.push(...heritageEdges(node, id, ctx));
     if (ctx.lang === "php") edges.push(...phpAttributeReferenceEdges(node, id, ctx));
     if (ctx.lang === "java") edges.push(...javaAnnotationReferenceEdges(node, id, ctx));
 
-    const enclosingClass =
-      desc.kind === "class" || javaTypeDecl || kotlinTypeDecl || swiftTypeDecl
-        ? desc.name
-        : isGoMethod
-          ? goReceiverType(node)
-          : (desc.owner ?? ctx.enclosingClass);
+    const enclosingClass = isClassLike
+      ? desc.name
+      : isGoMethod
+        ? goReceiverType(node)
+        : (desc.owner ?? ctx.enclosingClass);
     const childCtx: WalkCtx = {
       ...ctx,
       scope: [...ctx.scope, idPart],
@@ -1107,6 +1133,7 @@ function isDeclarationName(node: Parser.SyntaxNode): boolean {
  * TS arrow-consts. */
 function describe(node: Parser.SyntaxNode, ctx: WalkCtx): DefDescriptor | null {
   if (ctx.lang === "go") return describeGo(node, ctx);
+  if (ctx.lang === "csharp") return describeCSharp(node);
   if (ctx.lang === "r") return describeR(node, ctx);
   if (ctx.lang === "java") return describeJava(node, ctx);
   if (ctx.lang === "kotlin") return describeKotlin(node, ctx);
@@ -1482,6 +1509,145 @@ function findUseMethodArg(node: Parser.SyntaxNode | null | undefined): string | 
   for (const child of node.namedChildren) {
     const found = findUseMethodArg(child);
     if (found !== undefined) return found;
+  }
+  return undefined;
+}
+
+const CS_TYPE_KINDS: Record<string, Kind> = {
+  class_declaration: "class",
+  struct_declaration: "struct",
+  interface_declaration: "interface",
+  // tree-sitter-c-sharp emits the same node for `record`, `record class`, and
+  // `record struct`; the value here is the default for a bare `record`, and
+  // describeCSharp() narrows it per-declaration via csRecordKind().
+  record_declaration: "class",
+  enum_declaration: "enum",
+  delegate_declaration: "type",
+};
+
+// Method-shaped members. Operator/conversion-operator and indexer declarations
+// are intentionally excluded: none carries a `name` field in this grammar (the
+// operator symbol / indexer `this[…]` isn't a nameable identifier), so
+// describeCSharp would just return null for them anyway — this documents that as
+// deliberate. Naming them would mean synthesizing one from positional children.
+const CS_METHOD_TYPES = new Set(["method_declaration", "constructor_declaration", "destructor_declaration"]);
+
+/** `record`, `record class`, and `record struct` all parse as `record_declaration`;
+ * the distinguishing keyword rides along as an *anonymous* child token, which the
+ * named-child/field reads elsewhere in this file never see. Only `record struct`
+ * is a value type — bare `record` and `record class` are both classes. */
+function csRecordKind(node: Parser.SyntaxNode): Kind {
+  return node.children.some((c) => !c.isNamed && c.type === "struct") ? "struct" : "class";
+}
+
+/** A property's body opener: the accessor block (`{ get; set; }`) or the
+ * expression-bodied arrow (`=> expr`). Neither is exposed as a `body` field, so
+ * the header span has to find it among the named children. */
+function csPropertyBody(node: Parser.SyntaxNode): Parser.SyntaxNode | null {
+  return node.namedChildren.find((c) => c.type === "accessor_list" || c.type === "arrow_expression_clause") ?? null;
+}
+
+/** C# definition shapes: type declarations (class/struct/interface/record/enum/
+ * delegate), method-shaped members, properties, and local functions. Methods and
+ * properties get an explicit-interface-qualified `idName` when present
+ * (`void IFoo.Bar() {}`) because the bare name can legally collide with a public
+ * member of the same name in the same class — mirrors how Go's `idName`
+ * disambiguates receiver-qualified methods. */
+function describeCSharp(node: Parser.SyntaxNode): DefDescriptor | null {
+  const typeKind = CS_TYPE_KINDS[node.type];
+  if (typeKind) {
+    const name = node.childForFieldName("name")?.text;
+    if (!name) return null;
+    const kind = node.type === "record_declaration" ? csRecordKind(node) : typeKind;
+    const body = node.childForFieldName("body");
+    return { name, kind, headerEnd: body ? body.startIndex : node.endIndex, hashNode: node };
+  }
+  if (CS_METHOD_TYPES.has(node.type)) {
+    const name = node.childForFieldName("name")?.text;
+    if (!name) return null;
+    const body = node.childForFieldName("body");
+    const iface = csExplicitInterface(node);
+    return {
+      name,
+      idName: iface ? `${iface}.${name}` : undefined,
+      kind: "method",
+      headerEnd: body ? body.startIndex : node.endIndex,
+      hashNode: node,
+    };
+  }
+  if (node.type === "property_declaration") {
+    const name = node.childForFieldName("name")?.text;
+    if (!name) return null;
+    const body = csPropertyBody(node);
+    const iface = csExplicitInterface(node);
+    return {
+      name,
+      idName: iface ? `${iface}.${name}` : undefined,
+      kind: "property",
+      headerEnd: body ? body.startIndex : node.endIndex,
+      hashNode: node,
+    };
+  }
+  // A local function is a method-body statement, not a class member — the walk
+  // reaches it by descending through the enclosing method's `block`, so its id
+  // nests under that method (`File.cs#Class.Method.Local`).
+  if (node.type === "local_function_statement") {
+    const name = node.childForFieldName("name")?.text;
+    if (!name) return null;
+    const body = node.childForFieldName("body");
+    return { name, kind: "function", headerEnd: body ? body.startIndex : node.endIndex, hashNode: node };
+  }
+  return null;
+}
+
+/** Resolve a C# type-reference node (identifier / qualified_name / generic_name /
+ * nullable_type / predefined_type) to a bare type name — the rightmost segment,
+ * unwrapping generics and nullability. Null for shapes with no single nameable
+ * type (tuple/array/pointer types, primary-constructor base-type calls). */
+function csTypeName(node: Parser.SyntaxNode | null | undefined): string | null {
+  if (!node) return null;
+  switch (node.type) {
+    case "identifier":
+    case "predefined_type":
+      return node.text;
+    case "generic_name":
+      return node.namedChildren.find((c) => c.type === "identifier")?.text ?? null;
+    case "qualified_name": {
+      const name = node.childForFieldName("name");
+      return name ? csTypeName(name) : null;
+    }
+    case "nullable_type":
+      return csTypeName(node.namedChildren[0]);
+    default:
+      return null;
+  }
+}
+
+/** The interface name qualifying an explicit interface implementation
+ * (`void IFoo.Bar() {}` → `"IFoo"`), else null. */
+function csExplicitInterface(node: Parser.SyntaxNode): string | null {
+  const spec = node.namedChildren.find((c) => c.type === "explicit_interface_specifier");
+  return csTypeName(spec?.namedChildren[0]);
+}
+
+/** C# visibility: true iff the node has an explicit `public` modifier. Unlike Go's
+ * name-based convention, C# accessibility is a keyword, and unmarked members default
+ * to private/internal depending on context — so "no modifier" reads as not exported. */
+function csExported(node: Parser.SyntaxNode): boolean {
+  return node.namedChildren.some((c) => c.type === "modifier" && c.text === "public");
+}
+
+/** C# member-call receiver text (from a `member_access_expression`): `this`, a bare
+ * identifier (covers both a local/param and an implicit-`this` field/property access —
+ * C# needs no `this.` to reach its own members), or one level of `this.field` chain. */
+function csReceiver(fn: Parser.SyntaxNode): string | undefined {
+  const obj = fn.childForFieldName("expression");
+  if (obj?.type === "this") return "this";
+  if (obj?.type === "identifier") return obj.text;
+  if (obj?.type === "member_access_expression") {
+    const innerObj = obj.childForFieldName("expression");
+    const innerName = obj.childForFieldName("name");
+    if (innerObj?.type === "this" && innerName) return `this.${innerName.text}`;
   }
   return undefined;
 }
@@ -2111,6 +2277,18 @@ function heritageEdges(node: Parser.SyntaxNode, classId: string, ctx: WalkCtx): 
     }
     return edges;
   }
+  if (ctx.lang === "csharp") {
+    // `class Foo : Base, IBar` — base_list doesn't syntactically distinguish a base
+    // class from an interface, so every entry is emitted as "extends"; resolve.ts
+    // relabels the ones whose target resolves to an interface as "implements", and
+    // leaves an unresolved (external) base as "extends".
+    const baseList = node.namedChildren.find((c) => c.type === "base_list");
+    for (const t of baseList?.namedChildren ?? []) {
+      const name = csTypeName(t);
+      if (name) edges.push({ source: classId, relation: "extends", name, file: ctx.rel });
+    }
+    return edges;
+  }
   const heritage = node.namedChildren.find((c) => c.type === "class_heritage");
   for (const clause of heritage?.namedChildren ?? []) {
     const relation: Relation | null =
@@ -2270,7 +2448,18 @@ if (lang === "kotlin") {
 
   const fn = node.childForFieldName("function");
   if (!fn) return null;
-  if (fn.type === "identifier") return { name: fn.text, viaMember: false };
+  if (fn.type === "identifier") {
+    // C# has no free-standing functions — every callable lives on a type, so a
+    // bare `Foo()` inside a method is an implicit-`this` member call (unlike
+    // TS/Python/Go, where a bare call is always a real free function). Route it
+    // through the member-call path so it resolves against the enclosing type's
+    // methods. The one C# shape this can't reach is a call to a local function
+    // (kind "function", nested under its declaring method): resolving those needs
+    // block-scoped lookup, since a bare name is scope-blind here and would happily
+    // wire a call to a same-named local function in a sibling method.
+    if (lang === "csharp") return { name: fn.text, viaMember: true, receiver: "this" };
+    return { name: fn.text, viaMember: false };
+  }
   if (lang === "python" && fn.type === "attribute") {
     const a = fn.childForFieldName("attribute") ?? fn.namedChildren.at(-1);
     return a ? { name: a.text, viaMember: true, receiver: pyReceiver(fn) } : null;
@@ -2326,6 +2515,12 @@ if (lang === "kotlin") {
     // never an R6 method (those are only ever reached via `$` on an instance),
     // so no need to widen the match kinds here.
     return { name: rhs.text, viaMember: false };
+  }
+  if (lang === "csharp" && fn.type === "member_access_expression") {
+    const p = fn.childForFieldName("name");
+    if (!p) return null;
+    const name = p.type === "generic_name" ? p.namedChildren.find((c) => c.type === "identifier")?.text : p.text;
+    return name ? { name, viaMember: true, receiver: csReceiver(fn) } : null;
   }
   return null;
 }
@@ -2484,6 +2679,7 @@ if (lang === "kotlin") return node.type === "import_header";
   // PHP: one edge per imported symbol — the clause leaf inside a (possibly
   // grouped) `use A\B, C\D;` / `use A\{B, C};` declaration.
   if (lang === "php") return node.type === "namespace_use_clause";
+  if (lang === "csharp") return node.type === "using_directive";
   return node.type === "import_statement" || node.type === "import_from_statement";
 }
 
@@ -2533,6 +2729,16 @@ function importSpecifier(node: Parser.SyntaxNode, lang: Language): string | null
     // to a repo file only when a same-named module target exists; external
     // frameworks stay as unresolved (but truthful) import intents.
     return node.namedChildren.find((c) => c.type === "identifier")?.text ?? null;
+  }
+  if (lang === "csharp") {
+    // `using_directive`'s `name` field only holds an alias's own name
+    // (`using Alias = Namespace.Type;`) — the namespace/type actually being used
+    // is the other child. Kept as an unresolved external specifier: C# namespaces
+    // don't map onto file paths the way Go's module system does, so there's no
+    // in-repo resolution to attempt (see resolveImport/resolveGoImport in resolve.ts).
+    const nameField = node.childForFieldName("name");
+    const target = node.namedChildren.find((c) => c !== nameField);
+    return target?.text ?? null;
   }
   const str = node.namedChildren.find((c) => c.type === "string");
   if (!str) return null;
