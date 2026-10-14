@@ -8,7 +8,7 @@
  */
 import { statSync } from "node:fs";
 import { resolve } from "node:path";
-import { walkDir } from "../ingest/fs.js";
+import { walkDir, type SizeSkip } from "../ingest/fs.js";
 import { relPosix } from "../util/paths.js";
 import { readFollowNestedRepos, readFollowSubmodules, readIncludeDirs } from "../util/state.js";
 import { languageOf, depthExtensions } from "./extract.js";
@@ -64,17 +64,19 @@ export function filterByOnlyDirs(
 export function listSourceFiles(
   root: string,
   outDir: string,
-  repoFiles: string[] = walkDir(root, readIncludeDirs(resolve(root)), {
-    followSubmodules: readFollowSubmodules(resolve(root)),
-    followNestedRepos: readFollowNestedRepos(resolve(root)),
-  }),
+  repoFiles?: string[],
   onlyDirs?: ReadonlySet<string>,
+  skipped?: SizeSkip[],
 ): string[] {
   // A file is a source file if a depth-tier grammar (languageOf), a breadth-tier
   // grammar (genericLangOf) or a container (containerLangOf) claims its extension.
   // All three must agree here or `build` and `check` would enumerate different sets.
   return filterByOnlyDirs(
-    repoFiles.filter(
+    (repoFiles ?? walkDir(root, readIncludeDirs(resolve(root)), {
+      followSubmodules: readFollowSubmodules(resolve(root)),
+      followNestedRepos: readFollowNestedRepos(resolve(root)),
+      skipped,
+    })).filter(
       (f) =>
         !f.startsWith(outDir) &&
         (languageOf(f) !== null || genericLangOf(f) !== null || containerLangOf(f) !== null),
@@ -105,9 +107,10 @@ export function listSourceStats(
   outDir: string,
   repoFiles?: string[],
   onlyDirs?: ReadonlySet<string>,
+  skipped?: SizeSkip[],
 ): SourceStat[] {
   const out: SourceStat[] = [];
-  for (const abs of listSourceFiles(root, outDir, repoFiles, onlyDirs)) {
+  for (const abs of listSourceFiles(root, outDir, repoFiles, onlyDirs, skipped)) {
     let s: { size: number; mtimeMs: number };
     try {
       s = statSync(abs);

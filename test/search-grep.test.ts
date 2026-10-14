@@ -279,3 +279,16 @@ test('zeroHitNote (grep-cli.ts): zero hits AND unreadable indexed files mentions
   // ...but truncation is never silent: 1 unreadable file must be surfaced too.
   assert.match(note, /1 indexed file.*could not be read/);
 });
+
+test('zeroHitNote names size-skipped files instead of claiming all code was searched (#370)', () => {
+  const d = mkdtempSync(join(tmpdir(), 'graft-grep-size-skip-'));
+  writeFileSync(join(d, 'ok.ts'), 'hello\n');
+  const graph = graphOf([fileNode('ok.ts', 1)]);
+  graph.meta.skipped = [{ path: 'big.ts', bytes: 3_900_000, reason: 'size' }];
+
+  const r = grepGraph(graph, d, 'NOPE_NOT_PRESENT');
+  assert.equal(r.totalHits, 0);
+  const note = zeroHitNote(r);
+  assert.match(note, /no hits for "NOPE_NOT_PRESENT"/);
+  assert.match(note, /skipped big\.ts: 3\.9 MB > 1 MB cap/);
+});

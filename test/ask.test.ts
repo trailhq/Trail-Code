@@ -186,6 +186,25 @@ test("skeleton lists a file's definitions in span order, matches by basename", a
   }
 });
 
+test("skeleton names a size-skipped file instead of denying it exists (#370)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "graft-skel-size-"));
+  try {
+    writeFileSync(join(dir, "ok.ts"), "export function keep() { return 1; }\n");
+    writeFileSync(join(dir, "big.ts"), Buffer.alloc(1_000_001, 0x61));
+    const built = await buildGraph(dir);
+    assert.equal(built.skipped?.length, 1);
+    assert.equal(built.skipped?.[0].path, "big.ts");
+    const r = skeleton(dir, "big.ts");
+    assert.equal(r.entries.length, 0);
+    assert.match(r.note ?? "", /skipped big\.ts/);
+    assert.match(r.note ?? "", /1 MB cap/);
+    const miss = ask(dir, "zzzzNotASymbolAnywhere");
+    assert.match(miss.note ?? "", /skipped big\.ts/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("ask reports coverage: 1.0 when every query term hits, low on mostly-off-corpus prompts", async () => {
   const dir = makeFixture();
   try {

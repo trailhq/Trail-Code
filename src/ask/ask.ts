@@ -19,6 +19,7 @@ import { matter } from "../util/front-matter.js";
 import { contextDirFor } from "../context/node-file.js";
 import { withSavings, savingsFor, savingsTurnNudge, type Savings } from "../context/savings.js";
 import { loadGraphCached, loadAskIndexCached } from "../graph/load.js";
+import { formatSizeSkipLine, matchSkippedFiles, skippedFromGraph, skippedQueryNote } from "../graph/skipped.js";
 import {
   assertPrefixIndexed,
   pathUnderPrefix,
@@ -151,6 +152,9 @@ export interface AskResult {
    * this answer. Populated in `--source` mode only, alongside `saved`: a pack
    * the agent does not read the code from has nothing for a rule to sit beside. */
   rules?: AppliedRule[];
+  /** Files the last build refused to index for size. Set so a zero-hit ask
+   * can name them instead of claiming the symbol does not exist. */
+  skipped?: Array<{ path: string; bytes: number; reason: "size" }>;
 }
 
 /** First real prose line of a node body (skips headings, markers, blanks). */
@@ -1409,6 +1413,12 @@ export function ask(dir: string, query: string, opts: AskOptions = {}): AskResul
     const applied = attachBrainRules(root, result.hits, corpus.graph);
     if (applied.length) result.rules = applied;
   }
+  const skipped = skippedFromGraph(corpus.graph);
+  if (skipped.length) result.skipped = skipped;
+  if (result.hits.length === 0 && skipped.length) {
+    const extra = skippedQueryNote(skipped);
+    result.note = result.note ? `${result.note}; ${extra}` : extra;
+  }
   return result;
 }
 
@@ -1453,17 +1463,33 @@ export function skeleton(dir: string, file: string, opts: { contextDir?: string 
   const graph = loadGraphCached(outDir);
   if (!graph) return { file, entries: [], note: `no wiring graph — run \`${cmd("graft build")}\` first` };
 
-  let defs = graph.nodes.filter((n) => n.kind !== "file" && n.path === file);
+  const want = file.replace(/\\/g, "/");
+  const skippedMatches = matchSkippedFiles(skippedFromGraph(graph), want);
+  const exactSkip = skippedMatches.find((s) => s.path === want);
+  if (exactSkip) return { file: exactSkip.path, entries: [], note: `${formatSizeSkipLine(exactSkip)} — not indexed` };
+  let defs = graph.nodes.filter((n) => n.kind !== "file" && n.path === want);
+  if (!defs.length && graph.nodes.some((n) => n.path === want))
+    return { file: want, entries: [], note: "no definitions indexed for this file" };
   if (!defs.length) {
     const matches = new Set(
-      graph.nodes.filter((n) => n.path === file || n.path.endsWith(`/${file}`)).map((n) => n.path),
+      [...graph.nodes.filter((n) => n.path === want || n.path.endsWith(`/${want}`)).map((n) => n.path),
+        ...skippedMatches.map((s) => s.path)],
     );
     if (matches.size > 1)
-      return { file, entries: [], note: `ambiguous — matches: ${[...matches].sort().join(", ")}` };
+      return {
+        file,
+        entries: [],
+        note: `ambiguous — matches: ${[...matches].sort().join(", ")}` +
+          (skippedMatches.length ? `; ${skippedQueryNote(skippedMatches)} — use a repo-relative path` : ""),
+      };
     const [path] = matches;
     if (path) defs = graph.nodes.filter((n) => n.kind !== "file" && n.path === path);
   }
-  if (!defs.length) return { file, entries: [], note: "no definitions indexed for this file" };
+  if (!defs.length) {
+    const hit = skippedMatches.length === 1 ? skippedMatches[0] : undefined;
+    if (hit) return { file: hit.path, entries: [], note: `${formatSizeSkipLine(hit)} — not indexed` };
+    return { file, entries: [], note: "no definitions indexed for this file" };
+  }
 
   const startLine = (span: string) => Number(span.match(/^L(\d+)/)?.[1] ?? 0);
   defs.sort((a, b) => startLine(a.span) - startLine(b.span));

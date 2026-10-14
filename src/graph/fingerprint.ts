@@ -20,11 +20,13 @@
  */
 import { join } from "node:path";
 import { CACHE_DIR } from "../context/node-file.js";
+import type { SizeSkip } from "../ingest/fs.js";
 import { contentHash } from "../util/id.js";
+import { relPosix } from "../util/paths.js";
 import { readSourceFile } from "../util/source.js";
 import { readJson, writeJsonAtomic } from "../util/state.js";
 import { extractorStamp, pruneSidecars, type ExtractEntry } from "./extract-cache.js";
-import { listSourceStats } from "./source-files.js";
+import { listSourceFiles, listSourceStats } from "./source-files.js";
 
 export const FINGERPRINT_PREFIX = "fingerprint";
 const FINGERPRINT_VERSION = 1;
@@ -54,6 +56,9 @@ export interface Fingerprint {
    * — so the query-path freshness probe (which never sees a CLI flag) enumerates the
    * identical whitelisted set and excluded files are never phantom "added" drift. */
   onlyDirs?: string[];
+  /** Oversized sources are never read or hashed, but their path/size determines
+   * the skip warnings. Absent = none, for older fingerprints. */
+  skipped?: Record<string, number>;
 }
 
 /** What moved since the last build. Empty in all three arrays = nothing to do. */
@@ -88,12 +93,14 @@ export function writeFingerprint(
   outDir: string,
   entries: Record<string, ExtractEntry>,
   onlyDirs?: string[],
+  skipped?: SizeSkip[],
 ): boolean {
   const files: Record<string, Print> = {};
   for (const [rel, e] of Object.entries(entries)) files[rel] = [e.size, e.mtimeMs, e.hash];
   try {
     const record: Fingerprint = { version: FINGERPRINT_VERSION, extractor: stamp(), files };
     if (onlyDirs && onlyDirs.length > 0) record.onlyDirs = onlyDirs;
+    if (skipped?.length) record.skipped = Object.fromEntries(skipped.map((s) => [s.path, s.bytes]));
     writeJsonAtomic(fingerprintPath(outDir), record, true);
     pruneSidecars(join(outDir, CACHE_DIR), FINGERPRINT_PREFIX);
     return true;
@@ -155,11 +162,16 @@ export function probeDrift(root: string, outDir: string): Drift | null {
   const seen = new Set<string>();
 
   const onlyDirs = fp.onlyDirs && fp.onlyDirs.length > 0 ? new Set(fp.onlyDirs) : undefined;
-  for (const f of listSourceStats(root, outDir, undefined, onlyDirs)) {
+  const sizeSkips: SizeSkip[] = [];
+  const priorSkips = fp.skipped ?? {};
+  for (const f of listSourceStats(root, outDir, undefined, onlyDirs, sizeSkips)) {
     seen.add(f.rel);
     const print = fp.files[f.rel];
     if (!print) {
-      drift.added.push(f.rel);
+      // Crossing the cap changes the same source; it is neither a new file nor
+      // a deletion, even though it moves between indexed and skipped records.
+      if (Object.hasOwn(priorSkips, f.rel)) drift.changed.push(f.rel);
+      else drift.added.push(f.rel);
       continue;
     }
     const [size, mtimeMs, hash] = print;
@@ -185,7 +197,21 @@ export function probeDrift(root: string, outDir: string): Drift | null {
     if (now !== hash) drift.changed.push(f.rel);
   }
 
-  for (const rel of Object.keys(fp.files)) {
+  const skippedPaths = new Set(listSourceFiles(root, outDir, sizeSkips.map((s) => s.path), onlyDirs));
+  for (const s of sizeSkips) {
+    if (!skippedPaths.has(s.path)) continue;
+    const rel = relPosix(root, s.path);
+    seen.add(rel);
+    if (Object.hasOwn(priorSkips, rel)) {
+      if (priorSkips[rel] !== s.bytes) drift.changed.push(rel);
+    } else if (Object.hasOwn(fp.files, rel)) {
+      drift.changed.push(rel);
+    } else {
+      drift.added.push(rel);
+    }
+  }
+
+  for (const rel of new Set([...Object.keys(fp.files), ...Object.keys(priorSkips)])) {
     if (!seen.has(rel)) drift.removed.push(rel);
   }
 

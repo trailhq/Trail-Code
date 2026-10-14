@@ -11,6 +11,7 @@ import { resolve } from "node:path";
 import { contextDirFor } from "../context/node-file.js";
 import { withSavings } from "../context/savings.js";
 import { loadGraphCached } from "../graph/load.js";
+import { skippedQueryNote } from "../graph/skipped.js";
 import { grepGraph, type GrepGroup, type GrepResult } from "./grep.js";
 
 export interface GrepCliOptions {
@@ -72,9 +73,13 @@ export function formatGrepResult(result: GrepResult): string {
  * matches" when really some files were never searched at all. */
 export function zeroHitNote(result: GrepResult): string {
   const base = `no hits for "${result.pattern}" in ${result.filesSearched} indexed files. The pattern may be too specific — retry graft grep with a bare symbol name or short substring (drop the receiver, full signature, and regex anchors). All indexed code was searched; use raw grep -rn only for genuinely unindexed files (docs, configs, brand-new files)`;
+  const extras: string[] = [];
   const { files } = result.truncated;
-  if (files === 0) return base;
-  return `${base} — note: ${files} indexed file${files === 1 ? "" : "s"} could not be read (stale graph? run graft build)`;
+  if (files > 0) extras.push(`${files} indexed file${files === 1 ? "" : "s"} could not be read (stale graph? run graft build)`);
+  const sizeNote = skippedQueryNote(result.skipped ?? []);
+  if (sizeNote) extras.push(sizeNote);
+  if (extras.length === 0) return base;
+  return `${base} — note: ${extras.join("; ")}`;
 }
 
 /**

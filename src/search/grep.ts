@@ -61,6 +61,9 @@ export interface GrepResult {
   /** Tokens-saved baseline: the files that had hits, read whole. Undefined
    * when there were no hits or the graph predates file sizing. */
   saved?: Savings;
+  /** Files the last build refused to index for size. Copied from wiring meta
+   * so a zero-hit note can name them instead of claiming all code was searched. */
+  skipped?: Array<{ path: string; bytes: number; reason: "size" }>;
 }
 
 export interface GrepOptions {
@@ -211,5 +214,6 @@ export function grepGraph(graph: GraphV1, repoRoot: string, pattern: string, opt
     groups: sortedGroups,
     truncated: { files: truncatedFiles, hits: truncatedHits },
     saved: savingsFor(graph, sortedGroups.map((g) => g.path)),
+    skipped: graph.meta.skipped,
   };
 }

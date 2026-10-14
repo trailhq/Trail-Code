@@ -15,7 +15,7 @@
  */
 import { readFileSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
-import { walkDir } from "../ingest/fs.js";
+import { walkDir, type SizeSkip } from "../ingest/fs.js";
 import { contextDirFor, ensureGitignored, ensureSearchable } from "../context/node-file.js";
 import { extractFile, languageLabelOf, languageOf, type RawEdge } from "./extract.js";
 import { extractGeneric, genericLangOf, warmGenericGrammars } from "./generic.js";
@@ -32,7 +32,7 @@ import {
 } from "./extract-cache.js";
 import { writeFingerprint } from "./fingerprint.js";
 import { seedGraph, type SeedResult } from "./seed.js";
-import { filterByOnlyDirs, listSourceStats } from "./source-files.js";
+import { filterByOnlyDirs, listSourceFiles, listSourceStats } from "./source-files.js";
 import { resolveEdges, type GoModule } from "./resolve.js";
 import { enrichGraph, type EnrichStats } from "./enrich.js";
 import { readGraph, writeGraph, wiringPath } from "./write.js";
@@ -111,6 +111,8 @@ export interface GraphBuildResult {
   parsed: number;
   /** Files replayed from the extraction cache. */
   reused: number;
+  /** Source files the walk refused to index because they exceeded the 1 MB cap. */
+  skipped?: Array<{ path: string; bytes: number; reason: "size" }>;
   /** The parent checkout this build copied a starting graph from, when it was run in
    * a git worktree that had none of its own. See `./seed.ts`. */
   seededFrom?: string;
@@ -157,9 +159,11 @@ export async function buildGraph(
   // Enumerate once: source extraction, scope discovery, and Go module
   // resolution must agree on the same Git-ignore-aware working-tree view —
   // including the repo's persisted directory and submodule choices.
+  const sizeSkips: SizeSkip[] = [];
   const walked = walkDir(root, readIncludeDirs(root), {
     followSubmodules: readFollowSubmodules(root),
     followNestedRepos: readFollowNestedRepos(root),
+    skipped: sizeSkips,
   });
   const onlyDirs = opts.onlyDirs && opts.onlyDirs.length > 0 ? new Set(opts.onlyDirs) : undefined;
   const repoFiles = filterByOnlyDirs(walked, root, onlyDirs);
@@ -298,6 +302,14 @@ export async function buildGraph(
   // disk periodically (#128): crux/summary mutate node objects in place and never
   // change the node/edge SET, so `meta` stays valid; the opt-in LSP pass below is the
   // only thing that adds edges, and it runs before the final write.
+  // A walk sees configs/binaries and files outside --only-dir too. Report only
+  // files this graph would have indexed had they fit under the byte cap.
+  const skippedPaths = new Set(listSourceFiles(root, outDir, sizeSkips.map((s) => s.path), onlyDirs));
+  const skipped = sizeSkips.filter((s) => skippedPaths.has(s.path)).map((s) => ({
+    path: relPosix(root, s.path),
+    bytes: s.bytes,
+    reason: "size" as const,
+  }));
   const graph: GraphV1 = {
     meta: {
       version: 1,
@@ -305,6 +317,7 @@ export async function buildGraph(
       edgeCount: edges.length,
       languages: [...langs].sort(),
       scopes,
+      ...(skipped.length ? { skipped } : {}),
     },
     nodes,
     edges,
@@ -358,7 +371,7 @@ export async function buildGraph(
   // these source bytes." Nothing about the projections below — which is why it is
   // safe to write here, and why `graphOnly` builds (the query path, which stops
   // right after this line) are still recorded as fresh.
-  writeFingerprint(outDir, entries, opts.onlyDirs);
+  writeFingerprint(outDir, entries, opts.onlyDirs, skipped);
 
   // Tier-2 passive surface: project the nodes into per-file markdown cards, and
   // refresh the INDEX roster. Pure projection — no LLM, no network.
@@ -398,6 +411,7 @@ export async function buildGraph(
     files: files.length,
     parsed,
     reused,
+    skipped: skipped.length ? skipped : undefined,
     seededFrom: seed.from,
     nodes: nodes.length,
     edges: edges.length,

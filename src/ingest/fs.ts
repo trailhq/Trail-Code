@@ -84,6 +84,17 @@ export interface WalkOptions {
   followSubmodules?: boolean;
   /** Include nested Git clones the parent index does not track. Default false. */
   followNestedRepos?: boolean;
+  /** When provided, files dropped for exceeding {@link MAX_FILE_BYTES} are
+   * recorded here instead of disappearing. Paths are absolute, then remapped
+   * onto the caller-facing root the same way emitted files are (#370). */
+  skipped?: SizeSkip[];
+}
+
+/** A source file the walk found but refused to index because of size. */
+export interface SizeSkip {
+  path: string;
+  bytes: number;
+  reason: "size";
 }
 
 /**
@@ -158,8 +169,29 @@ export function walkDir(
 ): string[] {
   const requested = resolve(dir);
   const root = canonicalWalkRoot(requested);
-  const files = gitVisibleFiles(root, includes, opts) ?? walkFilesystem(root, includes);
+  const files = gitVisibleFiles(root, includes, opts) ?? walkFilesystem(root, includes, opts.skipped);
+  remapSkipPaths(requested, root, opts.skipped);
   return remapWalkPaths(requested, root, files);
+}
+
+/** Keep skipped-file paths on the requested root, matching {@link remapWalkPaths}. */
+function remapSkipPaths(requested: string, canonical: string, skipped?: SizeSkip[]): void {
+  if (!skipped || requested === canonical) return;
+  for (const s of skipped) {
+    if (escapedCanonical(canonical, s.path)) continue;
+    const rel = relative(canonical, s.path);
+    if (rel === "") continue;
+    s.path = join(requested, rel);
+  }
+}
+
+function noteOversized(abs: string, bytes: number, skipped?: SizeSkip[]): void {
+  if (!skipped) return;
+  // Git can emit one record per index stage during an unresolved merge. A file
+  // was skipped once, regardless of how many records name it.
+  const prior = skipped.find((s) => s.path === abs);
+  if (prior) prior.bytes = bytes;
+  else skipped.push({ path: abs, bytes, reason: "size" });
 }
 
 /** Git's canonical working-tree file set, relative to `dir`. Tracked files are
@@ -176,7 +208,7 @@ function gitVisibleFiles(
   // only when at least one boundary-crossing opt-in is on. With both off the
   // walk is byte-for-byte the historical one.
   if (opts.followSubmodules !== true && opts.followNestedRepos !== true) {
-    return gitVisibleFilesShallow(root, includes);
+    return gitVisibleFilesShallow(root, includes, opts.skipped);
   }
 
   const state = traversal ?? { topRoot: root, activeRoots: new Set<string>() };
@@ -265,7 +297,7 @@ function gitVisibleFiles(
         // top-level Git command fails and walkDir uses its filesystem fallback.
         // Let an unreadable filesystem fallback surface rather than claiming a
         // healthy graph that silently omitted the child again.
-        childFiles = walkFilesystem(abs, includes);
+        childFiles = walkFilesystem(abs, includes, opts.skipped);
       }
       for (const file of childFiles) out.add(file);
       continue;
@@ -273,7 +305,11 @@ function gitVisibleFiles(
 
     try {
       const stat = lstatSync(abs);
-      if (!stat.isFile() || stat.size > MAX_FILE_BYTES) continue;
+      if (!stat.isFile()) continue;
+      if (stat.size > MAX_FILE_BYTES) {
+        noteOversized(abs, stat.size, opts.skipped);
+        continue;
+      }
     } catch {
       // A tracked file deleted from the working tree is still printed by
       // `--cached`; absence means it is not part of the current source set.
@@ -289,7 +325,7 @@ function gitVisibleFiles(
 /** The historical, non-recursive Git path. Kept separate so the default does
  * exactly the same command, filtering, ordering, and duplicate handling as it
  * did before submodule support existed. */
-function gitVisibleFilesShallow(root: string, includes?: ReadonlySet<string>): string[] | null {
+function gitVisibleFilesShallow(root: string, includes?: ReadonlySet<string>, skipped?: SizeSkip[]): string[] | null {
   const result = spawnSync(
     "git",
     ["ls-files", "--cached", "--others", "--exclude-standard", "-z", "--"],
@@ -308,7 +344,11 @@ function gitVisibleFilesShallow(root: string, includes?: ReadonlySet<string>): s
     const abs = resolve(root, rel);
     try {
       const stat = lstatSync(abs);
-      if (!stat.isFile() || stat.size > MAX_FILE_BYTES) continue;
+      if (!stat.isFile()) continue;
+      if (stat.size > MAX_FILE_BYTES) {
+        noteOversized(abs, stat.size, skipped);
+        continue;
+      }
     } catch {
       // A tracked file deleted from the working tree is still printed by
       // `--cached`; absence means it is not part of the current source set.
@@ -326,17 +366,21 @@ function skippedPath(path: string, includes?: ReadonlySet<string>): boolean {
   return path.replace(/\\/g, "/").split("/").some((segment) => shouldSkipDir(segment, includes));
 }
 
-function walkFilesystem(dir: string, includes?: ReadonlySet<string>): string[] {
+function walkFilesystem(dir: string, includes?: ReadonlySet<string>, skipped?: SizeSkip[]): string[] {
   const out: string[] = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = join(dir, entry.name);
     if (entry.isDirectory()) {
       if (shouldSkipDir(entry.name, includes)) continue;
-      out.push(...walkFilesystem(full, includes));
+      out.push(...walkFilesystem(full, includes, skipped));
     } else if (entry.isFile()) {
       if (entry.name.startsWith(".")) continue; // dot-files are not source either
       try {
-        if (statSync(full).size > MAX_FILE_BYTES) continue;
+        const size = statSync(full).size;
+        if (size > MAX_FILE_BYTES) {
+          noteOversized(full, size, skipped);
+          continue;
+        }
       } catch {
         continue;
       }

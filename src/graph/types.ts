@@ -126,6 +126,8 @@ export interface GraphV1 {
     /** Ranking scopes: posix path prefixes relative to the graph root, "" = root scope.
      * Absent (old graphs) ≡ [{ prefix: "", label: "" }]. Sorted by prefix length desc. */
     scopes?: ScopeV1[];
+    /** Source files the walk saw but refused to index. Absent ≡ none (old graphs). */
+    skipped?: Array<{ path: string; bytes: number; reason: "size" }>;
   };
   nodes: NodeV1[];
   edges: EdgeV1[];
