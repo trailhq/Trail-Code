@@ -461,6 +461,14 @@ Method calls resolve through the receiver's type — constructor assignments
 name — so `callers`/`grep --in` return calls bound to the right
 type on method-heavy code, not every method anywhere with that name.
 
+`callers` and MCP `graft_trace_calls` label each hit with its edge confidence:
+`lsp_resolved`, `lsp_dispatch`, `extracted`, or `inferred` (strongest first).
+For a transitive walk, `[extracted; path inferred]` means the final edge was
+extracted but an earlier hop was inferred. `callers --json` exposes both
+`confidence` and `pathConfidence`; the latter is the weakest edge on the first
+BFS path that reached the hit, not a score over every possible path. Direct
+hits have the same value in both fields.
+
 ## Search & orient (`graft grep` / `graft map`)
 
 `graft grep "<regex>"` is exhaustive over every indexed file and groups hits

@@ -202,13 +202,13 @@ test('graft callers: quotes the call site, and only where it is the right line',
   assert.equal(r.status, 0);
   // `sub` calls `add` on line 5 of the fixture. The edge is a claim; this is the
   // evidence, and it saves opening the file to check.
-  assert.match(r.stdout, /calls ← sub \(src\/math\.ts:[^)]*\)\n\s+5: return add\(a, -b\);/);
+  assert.match(r.stdout, /calls ← sub \(src\/math\.ts:[^)]*\) \[extracted\]\n\s+5: return add\(a, -b\);/);
 
   // A second-hop hit references what is BETWEEN it and the symbol, not the symbol
   // itself, so quoting it would point at the wrong line.
   const deep = runCli(['callers', 'add', d, '--depth', '2']);
-  assert.match(deep.stdout, /calls ← compute \(src\/math\.ts:[^)]*\) \[depth 2\]\n/);
-  assert.ok(!/\[depth 2\]\n\s+\d+:/.test(deep.stdout), 'no quote on a second-hop hit');
+  assert.match(deep.stdout, /calls ← compute \(src\/math\.ts:[^)]*\) \[depth 2\] \[extracted\]\n/);
+  assert.ok(!/\[depth 2\] \[extracted\]\n\s+\d+:/.test(deep.stdout), 'no quote on a second-hop hit');
 
   // --json is a data contract: the quote is a text-output nicety and must stay out.
   const json = JSON.parse(runCli(['callers', 'add', d, '--json']).stdout);

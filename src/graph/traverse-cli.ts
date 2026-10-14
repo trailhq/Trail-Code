@@ -17,7 +17,7 @@ import { contextDirFor } from "../context/node-file.js";
 import { withSavings, savingsFor, type Savings } from "../context/savings.js";
 import { loadGraphCached } from "./load.js";
 import { resolveSymbol, edgeWalk, type Direction, type EdgeHit } from "./traverse.js";
-import type { GraphV1, NodeV1 } from "./types.js";
+import type { Confidence, GraphV1, NodeV1 } from "./types.js";
 
 export interface CallersCliOptions {
   in?: string;
@@ -50,8 +50,11 @@ export function headerOf(n: NodeV1): string {
 export function hitLine(direction: Direction, hit: EdgeHit, showDepth: boolean, quote?: Quote): string {
   const arrow = ARROW[direction];
   const depthTag = showDepth ? ` [depth ${hit.depth}]` : "";
+  const confidenceTag = hit.pathConfidence === hit.confidence
+    ? ` [${hit.confidence}]`
+    : ` [${hit.confidence}; path ${hit.pathConfidence}]`;
   const label = hit.node ? `${hit.node.name} (${hit.node.path}:${hit.node.span})` : `${hit.id} (unresolved import)`;
-  const line = `  ${hit.relation} ${arrow} ${label}${depthTag}`;
+  const line = `  ${hit.relation} ${arrow} ${label}${depthTag}${confidenceTag}`;
   return quote ? `${line}\n      ${quote.n}: ${quote.text.trim()}` : line;
 }
 
@@ -132,6 +135,8 @@ interface HitJson {
   span?: string;
   relation: string;
   depth: number;
+  confidence: Confidence;
+  pathConfidence: Confidence;
 }
 
 function symbolJson(n: NodeV1): SymbolJson {
@@ -139,7 +144,10 @@ function symbolJson(n: NodeV1): SymbolJson {
 }
 
 function hitJson(hit: EdgeHit): HitJson {
-  const out: HitJson = { id: hit.id, relation: hit.relation, depth: hit.depth };
+  const out: HitJson = {
+    id: hit.id, relation: hit.relation, depth: hit.depth,
+    confidence: hit.confidence, pathConfidence: hit.pathConfidence,
+  };
   if (hit.node) {
     out.name = hit.node.name;
     out.kind = hit.node.kind;

@@ -12,7 +12,7 @@
  * `loadGraphCached`), which keeps this module trivially unit-testable against
  * hand-built fixture graphs.
  */
-import type { EdgeV1, GraphV1, NodeV1, Relation } from "./types.js";
+import type { Confidence, EdgeV1, GraphV1, NodeV1, Relation } from "./types.js";
 import { WALK_RELATIONS } from "./relations.js";
 import { assertPrefixIndexed, pathUnderPrefix } from "./scopes.js";
 import { normalizePathPrefix } from "../util/paths.js";
@@ -119,6 +119,23 @@ export interface EdgeHit {
   id: string;
   relation: Relation;
   depth: number;
+  /** Confidence of the edge that reached this hit. */
+  confidence: Confidence;
+  /** Weakest edge on the first BFS path to this hit; equals `confidence` at
+   * depth 1. Describes the selected path, not all possible paths to the node. */
+  pathConfidence: Confidence;
+}
+
+// Keep the best-first provenance order documented by Confidence in types.ts.
+const CONFIDENCE_RANK: Record<Confidence, number> = {
+  lsp_resolved: 0,
+  lsp_dispatch: 1,
+  extracted: 2,
+  inferred: 3,
+};
+
+function weakestConfidence(a: Confidence, b: Confidence): Confidence {
+  return CONFIDENCE_RANK[a] >= CONFIDENCE_RANK[b] ? a : b;
 }
 
 /** Depth-1: nodes with a walk-relation edge whose target is `symbol`. */
@@ -127,7 +144,8 @@ export function callersOf(graph: GraphV1, symbol: NodeV1): EdgeHit[] {
   const hits: EdgeHit[] = [];
   for (const e of graph.edges as EdgeV1[]) {
     if (!WALK_RELATIONS.has(e.relation) || e.target !== symbol.id) continue;
-    hits.push({ node: byId.get(e.source) ?? null, id: e.source, relation: e.relation, depth: 1 });
+    hits.push({ node: byId.get(e.source) ?? null, id: e.source, relation: e.relation, depth: 1,
+      confidence: e.confidence, pathConfidence: e.confidence });
   }
   return hits;
 }
@@ -138,7 +156,8 @@ export function calleesOf(graph: GraphV1, symbol: NodeV1): EdgeHit[] {
   const hits: EdgeHit[] = [];
   for (const e of graph.edges as EdgeV1[]) {
     if (!WALK_RELATIONS.has(e.relation) || e.source !== symbol.id) continue;
-    hits.push({ node: byId.get(e.target) ?? null, id: e.target, relation: e.relation, depth: 1 });
+    hits.push({ node: byId.get(e.target) ?? null, id: e.target, relation: e.relation, depth: 1,
+      confidence: e.confidence, pathConfidence: e.confidence });
   }
   return hits;
 }
@@ -167,7 +186,8 @@ export function impactOf(graph: GraphV1, symbol: NodeV1, maxDepth = 2): EdgeHit[
  * Every seed is pre-marked visited (so a seed can never appear as its own
  * hit, and an edge between two seeds is never reported), then the walk
  * proceeds exactly like `impactOf`'s: each reached node deduped by id and
- * reported once, at the depth it was first reached from *any* seed.
+ * reported once, at the depth it was first reached from *any* seed. Confidence
+ * follows that same first path; it does not change which path is selected.
  */
 export function impactOfMany(graph: GraphV1, seeds: NodeV1[], maxDepth = 2, direction: Direction = "in"): EdgeHit[] {
   const byId = new Map(graph.nodes.map((n) => [n.id, n]));
@@ -175,12 +195,12 @@ export function impactOfMany(graph: GraphV1, seeds: NodeV1[], maxDepth = 2, dire
   // Adjacency keyed for the walk direction, restricted to walk relations:
   //   'in'  → key = edge.target, neighbour = edge.source (who points AT key)
   //   'out' → key = edge.source, neighbour = edge.target (what key points TO)
-  const adj = new Map<string, { other: string; relation: Relation }[]>();
+  const adj = new Map<string, { other: string; relation: Relation; confidence: Confidence }[]>();
   for (const e of graph.edges as EdgeV1[]) {
     if (!WALK_RELATIONS.has(e.relation)) continue;
     const key = direction === "in" ? e.target : e.source;
     const other = direction === "in" ? e.source : e.target;
-    const entry = { other, relation: e.relation };
+    const entry = { other, relation: e.relation, confidence: e.confidence };
     const arr = adj.get(key);
     if (arr) arr.push(entry);
     else adj.set(key, [entry]);
@@ -188,16 +208,18 @@ export function impactOfMany(graph: GraphV1, seeds: NodeV1[], maxDepth = 2, dire
 
   const visited = new Set<string>(seeds.map((s) => s.id));
   const hits: EdgeHit[] = [];
-  let frontier = [...visited];
+  // A seed has no traversed edges yet, so the strongest grade is neutral.
+  let frontier = [...visited].map((id) => ({ id, pathConfidence: "lsp_resolved" as Confidence }));
 
   for (let depth = 1; depth <= maxDepth && frontier.length > 0; depth++) {
-    const next: string[] = [];
+    const next: typeof frontier = [];
     for (const current of frontier) {
-      for (const { other, relation } of adj.get(current) ?? []) {
+      for (const { other, relation, confidence } of adj.get(current.id) ?? []) {
         if (visited.has(other)) continue;
         visited.add(other);
-        hits.push({ node: byId.get(other) ?? null, id: other, relation, depth });
-        next.push(other);
+        const pathConfidence = weakestConfidence(current.pathConfidence, confidence);
+        hits.push({ node: byId.get(other) ?? null, id: other, relation, depth, confidence, pathConfidence });
+        next.push({ id: other, pathConfidence });
       }
     }
     frontier = next;
