@@ -98,6 +98,15 @@ export interface RawEdge {
   /** calls with viaMember: the receiver's resolved type name (from bindings /
    * self / this / Go receiver), when a confident local clue exists. */
   recvType?: string;
+  /** Python calls with viaMember: the receiver is a name bound by `import m` /
+   * `import m as x` / `from p import m`, so it names a MODULE, not a typed value.
+   * Holds the dotted module specifier (`util`, `pkg.sub`, or a relative `.sub`);
+   * resolve.ts maps it to a file and looks `name` up inside that file only. */
+  recvModule?: string;
+  /** With `recvModule` from a `from pkg import m` binding: `m` may be a name
+   * `pkg` itself defines rather than a submodule. Python's own order puts the
+   * attribute first, so resolve.ts drops the edge when `pkg` defines `name`. */
+  recvModuleOf?: { pkg: string; name: string };
   /** calls without viaMember: which kinds the bare-name match may resolve to.
    * Every other language's bare-name call is always a free function, so this
    * is absent for them (resolve.ts defaults to `["function"]`). R (Phase 4) is
@@ -323,6 +332,13 @@ const GRAMMARS: Record<Language, unknown> = {
   php: PHP.php,
 };
 
+/** What a Python import binds a local name to: a dotted module specifier, plus —
+ * for `from pkg import name` — the package it may instead be an attribute of. */
+export interface PyModuleBinding {
+  specifier: string;
+  of?: { pkg: string; name: string };
+}
+
 export interface WalkCtx {
   rel: string;
   source: string;
@@ -335,6 +351,9 @@ export interface WalkCtx {
   enclosingClass: string | null; // nearest enclosing class (py/ts `self`/`this`)
   goReceiverVar: string | null; // Go receiver var, e.g. `w` in `func (w *Worker)`
   importedSymbols: ReadonlyMap<string, { name: string; specifier: string }>;
+  /** Python: local name → module it binds (`import m`, `import m as x`,
+   * `from p import m`). Empty for every other language. */
+  pyModules: ReadonlyMap<string, PyModuleBinding>;
   // R6 (Phase 2): which list we're inside while walking an `R6Class(...)` call's
   // arguments — set only for the direct span of a `public =`/`private =`/
   // `active =` `list(...)`'s own entries (see walk()'s special-cased `argument`
@@ -389,6 +408,7 @@ export function extractFile(rel: string, source: string, lang: Language): Extrac
   const root = parseSource(source);
   const bindings = collectBindings(root, lang);
   const importedSymbols = collectImportedSymbols(root, lang);
+  const pyModules = lang === "python" ? collectPyModules(root) : new Map<string, PyModuleBinding>();
   const rGenerics = lang === "r" ? collectRGenerics(root) : EMPTY_SET;
 
   const nodes: NodeV1[] = [
@@ -422,6 +442,7 @@ export function extractFile(rel: string, source: string, lang: Language): Extrac
     enclosingClass: null,
     goReceiverVar: null,
     importedSymbols,
+    pyModules,
     rR6Access: null,
     rGenerics,
     rSuperClass: null,
@@ -642,6 +663,10 @@ function walk(node: Parser.SyntaxNode, ctx: WalkCtx, out: NodeV1[], edges: RawEd
         desc.kind === "function" || desc.kind === "method"
           ? withoutShadowedImports(ctx.importedSymbols, node)
           : ctx.importedSymbols,
+      pyModules:
+        ctx.lang === "python" && (desc.kind === "function" || desc.kind === "method")
+          ? withoutShadowedPyModules(ctx.pyModules, node)
+          : ctx.pyModules,
       // Reset on every new definition — this is a purely local marker for "we're
       // still inside THIS class-defining call's own public=/private=/active=
       // argument chain," not something that should leak into a nested definition
@@ -766,7 +791,15 @@ function walk(node: Parser.SyntaxNode, ctx: WalkCtx, out: NodeV1[], edges: RawEd
         });
       } else {
         const recvType = resolveRecvType(callee.receiver, ctx);
-        edges.push(recvType ? { ...callEdge, recvType } : callEdge);
+        const pyModule = !recvType && callee.receiver ? ctx.pyModules.get(callee.receiver) : undefined;
+        if (recvType) edges.push({ ...callEdge, recvType });
+        else if (pyModule)
+          edges.push({
+            ...callEdge,
+            recvModule: pyModule.specifier,
+            ...(pyModule.of ? { recvModuleOf: pyModule.of } : {}),
+          });
+        else edges.push(callEdge);
       }
     }
   } else if (ctx.lang === "php" && node.type === "use_declaration") {
@@ -1038,6 +1071,115 @@ function sameSyntaxNode(
   b: Parser.SyntaxNode | null | undefined,
 ): boolean {
   return !!a && !!b && a.tree === b.tree && a.id === b.id;
+}
+
+/**
+ * Python module bindings: `import util` / `import util as u` / `import a.b as x`
+ * bind a local name to a module, and `from pkg import sub` binds `sub` to the
+ * submodule `pkg.sub` when `pkg` does not itself define a `sub` (resolve.ts
+ * checks that, since only it can see other files). `import a.b` binds `a`, the
+ * top package. Wildcard imports bind nothing nameable.
+ */
+function collectPyModules(root: Parser.SyntaxNode): Map<string, PyModuleBinding> {
+  const out = new Map<string, PyModuleBinding>();
+  // One table serves the whole file, function-local imports included, so a name
+  // imported as two different things (`import json` here, `import ujson as json`
+  // there) cannot be attributed to either — it is dropped, not guessed.
+  const conflicted = new Set<string>();
+  const bind = (local: string, binding: PyModuleBinding): void => {
+    const prev = out.get(local);
+    if (prev && prev.specifier !== binding.specifier) conflicted.add(local);
+    out.set(local, binding);
+  };
+  const visit = (node: Parser.SyntaxNode): void => {
+    if (node.type === "import_statement") {
+      for (const n of node.childrenForFieldName("name")) {
+        if (n.type === "aliased_import") {
+          const mod = n.childForFieldName("name")?.text;
+          const alias = n.childForFieldName("alias")?.text;
+          if (mod && alias) bind(alias, { specifier: mod });
+        } else if (n.type === "dotted_name") {
+          const top = n.text.split(".")[0];
+          bind(top, { specifier: top });
+        }
+      }
+      return;
+    }
+    if (node.type === "import_from_statement") {
+      const pkg = node.childForFieldName("module_name")?.text;
+      if (!pkg) return;
+      for (const n of node.childrenForFieldName("name")) {
+        const imported = n.type === "aliased_import" ? n.childForFieldName("name") : n;
+        const alias = n.type === "aliased_import" ? n.childForFieldName("alias")?.text : undefined;
+        if (imported?.type !== "dotted_name" || imported.text.includes(".")) continue;
+        // `from . import x` → `.x`; `from .a import x` → `.a.x`.
+        const specifier = pkg.endsWith(".") ? `${pkg}${imported.text}` : `${pkg}.${imported.text}`;
+        bind(alias ?? imported.text, { specifier, of: { pkg, name: imported.text } });
+      }
+      return;
+    }
+    for (const child of node.namedChildren) visit(child);
+  };
+  visit(root);
+  for (const local of conflicted) out.delete(local);
+  return out;
+}
+
+/**
+ * A parameter, or a name assigned / bound by `for` / `with` / `as` inside a
+ * Python function, wins over a module binding of the same name there: `util.f()`
+ * is then a call on a local value, not on the module. Nested functions and
+ * classes are separate scopes and filter themselves.
+ */
+function withoutShadowedPyModules(
+  modules: ReadonlyMap<string, PyModuleBinding>,
+  definition: Parser.SyntaxNode,
+): ReadonlyMap<string, PyModuleBinding> {
+  if (modules.size === 0) return modules;
+  const shadowed = new Set<string>();
+  const bindTargets = (n: Parser.SyntaxNode | null): void => {
+    if (!n) return;
+    if (n.type === "identifier") shadowed.add(n.text);
+    else if (n.type === "pattern_list" || n.type === "tuple_pattern" || n.type === "list_pattern" || n.type === "list_splat_pattern")
+      for (const c of n.namedChildren) bindTargets(c);
+  };
+  const visit = (node: Parser.SyntaxNode): void => {
+    if (node !== definition && (node.type === "function_definition" || node.type === "class_definition")) {
+      const name = node.childForFieldName("name");
+      if (name) shadowed.add(name.text);
+      return;
+    }
+    switch (node.type) {
+      case "identifier":
+        if (node.parent?.type === "parameters" || node.parent?.type === "lambda_parameters") shadowed.add(node.text);
+        break;
+      case "default_parameter":
+      case "typed_parameter":
+      case "typed_default_parameter":
+        bindTargets(node.childForFieldName("name") ?? node.namedChildren[0] ?? null);
+        break;
+      case "list_splat_pattern":
+      case "dictionary_splat_pattern":
+        bindTargets(node.namedChildren[0] ?? null);
+        break;
+      case "assignment":
+      case "augmented_assignment":
+      case "for_statement":
+      case "for_in_clause":
+        bindTargets(node.childForFieldName("left"));
+        break;
+      case "named_expression":
+        bindTargets(node.childForFieldName("name"));
+        break;
+      case "as_pattern":
+        bindTargets(node.childForFieldName("alias")?.firstNamedChild ?? node.childForFieldName("alias"));
+        break;
+    }
+    for (const child of node.namedChildren) visit(child);
+  };
+  visit(definition);
+  if (![...shadowed].some((name) => modules.has(name))) return modules;
+  return new Map([...modules].filter(([local]) => !shadowed.has(local)));
 }
 
 /**

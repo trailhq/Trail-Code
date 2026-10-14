@@ -128,9 +128,14 @@ export function resolveEdges(
   // node ids. A `use App\Models\User` names a PSR-4 class whose file mirrors the namespace
   // tail under some (unknown) source root, so the suffix is the portable key.
   const phpFilesBySuffix = new Map<string, string[]>();
+  // Python module resolution: a dotted module name (`util`, `pkg.sub`) → the file
+  // node ids it can denote. The source root is unknown, so every dotted suffix of a
+  // file's path is a key, exactly like the Java index above.
+  const pyFilesByModule = new Map<string, string[]>();
   const hasGoModules = !!opts.goModules?.length;
   for (const n of nodes) {
     if (n.kind === "file") {
+      if (PY_EXT.test(n.path)) indexPyModule(n, pyFilesByModule);
       if (hasGoModules && n.path.endsWith(".go")) {
         const dir = posix.dirname(toPosixPath(n.path));
         push(goFilesByDir, dir, n.id);
@@ -269,6 +274,14 @@ export function resolveEdges(
       }
     } else if (e.relation === "calls") {
       if (e.viaMember) {
+        if (e.recvModule && !e.recvType) {
+          // `util.f()` / `u.f()` / `sub.f()`: the receiver is an imported module, so
+          // look the name up inside that module's file only. Anything the module does
+          // not define, or a module that is not in the repo, links nothing.
+          const hit = resolvePyModuleMember(e, perFileName, byId, pyFilesByModule);
+          if (hit) add(e.source, hit.id, "calls", "extracted");
+          continue;
+        }
         if (!e.recvType) continue;
         const hit = resolveTypedMember(e.recvType, e.name!, e.file, ownerMethod, classParents, classTraits, e.argCount);
         if (hit === "ambiguous") continue; // drop — never guess past an ambiguous owner
@@ -334,6 +347,72 @@ export function resolveEdges(
     }
   }
   return out;
+}
+
+/** Index a Python file under every dotted suffix of its module path:
+ * `src/app/util.py` → `src.app.util`, `app.util`, `util`; `pkg/__init__.py` → `pkg`. */
+function indexPyModule(file: NodeV1, index: Map<string, string[]>): void {
+  const parts = toPosixPath(file.path).replace(PY_EXT, "").split("/");
+  if (parts.at(-1) === "__init__") parts.pop();
+  for (let i = 0; i < parts.length; i++) push(index, parts.slice(i).join("."), file.id);
+}
+
+/** The repo file a Python module specifier denotes, or null when it is external,
+ * unresolvable or ambiguous. Relative specifiers (`.`, `..a`) are anchored at the
+ * importing file's package; absolute ones use the suffix index, and a tie is
+ * broken by the importer's own directory (a script's sibling import) before
+ * giving up. */
+function resolvePyModule(
+  spec: string,
+  file: string,
+  byId: Map<string, NodeV1>,
+  index: Map<string, string[]>,
+): string | null {
+  const dots = /^\.*/.exec(spec)![0].length;
+  const rest = spec.slice(dots);
+  if (dots > 0) {
+    let dir = posix.dirname(toPosixPath(file));
+    for (let i = 1; i < dots; i++) dir = posix.dirname(dir);
+    const base = rest ? posix.join(dir, rest.split(".").join("/")) : dir;
+    for (const c of [`${base}.py`, `${base}.pyi`, posix.join(base, "__init__.py")]) {
+      if (byId.get(c)?.kind === "file") return c;
+    }
+    return null;
+  }
+  const candidates = index.get(spec) ?? [];
+  if (candidates.length === 1) return candidates[0];
+  if (candidates.length > 1) {
+    const dir = posix.dirname(toPosixPath(file));
+    const sibling = candidates.filter((c) => posix.dirname(toPosixPath(c)) === dir);
+    if (sibling.length === 1) return sibling[0];
+  }
+  return null;
+}
+
+/** Resolve `<module>.<name>()` to a function (or, failing that, a class
+ * constructor) defined in the module's own file. Null unless exactly one matches. */
+function resolvePyModuleMember(
+  e: RawEdge,
+  perFileName: Map<string, Map<string, NodeV1[]>>,
+  byId: Map<string, NodeV1>,
+  index: Map<string, string[]>,
+): NodeV1 | null {
+  if (!PY_EXT.test(e.file) || !e.name || !e.recvModule) return null;
+  // `from pkg import m`: if `pkg` itself defines `m`, that attribute wins over a
+  // submodule of the same name, and `m.f()` is a call on that value, not a module.
+  if (e.recvModuleOf) {
+    const pkgFile = resolvePyModule(e.recvModuleOf.pkg, e.file, byId, index);
+    if (pkgFile && perFileName.get(pkgFile)?.has(e.recvModuleOf.name)) return null;
+  }
+  const target = resolvePyModule(e.recvModule, e.file, byId, index);
+  if (!target) return null;
+  const inFile = perFileName.get(target)?.get(e.name) ?? [];
+  for (const kinds of [["function"], PY_CTOR_KINDS] as Kind[][]) {
+    const matches = inFile.filter((n) => kinds.includes(n.kind));
+    if (matches.length === 1) return matches[0];
+    if (matches.length > 1) return null;
+  }
+  return null;
 }
 
 function push<T>(map: Map<string, T[]>, key: string, val: T): void {
