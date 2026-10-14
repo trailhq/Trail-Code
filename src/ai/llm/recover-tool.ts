@@ -12,7 +12,7 @@
  */
 
 /** Leading/trailing ```json fence, linear in `raw.length` — no quantified-whitespace regex. */
-function unwrapMarkdownFence(raw: string): string {
+export function unwrapMarkdownFence(raw: string): string {
   let s = raw;
   if (s.startsWith("```")) {
     s = s.slice(3);
