@@ -56,6 +56,7 @@ export interface ResolvedConfig {
 
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 const ORCAROUTER_BASE_URL = "https://api.orcarouter.ai/v1";
+const CHEAPERINFERENCE_BASE_URL = "https://api.cheaperinference.com/v1";
 
 /** Per-provider default model. */
 export const DEFAULT_MODELS: Record<ProviderKind, string> = {
@@ -65,6 +66,8 @@ export const DEFAULT_MODELS: Record<ProviderKind, string> = {
   litellm: "openai/gpt-4o-mini",
   // Provider-prefixed so the OrcaRouter gateway routes it; override with GRAFT_MODEL.
   orcarouter: "openai/gpt-4o-mini",
+  // Bare model id, as the Cheaper Inference gateway names it; override with GRAFT_MODEL.
+  cheaperinference: "gpt-5.4-mini",
 };
 
 export const DEFAULTS = {
@@ -79,7 +82,7 @@ export function resolveConfig(config: EngineConfig = {}): ResolvedConfig {
 
   const explicitKey = config.apiKey ?? env.GRAFT_API_KEY;
   const legacyKey = env.OPENROUTER_API_KEY;
-  const apiKey = explicitKey ?? legacyKey ?? env.ORCAROUTER_API_KEY;
+  const apiKey = explicitKey ?? legacyKey ?? env.ORCAROUTER_API_KEY ?? env.CHEAPER_INFERENCE_API_KEY;
   const usedLegacyEnv = !explicitKey && !!legacyKey;
 
   const model =
@@ -87,14 +90,22 @@ export function resolveConfig(config: EngineConfig = {}): ResolvedConfig {
     env.GRAFT_MODEL ??
     env.GRAFT_OPENROUTER_MODEL ??
     env.ORCAROUTER_MODEL ??
+    env.CHEAPER_INFERENCE_MODEL ??
     DEFAULT_MODELS[provider];
 
-  let baseUrl = config.baseUrl ?? env.GRAFT_BASE_URL ?? env.OPENROUTER_BASE_URL ?? env.ORCAROUTER_BASE_URL;
+  let baseUrl =
+    config.baseUrl ??
+    env.GRAFT_BASE_URL ??
+    env.OPENROUTER_BASE_URL ??
+    env.ORCAROUTER_BASE_URL ??
+    env.CHEAPER_INFERENCE_BASE_URL;
   // Back-compat: an existing setup with only OPENROUTER_API_KEY keeps hitting
   // OpenRouter without any config change.
   if (!baseUrl && provider === "openai" && usedLegacyEnv) baseUrl = OPENROUTER_BASE_URL;
   // The orcarouter provider points at the gateway unless a base URL is given.
   if (!baseUrl && provider === "orcarouter") baseUrl = ORCAROUTER_BASE_URL;
+  // The cheaperinference provider points at the gateway unless a base URL is given.
+  if (!baseUrl && provider === "cheaperinference") baseUrl = CHEAPERINFERENCE_BASE_URL;
 
   const headers =
     provider === "openai" && baseUrl?.includes("openrouter.ai")

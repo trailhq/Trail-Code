@@ -13,14 +13,20 @@
  * OrcaRouter AI gateway by default (see orcarouter.ts) so its users get the
  * gateway's routing, failover, and guardrails behind a named provider instead
  * of a bare custom base URL.
+ *
+ * `cheaperinference` is the same kind of convenience over `openai`, pointed at
+ * the Cheaper Inference gateway by default (see cheaperinference.ts) so one key
+ * reaches models from several labs behind a named provider instead of a bare
+ * custom base URL.
  */
 import type { ChatModel } from "./types.js";
 import { OpenAIChatModel } from "./openai.js";
 import { AnthropicChatModel } from "./anthropic.js";
 import { LiteLLMChatModel } from "./litellm.js";
 import { OrcaRouterChatModel } from "./orcarouter.js";
+import { CheaperInferenceChatModel } from "./cheaperinference.js";
 
-export type ProviderKind = "openai" | "anthropic" | "litellm" | "orcarouter";
+export type ProviderKind = "openai" | "anthropic" | "litellm" | "orcarouter" | "cheaperinference";
 
 export interface ChatModelConfig {
   provider: ProviderKind;
@@ -51,6 +57,13 @@ export function createChatModel(cfg: ChatModelConfig): ChatModel {
       });
     case "orcarouter":
       return new OrcaRouterChatModel({
+        apiKey: cfg.apiKey,
+        model: cfg.model,
+        baseUrl: cfg.baseUrl,
+        headers: cfg.headers,
+      });
+    case "cheaperinference":
+      return new CheaperInferenceChatModel({
         apiKey: cfg.apiKey,
         model: cfg.model,
         baseUrl: cfg.baseUrl,
