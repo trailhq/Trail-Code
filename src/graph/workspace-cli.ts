@@ -27,6 +27,8 @@ export interface WorkspaceBuildOptions {
   deep: boolean;
   extensions?: string[];
   concurrency?: number;
+  /** Max concept synthesis batches in flight per child (default 4). */
+  synthConcurrency?: number;
   /** Provider/model/key config for child builds — WITHOUT any contextDir
    * override, so each child writes to its own `<child>/graft/`. */
   childConfig: EngineConfig;
@@ -63,7 +65,7 @@ export async function runWorkspaceBuild(root: string, opts: WorkspaceBuildOption
       patchBuildConfig(childDir, childConfigPatch);
     }
     const engine = new Graft({ ...opts.childConfig, contextDir: undefined });
-    if (opts.deep) await engine.init(childDir, { extensions: opts.extensions });
+    if (opts.deep) await engine.init(childDir, { extensions: opts.extensions, synthConcurrency: opts.synthConcurrency });
     const g = await engine.graph(childDir, { llm: opts.deep, concurrency: opts.concurrency });
     console.log(`✓ ${childName}/: ${g.nodes} nodes, ${g.edges} edges, ${g.cards} cards [${g.languages.join(", ")}]`);
     for (const e of g.errors) console.error(`✗ ${childName}/: ${e}`);

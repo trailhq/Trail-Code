@@ -6,7 +6,9 @@
  *   2. Summarize each file to prose (one LLM call per file, cached by content hash).
  *   3. Synthesize a CURATED node set from the labeled summaries (the synthesizer
  *      decides granularity: subsystems, notable files, and concepts). This is
- *      one LLM call per batch of summaries; batches are cached by content.
+ *      one LLM call per batch of summaries; the batches are independent, so they
+ *      run concurrently, and each is cached by content. Where the batches are cut,
+ *      and why that decides what the next build costs, is `./batches.ts`.
  *   4. Resolve node names → slugs and links → edges; attribute each node to its
  *      source files so staleness stays exact.
  *   5. Write one markdown file per node (preserving human notes) + a manifest.
@@ -23,6 +25,7 @@ import { readFollowNestedRepos, readFollowSubmodules, readIncludeDirs } from "..
 import type { Summarizer } from "../ai/summarize.js";
 import { LlmFailureGate } from "../ai/failure.js";
 import type { FileSummary, SynthNode, Synthesizer } from "../ai/synthesize.js";
+import { planSynthesis, type SynthesisBatch } from "./batches.js";
 import {
   CACHE_DIR,
   MANIFEST_VERSION,
@@ -47,8 +50,13 @@ export const CODE_EXTENSIONS = [
   ".cs", ".swift", ".sql", ".sh", ".proto",
 ];
 
-/** Char budget of summary text per synthesis call (keeps each call in-context). */
-const BATCH_CHAR_BUDGET = 48_000;
+/**
+ * Synthesis calls in flight at once. Small on purpose, and separate from phase 1's
+ * `-j`: there each call is one small file summary, here each is a whole batch of
+ * summaries — a long, expensive request, of which a big repo has a handful rather
+ * than hundreds.
+ */
+const DEFAULT_SYNTH_CONCURRENCY = 4;
 
 export interface BuildProgress {
   phase: "summarize" | "synthesize" | "write";
@@ -72,6 +80,9 @@ export interface BuildOptions {
   synthesizer: Synthesizer;
   /** Files summarized in parallel during phase 1. Default 8. Raised via `graft build -j`. */
   concurrency?: number;
+  /** Synthesis batches synthesized in parallel during phase 2. Default
+   * {@link DEFAULT_SYNTH_CONCURRENCY}. Raised via `graft build --synth-concurrency`. */
+  synthConcurrency?: number;
   onProgress?: (info: BuildProgress) => void;
 }
 
@@ -85,10 +96,12 @@ export interface BuildResult {
   links: number;
   errors: string[];
   /** Files whose summary call failed, and files never attempted once the pass gave
-   * up — reported as data so the CLI can exit non-zero without reading messages (#127). */
+   * up — reported as data so the CLI can exit non-zero without reading messages (#127).
+   * A unit is a file in phase 1 and a whole batch of them in phase 2, and the
+   * counts cover both: the failure gate is shared. */
   failedFiles: number;
   skippedFiles: number;
-  /** Why the summarize phase stopped early, when it did. */
+  /** Why the LLM passes stopped early, when they did. */
   fatal?: string;
 }
 
@@ -141,6 +154,14 @@ interface NodeDraft {
   summary: string;
   sources: Map<string, string>; // path → hash
   links: Map<string, NodeLink>; // "to|relation" → link
+}
+
+/** What one synthesis batch ended up contributing, for the per-batch log line. */
+interface BatchOutcome {
+  nodes: SynthNode[];
+  /** Served from the cache, so no call was made for it. */
+  cached: boolean;
+  state: "ok" | "failed" | "skipped";
 }
 
 export async function buildContext(dir: string, opts: BuildOptions): Promise<BuildResult> {
@@ -241,35 +262,86 @@ export async function buildContext(dir: string, opts: BuildOptions): Promise<Bui
     .filter((w): w is FileWork & { summary: string } => Boolean(w.summary))
     .map((w) => ({ path: w.rel, summary: w.summary }))
     .sort((a, b) => a.path.localeCompare(b.path));
-  const batches = batchBySize(summarized, BATCH_CHAR_BUDGET);
+  const batches = planSynthesis(summarized, hashByPath);
   result.batches = batches.length;
 
-  const synthNodes: SynthNode[] = [];
-  for (let b = 0; b < batches.length; b++) {
-    opts.onProgress?.({ phase: "synthesize", index: b, total: batches.length, file: `batch ${b + 1}` });
-    const key = batchKey(batches[b], hashByPath);
-    let nodes = cache.synth[key];
+  /**
+   * One batch's synthesis, cached and failure-gated exactly as phase 1 is: a cache
+   * hit is served even once the gate has closed (it costs nothing), only the call
+   * is skipped.
+   */
+  async function synthesizeBatch(batch: SynthesisBatch, b: number): Promise<BatchOutcome> {
+    let nodes = cache.synth[batch.key];
     // An empty array is a miss, not a hit: caching [] made a silent empty
     // synthesis permanent, the same trap #177 closed for the meaning pass (#129).
-    const cached = Array.isArray(nodes) && nodes.length > 0;
-    if (!cached) {
-      nodes = await opts.synthesizer.synthesize(batches[b]);
-      if (nodes.length > 0) cache.synth[key] = nodes;
-      else delete cache.synth[key];
+    if (Array.isArray(nodes) && nodes.length > 0) return { nodes, cached: true, state: "ok" };
+    if (gate.stopped) {
+      gate.skip();
+      return { nodes: [], cached: false, state: "skipped" };
     }
-    const links = nodes.reduce((n, node) => n + node.links.length, 0);
-    console.error(
-      `  synthesis batch ${b + 1}/${batches.length}: ${nodes.length} nodes, ${links} links${cached ? " (cached)" : ""}`,
-    );
-    synthNodes.push(...nodes);
+    try {
+      nodes = await opts.synthesizer.synthesize(batch.files);
+    } catch (err) {
+      // Recorded, not thrown. A provider that has stopped serving fails every
+      // batch the same way, so the gate turns the first of those into a loud
+      // fatal and the rest into skipped calls, and the CLI already reports a
+      // concept pass with errors as a degraded meaning tier. Rethrowing instead
+      // would write no graph at all and leave the synthesis cache unsaved, so the
+      // next run would re-synthesize every batch that did work.
+      const message = errMsg(err);
+      result.errors.push(`synthesis batch ${b + 1}/${batches.length}: ${message}`);
+      gate.record(message);
+      return { nodes: [], cached: false, state: "failed" };
+    }
+    if (nodes.length > 0) cache.synth[batch.key] = nodes;
+    else delete cache.synth[batch.key];
+    gate.succeeded();
+    return { nodes, cached: false, state: "ok" };
   }
+
+  // A batch is an independent unit of work — its call sees only its own summaries,
+  // and nothing is merged until every call is in (phase 3) — so the batches run
+  // concurrently, the way phase 1's per-file calls already do. The slow part is
+  // the round-trip, and a big repo otherwise serializes every one of them.
+  //
+  // Results are collected in BATCH order, whatever order the calls finish in.
+  // That is what makes this safe: the merge below is order-sensitive (first name
+  // registered wins, longest summary wins), so consuming batches as they completed
+  // would make the graph a function of network timing, and two builds of the same
+  // repo could disagree.
+  let synthesized = 0;
+  const outcomes = await mapWithConcurrency(batches, Math.max(1, opts.synthConcurrency ?? DEFAULT_SYNTH_CONCURRENCY), async (batch, b): Promise<BatchOutcome> => {
+    const outcome = await synthesizeBatch(batch, b);
+    // Reported on completion, like the crux pass (`graph/enrich.ts`): with several
+    // calls in flight the next batch is not the one that is running, so `index`
+    // counts finished batches and `file` names the one that just landed. The CLI
+    // prints them as one overwritten line, which only reads as progress if the
+    // counter never goes backwards.
+    opts.onProgress?.({ phase: "synthesize", index: synthesized++, total: batches.length, file: `batch ${b + 1}` });
+    return outcome;
+  });
+
+  // One log line per batch, in batch order: printed as the calls land it would
+  // report which call was fastest, which is noise on a run whose output does not
+  // depend on how the calls interleaved.
+  const synthNodes: SynthNode[] = [];
+  for (const [b, out] of outcomes.entries()) {
+    const links = out.nodes.reduce((n, node) => n + node.links.length, 0);
+    const note = out.cached ? " (cached)" : out.state === "failed" ? " (failed)" : out.state === "skipped" ? " (skipped)" : "";
+    console.error(`  synthesis batch ${b + 1}/${batches.length}: ${out.nodes.length} nodes, ${links} links${note}`);
+    synthNodes.push(...out.nodes);
+  }
+  // The gate is shared with phase 1, so these counts now cover both LLM passes.
+  result.failedFiles = gate.failed;
+  result.skippedFiles = gate.skipped;
+  result.fatal = gate.fatal;
+
   // Drop cache entries for batches we no longer produce, so it can't grow forever.
   // Skip empty arrays so a failed batch is retried on the next --deep, not frozen.
   cache.synth = Object.fromEntries(
-    batches.flatMap((batch) => {
-      const k = batchKey(batch, hashByPath);
-      const v = cache.synth[k];
-      return v && v.length > 0 ? [[k, v] as [string, SynthNode[]]] : [];
+    batches.flatMap(({ key }) => {
+      const v = cache.synth[key];
+      return v && v.length > 0 ? [[key, v] as [string, SynthNode[]]] : [];
     }),
   );
   saveCache(outDir, cache);
@@ -371,35 +443,6 @@ export async function buildContext(dir: string, opts: BuildOptions): Promise<Bui
   writeManifest(outDir, manifest);
 
   return result;
-}
-
-/** Greedily pack file summaries into batches under a char budget (≥1 file each). */
-function batchBySize(files: FileSummary[], budget: number): FileSummary[][] {
-  const batches: FileSummary[][] = [];
-  let cur: FileSummary[] = [];
-  let size = 0;
-  for (const f of files) {
-    const len = f.path.length + f.summary.length + 8;
-    if (cur.length > 0 && size + len > budget) {
-      batches.push(cur);
-      cur = [];
-      size = 0;
-    }
-    cur.push(f);
-    size += len;
-  }
-  if (cur.length > 0) batches.push(cur);
-  return batches;
-}
-
-/** Stable key for a batch: its files and their content hashes. */
-function batchKey(batch: FileSummary[], hashByPath: Map<string, string>): string {
-  return contentHash(
-    batch
-      .map((f) => `${f.path}:${hashByPath.get(f.path) ?? ""}`)
-      .sort()
-      .join("\n"),
-  );
 }
 
 function registerName(table: Map<string, string>, name: string, slug: string): void {
