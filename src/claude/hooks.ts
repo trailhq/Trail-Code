@@ -9,6 +9,7 @@ import { teammatesOn } from '../notes/git-facts.js';
 import { indexFreshness, staleBanner } from '../context/check.js';
 import { patchStats, readStats, acquireLock, readSession, writeSession, resolveContextDir } from './state.js';
 import { graftCliPath, claudeScriptPath } from './paths.js';
+import { isGraftStatusline } from './settings-merge.js';
 import { runUpkeep } from '../upkeep-run.js';
 import { runningVersion } from '../upkeep.js';
 import { flushClosedSessions, summarizeSession } from '../telemetry/sessions.js';
@@ -171,6 +172,27 @@ function checkStaleCount(dir: string): number {
   const g = r?.graph ?? {};
   return (g.changed?.length ?? 0) + (g.added?.length ?? 0) + (g.removed?.length ?? 0);
 }
+
+/**
+ * Is graft's statusline wired for this repo — the one reader of `staleCount`?
+ *
+ * `graft check` re-extracts every source file with no cache, so on a large repo it
+ * outlasts `CHILD_TIMEOUT_MS` and post-edit pays the full budget on every edit for
+ * a count that comes back null anyway. When no graft statusline is installed
+ * (`--no-statusline`, `GRAFT_NO_STATUSLINE`, or a statusLine of the user's own)
+ * nothing reads the count, so the hook skips the child altogether. Read from the
+ * settings files rather than the wiring stamp, which lives under the gitignored
+ * `graft/` and is absent in a fresh worktree.
+ */
+function graftStatuslineWired(dir: string): boolean {
+  for (const file of hookSettingsFiles(dir)) {
+    try {
+      const settings = JSON.parse(readFileSync(file, 'utf8')) as any;
+      if (isGraftStatusline(settings?.statusLine) || isGraftStatusline(settings?.subagentStatusLine)) return true;
+    } catch { /* missing or unparseable — look at the next file */ }
+  }
+  return false;
+}
 function emit(eventName: string, additionalContext: string): void {
   process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: eventName, additionalContext } }));
 }
@@ -201,7 +223,10 @@ export function editedFilePath(input: any, dir: string): string | null {
 async function handlePostEdit(input: any, dir: string): Promise<void> {
   const file = editedFilePath(input, dir);
   if (!file || underGraft(dir, file)) return;
-  patchStats(dir, { dirty: true, staleCount: checkStaleCount(dir), lastFile: basename(file) });
+  // Dirty first: if the check child below overruns and the hook is killed, the Stop
+  // hook still sees the flag and syncs.
+  patchStats(dir, { dirty: true, lastFile: basename(file) });
+  if (graftStatuslineWired(dir)) patchStats(dir, { staleCount: checkStaleCount(dir) });
   const w = readWiring(dir);
   if (w) { const br = formatBlastRadius(w, file); if (br) emit('PostToolUse', br); }
 }

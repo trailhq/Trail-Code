@@ -20,7 +20,7 @@ test('post-edit marks dirty and records lastFile', async () => {
   mkdirSync(join(d, 'graft', '.graph'), { recursive: true });
   writeFileSync(join(d, 'graft', '.graph', 'wiring.json'),
     JSON.stringify({ meta: { nodeCount: 0, edgeCount: 0, languages: [] }, nodes: [], edges: [] }));
-  // post-edit no longer runs `graft check` at all (removed: too slow on large repos) — just dirty + lastFile.
+  // No graft statusline is wired here, so post-edit skips `graft check` — just dirty + lastFile.
   process.env.CLAUDE_PROJECT_DIR = d;
   const stdin = JSON.stringify({ tool_input: { file_path: join(d, 'src', 'auth.ts') } });
   await runWithStdin(stdin, () => main('post-edit'));
@@ -41,6 +41,80 @@ async function runWithStdin(text: string, fn: () => Promise<void>): Promise<void
   process.env.GRAFT_TEST_STDIN = text;
   try { await fn(); } finally { delete process.env.GRAFT_TEST_STDIN; }
 }
+
+// ── post-edit: `graft check` only when a graft statusline will read the count ──
+
+const GRAFT_STATUSLINE = { type: 'command', command: 'node "${CLAUDE_PROJECT_DIR:-.}/.claude/helpers/graft-statusline.cjs"' };
+
+/** A `graft check` stub that records that it ran and whether `dirty` was already
+ * on disk at that moment, then reports 3 drifted nodes. */
+function writeCheckStub(d: string): { stub: string; seenFile: string } {
+  const stub = join(d, 'check-stub.cjs');
+  const seenFile = join(d, 'check-seen.json');
+  const statsFile = join(d, 'graft', '.cache', 'stats.json');
+  writeFileSync(
+    stub,
+    `const fs = require('fs');\n` +
+      `let dirty = null;\n` +
+      `try { dirty = JSON.parse(fs.readFileSync(${JSON.stringify(statsFile)}, 'utf8')).dirty; } catch {}\n` +
+      `fs.writeFileSync(${JSON.stringify(seenFile)}, JSON.stringify({ args: process.argv.slice(2), dirty }));\n` +
+      `process.stdout.write(JSON.stringify({ graph: { changed: ['a', 'b'], added: ['c'], removed: [] } }));\n`,
+  );
+  return { stub, seenFile };
+}
+
+/** Run post-edit in a fresh repo with the given project and user settings, the
+ * check stub standing in for the CLI. Returns what the stub saw (null if it never
+ * ran) and the stats the hook left behind. */
+async function postEditWith(project: object | null, user: object | null) {
+  const d = mkdtempSync(join(tmpdir(), 'graft-post-edit-'));
+  const home = mkdtempSync(join(tmpdir(), 'graft-post-edit-home-'));
+  if (project) {
+    mkdirSync(join(d, '.claude'), { recursive: true });
+    writeFileSync(join(d, '.claude', 'settings.json'), JSON.stringify(project));
+  }
+  if (user) writeFileSync(join(home, 'settings.json'), JSON.stringify(user));
+  const { stub, seenFile } = writeCheckStub(d);
+  const previousHome = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_PROJECT_DIR = d;
+  process.env.CLAUDE_CONFIG_DIR = home;
+  process.env.GRAFT_TEST_CLI = stub;
+  try {
+    await runWithStdin(JSON.stringify({ tool_input: { file_path: join(d, 'src', 'auth.ts') } }), () => main('post-edit'));
+    const seen = existsSync(seenFile) ? JSON.parse(readFileSync(seenFile, 'utf8')) : null;
+    return { seen, stats: readStats(d)! };
+  } finally {
+    delete process.env.GRAFT_TEST_CLI;
+    delete process.env.CLAUDE_PROJECT_DIR;
+    if (previousHome === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = previousHome;
+  }
+}
+
+test('post-edit skips graft check when no graft statusline is wired', async () => {
+  const { seen, stats } = await postEditWith({ statusLine: { type: 'command', command: 'bash ~/my-statusline.sh' } }, null);
+  assert.equal(seen, null, 'graft check never ran — nothing would read staleCount');
+  assert.equal(stats.dirty, true);
+  assert.equal(stats.lastFile, 'auth.ts');
+});
+
+test('post-edit counts drift when the repo wires the graft statusline', async () => {
+  const { seen, stats } = await postEditWith({ statusLine: GRAFT_STATUSLINE }, null);
+  assert.deepEqual(seen?.args.slice(0, 3), ['check', '.', '--json']);
+  assert.equal(stats.staleCount, 3);
+  assert.equal(stats.dirty, true);
+});
+
+test('post-edit counts drift when the graft statusline is wired at user level', async () => {
+  const { seen, stats } = await postEditWith(null, { statusLine: GRAFT_STATUSLINE });
+  assert.notEqual(seen, null, 'graft check ran');
+  assert.equal(stats.staleCount, 3);
+});
+
+test('post-edit marks dirty before graft check runs, so a killed check cannot lose it', async () => {
+  const { seen } = await postEditWith({ statusLine: GRAFT_STATUSLINE }, null);
+  assert.equal(seen?.dirty, true, 'dirty was already on disk when the check child started');
+});
 
 test('post-edit-sync marks dirty and kicks off the background sync', async () => {
   const d = mkdtempSync(join(tmpdir(), 'graft-hooks-'));
@@ -708,6 +782,9 @@ test('post-edit passes --dir <resolved> to graft check when GRAFT_DIR is set', a
   mkdirSync(join(d, 'elsewhere', '.graph'), { recursive: true });
   writeFileSync(join(d, 'elsewhere', '.graph', 'wiring.json'),
     JSON.stringify({ meta: { nodeCount: 0, edgeCount: 0, languages: [] }, nodes: [], edges: [] }));
+  // post-edit only runs the check when a graft statusline will read the count.
+  mkdirSync(join(d, '.claude'), { recursive: true });
+  writeFileSync(join(d, '.claude', 'settings.json'), JSON.stringify({ statusLine: GRAFT_STATUSLINE }));
   const stub = join(d, 'check-stub.cjs');
   const argsFile = join(d, 'args-seen.json');
   writeFileSync(
