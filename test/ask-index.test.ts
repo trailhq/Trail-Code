@@ -99,7 +99,7 @@ test("writeAskIndex + readAskIndex round-trip matches live tokenization exactly"
 
     const index = readAskIndex(outDir);
     assert.ok(index, "sidecar should exist after build");
-    assert.equal(index!.version, 1);
+    assert.equal(index!.version, 2);
     assert.equal(index!.docCount, graph!.nodes.length);
     assert.equal(index!.docs.length, graph!.nodes.length);
 
@@ -170,7 +170,7 @@ test("unknown sidecar version falls back to live tokenization without crashing",
     const live = ask(dir, QUERY, { source: false });
 
     const raw = JSON.parse(readFileSync(idxPath, "utf8"));
-    raw.version = 2;
+    raw.version = 99;
     writeFileSync(idxPath, JSON.stringify(raw));
 
     assert.equal(readAskIndex(outDir), null, "an unknown version reads as null (fallback signal)");
@@ -267,7 +267,7 @@ test("readAskIndex returns null when docCount doesn't match docs.length", () => 
     const idxPath = askIndexPath(outDir);
     mkdirSync(dirname(idxPath), { recursive: true });
     const corrupted = {
-      version: 1,
+      version: 2,
       avgBodyLen: 3,
       df: [["foo", 1]],
       docCount: 5, // deliberately mismatched with docs below
@@ -401,6 +401,81 @@ test("ask on an OLD fat graph (body_text present, no sidecar): unchanged behavio
     const r = ask(dir, "stripe");
     const hit = r.hits.find((h) => h.title.startsWith("checkout"));
     assert.ok(hit, "an old fat graph with no sidecar must still find a body-only term via node.body_text");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ── Unicode tokenization (#432) ────────────────────────────────────────────
+//
+// The tokenizer split on `[^a-z0-9]+`, so every non-ASCII script was treated
+// as separator noise: Cyrillic/Greek/Arabic prose and CJK text tokenized to
+// nothing, and a query in those scripts returned zero hits — silently
+// indistinguishable from "not in the codebase".
+
+test("tokenize keeps non-Latin words that the ASCII splitter dropped", () => {
+  // Ukrainian from the original report: the ASCII splitter yielded only ['js','shell']
+  assert.deepEqual(tokenize("евристика JS shell"), ["евристика", "js", "shell"]);
+  // Accented Latin, Greek, Arabic, Hindi — space-separated scripts survive whole
+  // (Δ is one character, so the length>1 rule drops it as it always has)
+  assert.deepEqual(tokenize("café Δ český हिन्दी"), ["café", "český", "हिन्दी"]);
+});
+
+test("tokenize still splits identifiers the same way for ASCII input", () => {
+  assert.deepEqual(tokenize("validateAuthToken some_snake-case"), [
+    "validate",
+    "auth",
+    "token",
+    "some",
+    "snake",
+    "case",
+  ]);
+  // stop words and single characters are unchanged
+  assert.deepEqual(tokenize("the a I x"), []);
+});
+
+test("tokenize emits CJK bigrams so a shorter query phrase matches a longer one", () => {
+  // No word separators: the whole phrase is one token, so bigrams carry the overlap
+  assert.deepEqual(tokenize("中文检索"), ["中文检索", "中文", "文检", "检索"]);
+  // A mixed token only bigrams its CJK run — no Latin garbage pairs
+  assert.deepEqual(tokenize("user中文"), ["user中文", "中文"]);
+  // Japanese kana and Korean Hangul runs behave the same
+  assert.ok(tokenize("テスト検索").includes("テス"));
+  assert.ok(tokenize("한국어검색").includes("한국"));
+  // A single CJK character is still filtered by the length rule, its bigram partner is not
+  assert.deepEqual(tokenize("中"), []);
+  assert.deepEqual(tokenize("中文"), ["中文"]);
+});
+
+test("sidecar parity holds for non-ASCII cards: index bags equal live tokenization", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "graft-ask-index-unicode-"));
+  try {
+    const outDir = contextDirFor(dir);
+    writeFileSync(
+      join(dir, "notes.ts"),
+      `// евристика: keeps  CJK 检索 notes\n` +
+        `export function 检索Helper(): number {\n  return 1;\n}\n`,
+    );
+    const result = await buildGraph(dir);
+    assert.deepEqual(result.errors, [], "build must be clean");
+    reinjectBodyText(dir, outDir);
+    const graph = readGraph(wiringPath(outDir));
+    assert.ok(graph, "graph should exist after build");
+
+    const index = readAskIndex(outDir);
+    assert.ok(index, "sidecar should exist after build");
+    assert.equal(index!.version, 2, "the Unicode-aware tokenizer ships as format v2");
+
+    const doc = index!.docs.find((d) => d.name.some(([t]) => t.includes("检索")))!;
+    assert.ok(doc, "the CJK-named symbol must be indexed, not dropped");
+    // Build-time bags must equal what live tokenization produces (the sidecar contract)
+    const node = graph!.nodes.find((n) => n.id === doc.id)!;
+    assert.deepEqual(doc.name, [...counts(tokenize(node.name))].sort());
+    // And the CJK bigram from the symbol name is present in the corpus frequencies
+    assert.ok(
+      index!.df.some(([token]) => token === "检索" || token === "中文"),
+      "expected CJK bigrams in the document-frequency table",
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
