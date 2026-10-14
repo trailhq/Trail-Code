@@ -20,6 +20,7 @@ export {
   readStats,
   releaseLock,
   resolveContextDir,
+  syncBackingOff,
   writeJsonAtomic,
   writeStats,
 } from '../util/state.js';

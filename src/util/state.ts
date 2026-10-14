@@ -11,19 +11,46 @@
  */
 import { readFileSync, writeFileSync, mkdirSync, renameSync, rmSync, statSync } from 'node:fs';
 import { join, dirname, isAbsolute } from 'node:path';
+import { contextDirFor } from '../context/location.js';
 
 export interface Stats {
   nodeCount: number; edgeCount: number; languages: string[];
   totalCount: number; readyCount: number;
   staleCount: number; dirty: boolean; syncing: boolean;
   syncedAt: string | null; lastFile: string | null;
+  /** Consecutive failed background syncs for this project; 0 after a success. */
+  syncFailures: number;
+  /** Why the last sync failed — one bounded line, or null when the last one worked.
+   *  A graph pinned at `dirty` with nothing to read is indistinguishable from a
+   *  slow build, and that ambiguity is what made a retry storm invisible. */
+  syncError: string | null;
+  /** ISO instant before which no new sync is attempted; null when none is pending. */
+  syncRetryAt: string | null;
 }
 
 export const LOCK_STALE_MS = 300000;
 
 export function emptyStats(): Stats {
   return { nodeCount: 0, edgeCount: 0, languages: [], totalCount: 0, readyCount: 0,
-    staleCount: 0, dirty: false, syncing: false, syncedAt: null, lastFile: null };
+    staleCount: 0, dirty: false, syncing: false, syncedAt: null, lastFile: null,
+    syncFailures: 0, syncError: null, syncRetryAt: null };
+}
+
+/**
+ * Is a failed sync still inside its backoff window?
+ *
+ * A `Stop` hook fires once per turn in every open session, so "stay dirty and
+ * retry" is a promise the hook can only keep by rebuilding on the next turn —
+ * forever, when the rebuild is what keeps failing. The backoff is what turns
+ * that loop into a decaying one, and it is wall-clock rather than turn-counted
+ * precisely because the damage scales with how many sessions are open: only a
+ * clock bounds the aggregate attempt rate, and it needs no write on the turns
+ * that are being skipped.
+ */
+export function syncBackingOff(s: Stats, now = Date.now()): boolean {
+  if (!s.syncRetryAt) return false;
+  const at = Date.parse(s.syncRetryAt);
+  return Number.isFinite(at) && at > now;
 }
 
 const LOCK_FILE = '.sync.lock';
@@ -35,14 +62,21 @@ const LOCK_FILE = '.sync.lock';
  * and `upkeep` all resolve a bare project dir and never see an explicit
  * `--dir` — unlike a direct CLI invocation, which threads one through
  * `contextDirFor` (`context/node-file.ts`). This mirrors that same override
- * precedence for those entry points: `GRAFT_DIR` wins over the default
- * `<projectDir>/graft`, the same env var `resolveConfig` already honors for
- * the `--deep` LLM path. A relative `GRAFT_DIR` resolves against `projectDir`
- * so it holds regardless of the caller's cwd.
+ * precedence for those entry points: `GRAFT_DIR` wins over the default, the
+ * same env var `resolveConfig` already honors for the `--deep` LLM path. A
+ * relative `GRAFT_DIR` resolves against `projectDir` so it holds regardless of
+ * the caller's cwd.
+ *
+ * The un-overridden answer comes from `contextDirFor` itself rather than being
+ * spelled out again: these two must be the same question, because this one
+ * writes into the answer. When the default name is taken by a directory that
+ * isn't a context dir, `contextDirFor` moves the graph aside — and if the hooks
+ * kept answering `<projectDir>/graft` regardless, the hooks and the CLI would
+ * be maintaining two different graphs in the same repo.
  */
 export function resolveContextDir(projectDir: string): string {
   const override = process.env.GRAFT_DIR;
-  if (!override) return join(projectDir, 'graft');
+  if (!override) return contextDirFor(projectDir);
   return isAbsolute(override) ? override : join(projectDir, override);
 }
 

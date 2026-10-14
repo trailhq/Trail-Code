@@ -23,7 +23,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { contextDirFor } from "../context/node-file.js";
+import { contextDirFor, workspaceFile } from "../context/location.js";
 import { checkGraph } from "./check.js";
 import { loadGraphCached } from "./load.js";
 import { buildRepoMap, formatRepoMap } from "./map.js";
@@ -60,11 +60,9 @@ export interface WorkspaceV1 {
   children: string[];
 }
 
-const WORKSPACE_FILE = "workspace.json";
-
 /** Absolute path to the workspace index for a parent root (`<dir>/graft/workspace.json`). */
 export function workspacePath(root: string, override?: string): string {
-  return join(contextDirFor(root, override), WORKSPACE_FILE);
+  return workspaceFile(contextDirFor(root, override));
 }
 
 /** Read the workspace index, or null when the parent has none (not a workspace,
@@ -84,7 +82,7 @@ export function readWorkspace(root: string, override?: string): WorkspaceV1 | nu
 export function writeWorkspace(root: string, ws: WorkspaceV1, override?: string): string {
   const dir = contextDirFor(root, override);
   mkdirSync(dir, { recursive: true });
-  const path = join(dir, WORKSPACE_FILE);
+  const path = workspaceFile(dir);
   const sorted: WorkspaceV1 = { version: 1, children: [...ws.children].sort() };
   writeFileSync(path, JSON.stringify(sorted, null, 2) + "\n");
   return path;

@@ -49,7 +49,8 @@ import { ASK_INDEX_FILE } from "../ask/index-file.js";
 import { CACHE_DIR, contextDirFor } from "../context/node-file.js";
 import { EXTRACT_CACHE_PREFIX } from "./extract-cache.js";
 import { FINGERPRINT_PREFIX } from "./fingerprint.js";
-import { GRAPH_DIR, wiringPath } from "./write.js";
+import { GRAPH_DIR } from "../context/location.js";
+import { wiringPath } from "./write.js";
 
 /** The one line a linked worktree's `.git` file carries. */
 const GITDIR_KEY = "gitdir:";

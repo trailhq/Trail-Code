@@ -7,7 +7,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -118,5 +118,82 @@ test("resolveContextDir takes an absolute GRAFT_DIR verbatim", () => {
   withGraftDir(abs, () => {
     assert.equal(resolveContextDir(d), abs);
     assert.equal(cacheDir(d), join(abs, ".cache"));
+  });
+});
+
+// ── a `graft/` that belongs to something else ──────────────────────────────
+//
+// `graft` is a project name, not a reserved word. A checkout of a tool called
+// graft sitting in someone's repo root used to be resolved as this repo's
+// context dir, and every hook write then landed inside it: `.cache/stats.json`,
+// `.cache/.sync.lock`, a `.cache/session/` tree. The resolution now adopts the
+// default name only when it is free or already a context dir.
+
+/** A directory that is plainly not a context dir: a source checkout's own files. */
+function writeForeignDir(d: string): string {
+  const foreign = join(d, "graft");
+  mkdirSync(join(foreign, "src"), { recursive: true });
+  writeFileSync(join(foreign, "package.json"), JSON.stringify({ name: "graft" }));
+  writeFileSync(join(foreign, "src", "cli.ts"), "export const cli = 1;\n");
+  return foreign;
+}
+
+test("resolveContextDir does not adopt an existing `graft/` that is not a context dir", () => {
+  const d = fresh();
+  const foreign = writeForeignDir(d);
+  withGraftDir(undefined, () => {
+    const resolved = resolveContextDir(d);
+    assert.notEqual(resolved, foreign, "an unrelated directory named graft is never adopted");
+    assert.equal(resolved, join(d, "graft-context"));
+    // The load-bearing consequence: nothing is written into the foreign tree.
+    // cacheDir/patchStats/acquireLock all hang off this answer.
+    assert.equal(cacheDir(d), join(d, "graft-context", ".cache"));
+  });
+});
+
+test("resolveContextDir still adopts `graft/` once it holds a context marker", () => {
+  const d = fresh();
+  const built = join(d, "graft");
+  mkdirSync(join(built, ".graph"), { recursive: true });
+  writeFileSync(join(built, ".graph", "wiring.json"), JSON.stringify({ meta: {}, nodes: [], edges: [] }));
+  withGraftDir(undefined, () => {
+    assert.equal(resolveContextDir(d), built, "a built repo keeps the name it was built under");
+    assert.equal(cacheDir(d), join(built, ".cache"));
+  });
+});
+
+test("resolveContextDir adopts `graft/` holding a workspace parent's children index", () => {
+  const d = fresh();
+  // A workspace parent is indexed by workspace.json, not a wiring graph — both
+  // are markers, or a workspace's own context dir would be written aside.
+  mkdirSync(join(d, "graft"), { recursive: true });
+  writeFileSync(join(d, "graft", "workspace.json"), JSON.stringify({ version: 1, children: ["a", "b"] }));
+  withGraftDir(undefined, () => {
+    assert.equal(resolveContextDir(d), join(d, "graft"));
+  });
+});
+
+test("resolution is monotone: a context dir holding only graft's own cache is still ours", () => {
+  const d = fresh();
+  mkdirSync(join(d, "graft"), { recursive: true });
+  writeFileSync(join(d, "graft", "package.json"), JSON.stringify({ name: "graft" }));
+  withGraftDir(undefined, () => {
+    // Before graft has written anything, the foreign files win the name.
+    assert.equal(resolveContextDir(d), join(d, "graft-context"));
+    // Now graft creates its cache — which is the first thing any hook write
+    // makes. The answer must not move: a resolution that changed under a live
+    // writer would send the second read of a stats file to a different
+    // directory than the first write, losing the write.
+    mkdirSync(join(d, "graft", ".cache"), { recursive: true });
+    assert.equal(resolveContextDir(d), join(d, "graft"), "graft's own cache is a marker, so the name sticks");
+    assert.equal(resolveContextDir(d), join(d, "graft"), "and stays put on every later call");
+  });
+});
+
+test("an explicit GRAFT_DIR is never second-guessed, occupied or not", () => {
+  const d = fresh();
+  writeForeignDir(d);
+  withGraftDir("graft", () => {
+    assert.equal(resolveContextDir(d), join(d, "graft"), "naming a directory is a decision, not a suggestion");
   });
 });

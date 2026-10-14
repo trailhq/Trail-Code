@@ -9,16 +9,13 @@
  * git diffs stay minimal.
  */
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
+import { wiringFile } from "../context/location.js";
 import type { EdgeV1, GraphV1, NodeV1 } from "./types.js";
-
-/** Hidden subdir under the context dir that holds machine-only graph artifacts. */
-export const GRAPH_DIR = ".graph";
-export const GRAPH_FILE = "wiring.json";
 
 /** Absolute path to the wiring graph for a context dir: `<dir>/.graph/wiring.json`. */
 export function wiringPath(outDir: string): string {
-  return join(outDir, GRAPH_DIR, GRAPH_FILE);
+  return wiringFile(outDir);
 }
 
 /**

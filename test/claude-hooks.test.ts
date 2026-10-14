@@ -1,14 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { underGraft, main, lastFileScopeHint, promptAskTimeout } from '../src/claude/hooks.js';
+import { underGraft, main, lastFileScopeHint, promptAskTimeout, isGraftProject } from '../src/claude/hooks.js';
 import { readStats, readSession } from '../src/claude/state.js';
-import { runSync } from '../src/claude/sync-run.js';
+import { runSync, syncBackoffMs, SYNC_BACKOFF_BASE_MS, SYNC_BACKOFF_MAX_MS } from '../src/claude/sync-run.js';
 import { savingsLine } from '../src/context/savings.js';
 import { CI_ENV_VARS } from '../src/telemetry/gate.js';
-import { writeStats, emptyStats, acquireLock, resolveContextDir } from '../src/claude/state.js';
+import { writeStats, emptyStats, acquireLock, resolveContextDir, patchStats, syncBackingOff } from '../src/claude/state.js';
 
 test('underGraft detects edits inside graft/', () => {
   assert.equal(underGraft('/repo', '/repo/graft/x.md'), true);
@@ -144,6 +144,225 @@ test('runSync stays dirty when build succeeds but wiring is unreadable', () => {
   assert.equal(s.dirty, true, 'unreadable wiring → stay dirty, retry next turn');
   assert.equal(s.syncedAt, null, 'not marked synced');
   assert.equal(acquireLock(d), true, 'lock released');
+});
+
+// ── a failed sync backs off instead of rebuilding every turn ───────────────
+//
+// A Stop hook fires once per turn in every open session, so "stay dirty and
+// retry next turn" only decays if something makes the next turn too early to
+// be worth it. The reported failure was a build that timed out over and over:
+// ~0.8 core and 2.5 GB resident, forever, with stats showing syncedAt null and
+// nothing to say why.
+
+test('a failed sync records the reason and a retry deadline instead of only staying dirty', () => {
+  const d = mkdtempSync(join(tmpdir(), 'graft-sync-'));
+  writeStats(d, { ...emptyStats(), dirty: true, syncing: true });
+  acquireLock(d);
+  const before = Date.now();
+  runSync(d, () => { throw new Error('Command failed: node build.js\n    at ChildProcess'); });
+  const s = readStats(d)!;
+  assert.equal(s.dirty, true, 'the graph really is stale, so the bar keeps warning');
+  assert.equal(s.syncing, false, 'never left wedged as syncing');
+  assert.equal(s.syncedAt, null);
+  assert.equal(s.syncFailures, 1);
+  assert.equal(s.syncError, 'Command failed: node build.js', 'one bounded line, not the whole stack');
+  assert.ok(s.syncRetryAt, 'a failed sync names when it may try again');
+  const wait = Date.parse(s.syncRetryAt!) - before;
+  assert.ok(wait >= SYNC_BACKOFF_BASE_MS - 5000 && wait <= SYNC_BACKOFF_BASE_MS + 5000,
+    `first retry waits about ${SYNC_BACKOFF_BASE_MS}ms, got ${wait}`);
+});
+
+test('the backoff doubles per consecutive failure and is capped', () => {
+  assert.equal(syncBackoffMs(1), SYNC_BACKOFF_BASE_MS);
+  assert.equal(syncBackoffMs(2), SYNC_BACKOFF_BASE_MS * 2);
+  assert.equal(syncBackoffMs(3), SYNC_BACKOFF_BASE_MS * 4);
+  assert.equal(syncBackoffMs(4), SYNC_BACKOFF_BASE_MS * 8);
+  assert.equal(syncBackoffMs(20), SYNC_BACKOFF_MAX_MS, 'capped, and an absurd failure count cannot overflow past it');
+  assert.equal(syncBackoffMs(1000), SYNC_BACKOFF_MAX_MS);
+});
+
+test('consecutive failures deepen the recorded deadline, and a success clears all of it', () => {
+  const d = mkdtempSync(join(tmpdir(), 'graft-sync-'));
+  writeStats(d, { ...emptyStats(), dirty: true, syncing: true });
+  acquireLock(d);
+  runSync(d, () => { throw new Error('boom'); });
+  acquireLock(d);
+  runSync(d, () => { throw new Error('boom'); });
+  const twice = readStats(d)!;
+  assert.equal(twice.syncFailures, 2, 'the second failure is counted, not merged into the first');
+  assert.ok(Date.parse(twice.syncRetryAt!) - Date.now() > SYNC_BACKOFF_BASE_MS,
+    'the second failure waits longer than the first');
+
+  acquireLock(d);
+  mkdirSync(join(d, 'graft', '.graph'), { recursive: true });
+  runSync(d, () => writeFileSync(join(d, 'graft', '.graph', 'wiring.json'),
+    JSON.stringify({ meta: { nodeCount: 1, edgeCount: 0, languages: [] }, nodes: [], edges: [] })));
+  const fixed = readStats(d)!;
+  assert.equal(fixed.dirty, false);
+  assert.equal(fixed.syncFailures, 0, 'a success resets the count, so the next edit is served immediately');
+  assert.equal(fixed.syncError, null);
+  assert.equal(fixed.syncRetryAt, null);
+});
+
+test('syncBackingOff only holds inside the window, and a corrupt deadline does not wedge the graph forever', () => {
+  const base = { ...emptyStats(), dirty: true };
+  assert.equal(syncBackingOff(base), false, 'never failed: no backoff');
+  assert.equal(syncBackingOff({ ...base, syncRetryAt: new Date(Date.now() + 60_000).toISOString() }), true);
+  assert.equal(syncBackingOff({ ...base, syncRetryAt: new Date(Date.now() - 1_000).toISOString() }), false,
+    'the window has passed: retry now');
+  assert.equal(syncBackingOff({ ...base, syncRetryAt: 'not a date' }), false, 'unparseable is treated as no backoff');
+  assert.equal(syncBackingOff({ ...base, syncRetryAt: 'not a date' }, 0), false);
+});
+
+test('a backed-off dirty graph does not spawn a sync, and does again once the window passes', async () => {
+  const d = mkdtempSync(join(tmpdir(), 'graft-hooks-backoff-'));
+  mkdirSync(join(d, 'graft', '.graph'), { recursive: true });
+  writeFileSync(join(d, 'graft', '.graph', 'wiring.json'),
+    JSON.stringify({ meta: { nodeCount: 0, edgeCount: 0, languages: [] }, nodes: [], edges: [] }));
+  const syncRun = join(d, 'sync-run-stub.js');
+  writeFileSync(syncRun, '// test stub: spawned as a detached no-op child\n');
+  process.env.CLAUDE_PROJECT_DIR = d;
+  process.env.GRAFT_TEST_SYNC_RUN = syncRun;
+  try {
+    writeStats(d, { ...emptyStats(), dirty: true, syncing: false, syncFailures: 1,
+      syncError: 'build timed out', syncRetryAt: new Date(Date.now() + SYNC_BACKOFF_BASE_MS).toISOString() });
+    await runWithStdin(JSON.stringify({ session_id: 'b1' }), () => main('stop'));
+    assert.equal(readStats(d)!.syncing, false, 'inside the backoff window: no build spawned');
+    assert.equal(existsSync(join(d, 'graft', '.cache', '.sync.lock')), false, 'the lock is never even taken');
+
+    // Window elapsed → the next turn is served again.
+    patchStats(d, { syncRetryAt: new Date(Date.now() - 1_000).toISOString() });
+    await runWithStdin(JSON.stringify({ session_id: 'b1' }), () => main('stop'));
+    assert.equal(readStats(d)!.syncing, true, 'once the window has passed, the turn rebuilds');
+    assert.equal(existsSync(join(d, 'graft', '.cache', '.sync.lock')), true, 'lock taken for the rebuild');
+  } finally {
+    delete process.env.GRAFT_TEST_SYNC_RUN;
+    delete process.env.CLAUDE_PROJECT_DIR;
+  }
+});
+
+// ── the hook is wired per DIRECTORY, so it must establish that it has a
+// project before it maintains one ───────────────────────────────────────────
+//
+// Hooks can be declared once at the user level, which puts them in front of
+// every directory a session is ever opened in. `CLAUDE_PROJECT_DIR` is whatever
+// that session was opened at, so a folder that merely holds repositories used
+// to be treated as a project: every edit marked it dirty and every turn
+// spawned a `graft build .` over the whole folder.
+
+test('post-edit and stop do nothing for a directory that is neither a work tree root nor already indexed', async () => {
+  const d = mkdtempSync(join(tmpdir(), 'graft-hooks-plainfolder-'));
+  // A plain folder holding repositories: several children, none of them the
+  // folder itself a checkout, and no graph of its own.
+  for (const name of ['one', 'two']) {
+    mkdirSync(join(d, name, '.git'), { recursive: true });
+    writeFileSync(join(d, name, 'main.ts'), 'export const x = 1;\n');
+  }
+  const syncRun = join(d, 'sync-run-stub.js');
+  writeFileSync(syncRun, '// test stub: spawned as a detached no-op child\n');
+  process.env.CLAUDE_PROJECT_DIR = d;
+  process.env.GRAFT_TEST_SYNC_RUN = syncRun;
+  try {
+    assert.equal(isGraftProject(d), false, 'a folder of checkouts is not itself a project');
+    await runWithStdin(JSON.stringify({ tool_input: { file_path: join(d, 'one', 'main.ts') } }),
+      () => main('post-edit-sync'));
+    assert.equal(readStats(d), null, 'nothing marked dirty, and no stats file created at all');
+    assert.equal(existsSync(join(d, 'graft')), false, 'not even a context dir is created for a non-project');
+    assert.equal(existsSync(join(d, 'graft-context')), false);
+  } finally {
+    delete process.env.GRAFT_TEST_SYNC_RUN;
+    delete process.env.CLAUDE_PROJECT_DIR;
+  }
+});
+
+test("a foreign `graft/` directory in a non-project is left completely untouched", async () => {
+  const d = mkdtempSync(join(tmpdir(), 'graft-hooks-foreign-'));
+  // The reported shape: a plain folder that happens to contain a checkout of a
+  // tool called graft. Nothing in it was written by graft — it is a source
+  // tree, and a `graft` directory is a project name, not a reserved word.
+  const foreign = join(d, 'graft');
+  mkdirSync(join(foreign, 'src'), { recursive: true });
+  writeFileSync(join(foreign, 'package.json'), JSON.stringify({ name: 'graft' }));
+  writeFileSync(join(foreign, 'src', 'cli.ts'), 'export const cli = 1;\n');
+  const before = readdirSync(foreign).sort();
+  const syncRun = join(d, 'sync-run-stub.js');
+  writeFileSync(syncRun, '// test stub: spawned as a detached no-op child\n');
+  process.env.CLAUDE_PROJECT_DIR = d;
+  process.env.GRAFT_TEST_SYNC_RUN = syncRun;
+  try {
+    assert.equal(isGraftProject(d), false, 'no checkout at the folder, and no graph of its own');
+    await runWithStdin(JSON.stringify({ tool_input: { file_path: join(foreign, 'src', 'cli.ts') } }),
+      () => main('post-edit-sync'));
+    assert.equal(readStats(d), null, 'nothing marked dirty');
+    assert.deepEqual(readdirSync(foreign).sort(), before, 'not one entry added to or removed from the foreign tree');
+    assert.equal(existsSync(join(foreign, '.cache')), false, 'no stats file, no lock, no session dir inside it');
+    assert.equal(existsSync(join(d, 'graft-context')), false, 'and no fallback context dir invented for a non-project');
+  } finally {
+    delete process.env.GRAFT_TEST_SYNC_RUN;
+    delete process.env.CLAUDE_PROJECT_DIR;
+  }
+});
+
+test('a git work tree root is a project even with no graph yet — the first build still happens', async () => {
+  const d = mkdtempSync(join(tmpdir(), 'graft-hooks-freshrepo-'));
+  // A linked worktree or submodule: `.git` is a file, not a directory.
+  writeFileSync(join(d, '.git'), 'gitdir: /somewhere/.git/worktrees/wt\n');
+  const syncRun = join(d, 'sync-run-stub.js');
+  writeFileSync(syncRun, '// test stub: spawned as a detached no-op child\n');
+  process.env.CLAUDE_PROJECT_DIR = d;
+  process.env.GRAFT_TEST_SYNC_RUN = syncRun;
+  try {
+    assert.equal(isGraftProject(d), true, 'a `.git` entry — dir or file — is a checkout root');
+    await runWithStdin(JSON.stringify({ tool_input: { file_path: join(d, 'src', 'auth.ts') } }),
+      () => main('post-edit-sync'));
+    const s = readStats(d)!;
+    assert.equal(s.dirty, true, 'an edit before the first build still marks the graph stale');
+    assert.equal(s.syncing, true, 'and the turn still schedules the cold build');
+  } finally {
+    delete process.env.GRAFT_TEST_SYNC_RUN;
+    delete process.env.CLAUDE_PROJECT_DIR;
+  }
+});
+
+test('an already-indexed directory is a project without a checkout — a wired non-git tree keeps working', async () => {
+  const d = mkdtempSync(join(tmpdir(), 'graft-hooks-indexed-'));
+  mkdirSync(join(d, 'graft', '.graph'), { recursive: true });
+  writeFileSync(join(d, 'graft', '.graph', 'wiring.json'),
+    JSON.stringify({ meta: { nodeCount: 0, edgeCount: 0, languages: [] }, nodes: [], edges: [] }));
+  const syncRun = join(d, 'sync-run-stub.js');
+  writeFileSync(syncRun, '// test stub: spawned as a detached no-op child\n');
+  process.env.CLAUDE_PROJECT_DIR = d;
+  process.env.GRAFT_TEST_SYNC_RUN = syncRun;
+  try {
+    assert.equal(isGraftProject(d), true, 'the graph itself is proof the directory is a project');
+    await runWithStdin(JSON.stringify({ tool_input: { file_path: join(d, 'src', 'auth.ts') } }),
+      () => main('post-edit-sync'));
+    assert.equal(readStats(d)!.dirty, true);
+  } finally {
+    delete process.env.GRAFT_TEST_SYNC_RUN;
+    delete process.env.CLAUDE_PROJECT_DIR;
+  }
+});
+
+test('underGraft follows the resolved context dir, so a relocated graph is still recognised as ours', () => {
+  assert.equal(underGraft('/repo', '/repo/graft/x.md'), true);
+  assert.equal(underGraft('/repo', '/repo/src/cli.ts'), false);
+  // A context dir moved out from under the default name: an edit to a card is
+  // still an edit to our own output, and must not schedule the next build.
+  const prev = process.env.GRAFT_DIR;
+  process.env.GRAFT_DIR = 'elsewhere';
+  try {
+    assert.equal(underGraft('/repo', '/repo/elsewhere/x.md'), true);
+    assert.equal(underGraft('/repo', '/repo/graft/x.md'), false, 'the default name is no longer the context dir');
+  } finally {
+    if (prev === undefined) delete process.env.GRAFT_DIR; else process.env.GRAFT_DIR = prev;
+  }
+  // The name a collision forces is covered by the same check, not a second rule.
+  const d = mkdtempSync(join(tmpdir(), 'graft-underscratch-'));
+  mkdirSync(join(d, 'graft'), { recursive: true });
+  writeFileSync(join(d, 'graft', 'package.json'), '{}');
+  assert.equal(underGraft(d, join(d, 'graft-context', 'card.md')), true);
+  assert.equal(underGraft(d, join(d, 'graft', 'card.md')), false, 'a card in the foreign dir is not ours to protect');
 });
 
 // ── lastFileScopeHint (the "you're working in backend/, weight it" hint) ──

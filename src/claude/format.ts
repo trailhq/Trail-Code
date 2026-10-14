@@ -49,6 +49,10 @@ export function renderStatusline(
   const bottom: string[] = [];
   if (typeof ctx.ctxPct === 'number') bottom.push(C.text(`ctx ${ctx.ctxPct}%`));
   if (stats.lastFile) bottom.push(C.muted('last: ') + C.text(basename(stats.lastFile)));
+  // Why the graph has been pinned at ⚠. Without it, "stale, never syncs" and
+  // "stale, mid-rebuild" look identical from here, and the first is the one
+  // that needs a human.
+  if (stats.syncError) bottom.push(C.amber('sync: ') + C.text(stats.syncError));
 
   const lines = [top.join(SEP)];
   if (bottom.length) lines.push(C.muted('▸ ') + bottom.join(SEP));

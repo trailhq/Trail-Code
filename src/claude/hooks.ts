@@ -7,7 +7,8 @@ import { formatBlastRadius, relevantRetrieval, formatOrientation, notesForPrompt
 import { commitLines, standingLearnings } from '../notes/notes.js';
 import { teammatesOn } from '../notes/git-facts.js';
 import { indexFreshness, staleBanner } from '../context/check.js';
-import { patchStats, readStats, acquireLock, readSession, writeSession, resolveContextDir } from './state.js';
+import { isGraftContextDir } from '../context/location.js';
+import { patchStats, readStats, acquireLock, readSession, writeSession, resolveContextDir, syncBackingOff } from './state.js';
 import { graftCliPath, claudeScriptPath } from './paths.js';
 import { runUpkeep } from '../upkeep-run.js';
 import { runningVersion } from '../upkeep.js';
@@ -46,9 +47,62 @@ function safeReadFd0(): string { try { return readFileSync(0, 'utf8'); } catch {
 function projectDir(input: any): string {
   return process.env.CLAUDE_PROJECT_DIR || input.cwd || process.cwd();
 }
+
+/**
+ * Is `dir` a project graft maintains a graph for?
+ *
+ * A hook is wired by directory, not by project: declaring them once at the user
+ * level (`~/.claude/settings.json`) puts every one of them in front of every
+ * directory a session is ever started in, and `CLAUDE_PROJECT_DIR` is whatever
+ * that session was opened at. So the hook cannot treat its `dir` as a project —
+ * it has to establish that it is one. A directory qualifies when either
+ *
+ *   - it is a git work tree root — its own `.git`, a directory in a normal
+ *     checkout and a `gitdir:` file in a linked worktree or a submodule. The
+ *     entry is checked rather than shelling out to `git rev-parse`, so a hook
+ *     that runs after every edit stays a handful of `stat`s instead of a
+ *     process spawn; or
+ *   - it already holds a graft context under its resolved context dir (the
+ *     marker in `context/location.ts`). This is the arm that keeps a wired repo
+ *     working when the checkout is not a git root at all, and the arm that
+ *     cannot be faked by naming a directory `graft`.
+ *
+ * A session rooted at a SUBDIRECTORY of a repo is deliberately not one. The
+ * hooks' state — `dirty`, the lock, the stats cache — is addressed by `dir`, so
+ * marking it dirty would have `sync-run` build that subdirectory into a second
+ * context dir inside the repo, competing with the one the repo's own wiring
+ * maintains. Queries still work there: `graft ask` resolves the nearest
+ * ancestor holding an index (`graph/root.ts`). What a subdirectory does not get
+ * is a second copy of the passive surface.
+ */
+export function isGraftProject(dir: string): boolean {
+  return existsSync(join(dir, '.git')) || isGraftContextDir(resolveContextDir(dir));
+}
+
+/**
+ * The resolved context dir as a `/`-separated path relative to `dir`, or `''`
+ * when it lies outside the project (an absolute `GRAFT_DIR`) — then nothing
+ * under `dir` is the graph's own output.
+ */
+function contextDirRel(dir: string): string {
+  const ctx = resolveContextDir(dir);
+  if (!ctx.startsWith(dir)) return '';
+  return ctx.slice(dir.length).replace(/^[/\\]+/, '').replace(/\\/g, '/');
+}
+
+/**
+ * Is this edit one of ours? The graph's own output must not mark the graph
+ * dirty, or every card a build regenerates would schedule the next build.
+ *
+ * Derived from the resolved context dir rather than from a hard-coded `graft/`,
+ * so a relocated context (`GRAFT_DIR`) and the fallback name a collision forces
+ * are both covered by the same check.
+ */
 export function underGraft(dir: string, file: string): boolean {
   const rel = file.startsWith(dir) ? file.slice(dir.length) : file;
-  return rel.replace(/^[/\\]+/, '').replace(/\\/g, '/').startsWith('graft/');
+  const normalized = rel.replace(/^[/\\]+/, '').replace(/\\/g, '/');
+  const ctx = contextDirRel(dir);
+  return ctx !== '' && (normalized === ctx || normalized.startsWith(`${ctx}/`));
 }
 /** Default budget for a graft child process invoked from a hook, matching the 8s
  * the installed hook entries carry. */
@@ -199,6 +253,11 @@ export function editedFilePath(input: any, dir: string): string | null {
 }
 
 async function handlePostEdit(input: any, dir: string): Promise<void> {
+  // Nothing about a directory graft doesn't own can be stale, so there is
+  // nothing to mark and nothing to re-check. This is the first thing that has
+  // to hold: without it every edit anywhere on the machine runs `graft check`
+  // over whatever tree the session happened to open.
+  if (!isGraftProject(dir)) return;
   const file = editedFilePath(input, dir);
   if (!file || underGraft(dir, file)) return;
   patchStats(dir, { dirty: true, staleCount: checkStaleCount(dir), lastFile: basename(file) });
@@ -452,6 +511,10 @@ function askForNote(input: any, dir: string): void {
 function handleStop(input: any, dir: string): void {
   sampleTurnCost(input, dir);
   countTallyTurn(input, dir);
+  // The turn metrics above are facts about the CONVERSATION, so they are
+  // recorded wherever the session is. Everything below is graph maintenance,
+  // and graph maintenance needs a project — see isGraftProject.
+  if (!isGraftProject(dir)) return;
   // sync-run.js ships next to this module inside the package, so it resolves in
   // any repo that installs graft (not just graft's own). Defensive existsSync:
   // if the package is somehow incomplete, skip rather than wedge on syncing:true.
@@ -460,7 +523,10 @@ function handleStop(input: any, dir: string): void {
   const syncRun = process.env.GRAFT_TEST_SYNC_RUN ?? claudeScriptPath('sync-run.js');
   if (!existsSync(syncRun)) return;
   const stats = readStats(dir);
-  if (stats?.dirty && acquireLock(dir)) {
+  // `dirty` alone means "rebuild on the next turn" — which, for a build that
+  // keeps failing or timing out, is every turn in every session on the machine.
+  // A recorded failure buys a decaying retry instead (sync-run.ts).
+  if (stats?.dirty && !syncBackingOff(stats) && acquireLock(dir)) {
     patchStats(dir, { syncing: true });
     const child = spawn(process.execPath, [syncRun, dir], { detached: true, stdio: 'ignore', windowsHide: true });
     child.unref();

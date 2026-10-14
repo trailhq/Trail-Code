@@ -26,8 +26,12 @@ import { join } from "node:path";
 import { matter } from "../util/front-matter.js";
 import { contentHash, normalizeName } from "../util/id.js";
 import { relPosix, stripTrailingSlashes } from "../util/paths.js";
-// Value-only import of a constant; `write.ts` pulls in nothing from here, so no cycle.
-import { GRAPH_DIR } from "../graph/write.js";
+import { contextDirFor, CACHE_DIR, GRAPH_DIR, MANIFEST_FILE } from "./location.js";
+
+/** Re-exported so every existing `context/node-file.js` importer of the default
+ *  name, the cache dir and the graph dir keeps resolving to the one place that
+ *  decides them (see `location.ts`). */
+export { contextDirFor };
 
 /** A source file a node was derived from, with its content hash at generation time. */
 export interface SourceRef {
@@ -76,9 +80,8 @@ export interface Manifest {
 export const MANIFEST_VERSION = 1;
 const GEN_START = "<!-- context:generated:start -->";
 const GEN_END = "<!-- context:generated:end -->";
-const MANIFEST_FILE = "manifest.json";
 /** Gitignored cache dir (per-file summaries + extractions), never committed. */
-export const CACHE_DIR = ".cache";
+export { CACHE_DIR };
 
 /** Env kill switch — same truthy parsing as `GRAFT_NO_REFRESH` in ../graph/refresh.ts. */
 function envTruthy(name: string): boolean {
@@ -101,14 +104,6 @@ export function digestSources(sources: SourceRef[]): string {
     .sort()
     .join("\n");
   return contentHash(lines);
-}
-
-/** Absolute path of the `graft/` directory for a repo root. Visible (not
- * dot-prefixed) on purpose: default ripgrep skips hidden dirs, so the agent's
- * grep/ls/find reflex must be able to land on the graph. */
-export function contextDirFor(root: string, override?: string): string {
-  if (override) return override;
-  return join(root, "graft");
 }
 
 /**

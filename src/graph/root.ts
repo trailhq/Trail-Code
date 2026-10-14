@@ -13,15 +13,12 @@
  * would report the same context dir and the walk would answer "level 0" for a
  * dir that isn't the repo.
  */
-import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { contextDirFor } from "../context/node-file.js";
-import { wiringPath } from "./write.js";
-import { workspacePath } from "./workspace.js";
+import { contextDirFor, hasGraphIndex } from "../context/location.js";
 
 /** True when `dir` is a graft root of either shape — a built repo or a workspace parent. */
 export function hasGraftIndex(dir: string): boolean {
-  return existsSync(wiringPath(contextDirFor(dir))) || existsSync(workspacePath(dir));
+  return hasGraphIndex(contextDirFor(dir));
 }
 
 export interface RootResolution {
