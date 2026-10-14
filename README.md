@@ -246,7 +246,7 @@ compiler-grade layer — all `$0` and deterministic (no model, no key):
 - **Broad** — symbols (functions, classes, methods, types, …) plus name-resolved
   call edges via a generic tree-sitter extractor, one grammar per language:
   **Rust, C, C++, C#, Ruby, Scala, Elixir, Solidity,
-  OCaml, Zig, Dart, Clojure, Nix, Lua**.
+  OCaml, Zig, Dart, Clojure, Nix, Lua, HTML**.
 
 - **Compiler-grade edges (opt-in)** — `graft build --lsp` adds precise
   `lsp_resolved` call edges (member calls the static pass can't type) when a
@@ -254,8 +254,9 @@ compiler-grade layer — all `$0` and deterministic (no model, no key):
   **gopls** (Go), **pyright** (Python), **typescript-language-server** (TS/JS).
   It's best-effort — with no server installed the graph is unchanged.
 
-Twenty-three languages in total. A file whose language isn't listed is skipped, not
-indexed. Adding a broad-tier language is a small contribution — see
+Twenty-four languages in total. HTML is indexed as a file node (no HTML-structure
+extraction), so templates are findable by name. A file whose language isn't listed
+is skipped, not indexed. Adding a broad-tier language is a small contribution — see
 [CREDITS.md](CREDITS.md) for the folks who added the current set.
 
 ---

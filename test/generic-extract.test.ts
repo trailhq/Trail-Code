@@ -24,7 +24,9 @@ import { buildGraph } from "../src/graph/build.js";
 import { readGraph, wiringPath } from "../src/graph/write.js";
 import { checkGraph } from "../src/graph/check.js";
 import { contextDirFor } from "../src/context/node-file.js";
-import { skeleton } from "../src/ask/ask.js";
+import { ask, skeleton } from "../src/ask/ask.js";
+import { grepGraph } from "../src/search/grep.js";
+import { resolveSymbol } from "../src/graph/traverse.js";
 
 const RUST = `pub struct Config {
     name: String,
@@ -470,4 +472,72 @@ test("a throwing grammar is a per-file build error, cached as a failure (#139)",
   } finally {
     swapGrammarForTest("rust", prev);
   }
+});
+
+// #150: HTML templates enter the graph as file nodes so they are findable by
+// name (Django `template_name` without walking View → template). No tags.scm —
+// the walker finds no definition-shaped HTML nodes, which is the point.
+const HTML = `<!DOCTYPE html>
+<html>
+<head><title>Shop home</title></head>
+<body>
+  <h1 id="hero">Shop home</h1>
+  {% block content %}welcome-to-the-shop{% endblock %}
+</body>
+</html>
+`;
+
+test("genericLangOf routes .html and .htm to the breadth tier", () => {
+  assert.equal(genericLangOf("templates/index.html")?.name, "html");
+  assert.equal(genericLangOf("legacy/home.HTM")?.name, "html");
+});
+
+test("HTML extract is a file node only — no walker-invented symbols (#150)", async () => {
+  await warmGenericGrammars(["html"]);
+  assert.ok(isWarm("html"), "html grammar should warm");
+  const { nodes, rawEdges } = extractGeneric("templates/index.html", HTML, "html");
+  assert.equal(nodes.length, 1, `file node only (got ${nodes.map((n) => n.kind + ":" + n.name).join(", ")})`);
+  assert.equal(nodes[0].kind, "file");
+  assert.equal(nodes[0].id, "templates/index.html");
+  assert.equal(nodes[0].name, "index.html");
+  assert.equal(nodes[0].origin, "generic");
+  assert.equal(rawEdges.length, 0);
+});
+
+test("HTML templates are findable by name after build — grep content, ask/resolveSymbol filename (#150)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "graft-html-"));
+  mkdirSync(join(dir, "templates"));
+  writeFileSync(join(dir, "templates", "index.html"), HTML);
+  writeFileSync(
+    join(dir, "views.py"),
+    "from django.views.generic import TemplateView\n\nclass Home(TemplateView):\n    template_name = \"index.html\"\n",
+  );
+
+  await buildGraph(dir, { reuse: false });
+  const g = readGraph(wiringPath(contextDirFor(dir)));
+  assert.ok(g, "graph built");
+  const file = g!.nodes.find((n) => n.path === "templates/index.html" && n.kind === "file");
+  assert.ok(file, "html file node is in the graph");
+  assert.equal(file!.name, "index.html");
+
+  const grep = grepGraph(g!, dir, "welcome-to-the-shop");
+  assert.ok(
+    grep.groups.some((gr) => gr.path === "templates/index.html"),
+    `grep hits the template (got ${grep.groups.map((gr) => gr.path).join(", ")})`,
+  );
+
+  const byName = resolveSymbol(g!, "index.html");
+  assert.ok(
+    byName.some((n) => n.kind === "file" && n.path === "templates/index.html"),
+    `resolveSymbol("index.html") finds the template (got ${byName.map((n) => n.id).join(", ")})`,
+  );
+
+  const asked = ask(dir, "index.html");
+  assert.ok(
+    asked.hits.some((h) => h.pointer === "templates/index.html" || h.pointer.startsWith("templates/index.html:")),
+    `ask("index.html") hits the template (got ${asked.hits.map((h) => h.pointer).join(", ")})`,
+  );
+
+  const chk = await checkGraph(dir);
+  assert.equal(chk.ok, true, `check OK on an html+py repo (added=${chk.added}, removed=${chk.removed})`);
 });
