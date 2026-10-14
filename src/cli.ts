@@ -194,6 +194,12 @@ program
   .option("--dir <path>", "context graph directory (default: <repo>/graft)")
   .option("--provider <name>", "LLM wire format: openai | anthropic | litellm | orcarouter (env GRAFT_PROVIDER)")
   .option("--model <id>", "model id for the LLM pass (env GRAFT_MODEL)")
+  .option(
+    "--synth-model <id>",
+    "model id for the --deep concept-synthesis pass alone (env GRAFT_SYNTH_MODEL; default: the --model id). " +
+      "A fast non-reasoning model here writes the concept nodes while per-file summaries keep the main model; " +
+      "a build's synthesis cache is keyed by this model, so switching it re-synthesizes",
+  )
   .option("--api-key <key>", "provider API key (env GRAFT_API_KEY)")
   .option("--base-url <url>", "OpenAI-compatible endpoint URL (env GRAFT_BASE_URL)");
 
@@ -201,6 +207,7 @@ interface GlobalOpts {
   dir?: string;
   provider?: string;
   model?: string;
+  synthModel?: string;
   apiKey?: string;
   baseUrl?: string;
 }
@@ -212,6 +219,7 @@ function cliConfig(): EngineConfig {
     contextDir: o.dir,
     provider: o.provider as ProviderKind | undefined,
     model: o.model,
+    synthModel: o.synthModel,
     apiKey: o.apiKey,
     baseUrl: o.baseUrl,
   };
@@ -491,6 +499,19 @@ grouped(program.command("build"), GROUP.setup)
   .option("--deep", "run the LLM pass: concept nodes (graft/*.md) + per-symbol summary/crux")
   .option("-e, --extensions <exts...>", 'code extensions to include (e.g. ".ts" ".py"); an extension with no parser is ignored with a warning that lists the supported set')
   .option("-j, --concurrency <n>", "files summarized in parallel during --deep (default 5)")
+  .option(
+    "--synth-concurrency <n>",
+    "concept synthesis batches in flight at once during --deep (default 4). Separate from -j: " +
+      "each synthesis call carries a whole batch of summaries, not one file",
+  )
+  .option(
+    "--synth-batch-chars <n>",
+    "char budget of summary text per concept-synthesis call during --deep (default 48000). " +
+      "Lower it to trade fewer larger calls for more, smaller, parallel ones — worth it only " +
+      "when --synth-concurrency already exceeds the batch count. A budget low enough to " +
+      "overflow the batch an edit lands in splits its neighbour too, so that edit " +
+      "re-synthesizes two batches instead of one",
+  )
   .option("--no-reuse", "re-parse every file instead of replaying unchanged ones from the extraction cache")
   .option("--lsp", "add compiler-grade call edges via a language server if one is installed (opt-in, slower; e.g. rust-analyzer, clangd)")
   .option("--allow-partial", "with --deep: exit 0 even when some files' summaries failed (default: a degraded meaning tier exits 1)")
@@ -539,6 +560,8 @@ grouped(program.command("build"), GROUP.setup)
       reuse?: boolean;
       lsp?: boolean;
       allowPartial?: boolean;
+      synthConcurrency?: string;
+      synthBatchChars?: string;
       includeDir?: string[];
       onlyDir?: string[];
       followSubmodules?: boolean;
@@ -562,6 +585,24 @@ grouped(program.command("build"), GROUP.setup)
     if (opts.concurrency && !Number.isFinite(concurrency)) {
       console.error(`✗ --concurrency must be a number, got "${opts.concurrency}"`);
       process.exit(1);
+    }
+    const synthConcurrency = opts.synthConcurrency ? Math.max(1, Number(opts.synthConcurrency)) : undefined;
+    if (opts.synthConcurrency && !Number.isFinite(synthConcurrency)) {
+      console.error(`✗ --synth-concurrency must be a number, got "${opts.synthConcurrency}"`);
+      process.exit(1);
+    }
+    // Validated RAW, before any flooring: `Math.max(1, …)` used to run first, so
+    // a budget of 0 or less was floored into a 1-char budget — one synthesis
+    // call per file, the per-file call storm the batch pass exists to prevent —
+    // and the guard below never saw the values it existed for.
+    let synthBatchChars: number | undefined;
+    if (opts.synthBatchChars !== undefined) {
+      const raw = Number(opts.synthBatchChars);
+      if (!Number.isFinite(raw) || raw < 1) {
+        console.error(`✗ --synth-batch-chars must be a positive number, got "${opts.synthBatchChars}"`);
+        process.exit(1);
+      }
+      synthBatchChars = Math.floor(raw);
     }
     warnUnsupportedExtensions(opts.extensions);
     // Persisted BEFORE the build itself runs, so this invocation's walks (and
@@ -646,6 +687,8 @@ grouped(program.command("build"), GROUP.setup)
         deep: !!deep,
         extensions: opts.extensions,
         concurrency,
+        synthConcurrency,
+        synthBatchChars,
         childConfig: cliConfig(),
         override: buildGlobalDir,
         includeDirs: opts.includeDir,
@@ -662,6 +705,8 @@ grouped(program.command("build"), GROUP.setup)
       const c = await engine.init(dir, {
         extensions: opts.extensions,
         onlyDirs,
+        synthConcurrency,
+        synthBatchChars,
         onProgress: ({ phase, index, total, file }) =>
           process.stderr.write(
             `\r${phase === "summarize" ? "reading" : "writing"} concepts ${index + 1}/${total}: ${file.slice(0, 40).padEnd(40)}`,
@@ -672,8 +717,10 @@ grouped(program.command("build"), GROUP.setup)
         throw err;
       });
       process.stderr.write("\n");
+      // Named only when it differs, so the common single-model build says nothing new.
+      const synthNote = resolved.synthModel !== resolved.model ? ` [synthesis: ${resolved.synthModel}]` : "";
       console.log(
-        `✓ concepts: ${c.nodes} nodes, ${c.links} links from ${c.files} files (${c.summarized} read, ${c.cached} cached)`,
+        `✓ concepts: ${c.nodes} nodes, ${c.links} links from ${c.files} files (${c.summarized} read, ${c.cached} cached)${synthNote}`,
       );
       for (const e of c.errors) console.error(`✗ ${e}`);
       conceptErrors = c.errors;
