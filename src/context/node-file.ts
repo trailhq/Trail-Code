@@ -116,9 +116,11 @@ export function contextDirFor(root: string, override?: string): string {
  * graph is a local, regenerable cache (like `node_modules`), not a committed
  * artifact, so every `graft build` adds the entry itself the first time — the
  * user never has to think about it. No-ops when the entry is already present
- * or the dir lives outside `root` (a custom `--dir` elsewhere, which can't be
- * expressed as a repo-relative ignore). Best-effort: an unwritable `.gitignore`
- * must never abort a build, so write failures are swallowed.
+ * in the anchored form, and MIGRATES a legacy unanchored entry to it in place
+ * (see below); skips the dir entirely when it lives outside `root` (a custom
+ * `--dir` elsewhere, which can't be expressed as a repo-relative ignore).
+ * Best-effort: an unwritable `.gitignore` must never abort a build, so write
+ * failures are swallowed.
  */
 const GRAPH_CACHE_NOTE = "graft's local graph cache — regenerable, not committed (run `graft build`).";
 
@@ -139,13 +141,30 @@ export function ensureGitignored(root: string, contextDir: string, note = GRAPH_
   const path = join(root, ".gitignore");
   let current = "";
   try { current = readFileSync(path, "utf8"); } catch { /* no .gitignore yet — we create one */ }
-  // Accept the anchored form AND the older unanchored `graft/` / `graft`, so existing
-  // repos aren't double-appended and a hand-anchored entry survives the next build.
-  const present = current.split("\n").some((l) => {
-    const t = l.trim();
-    return t === entry || t === `${bare}/` || t === bare;
-  });
-  if (present) return;
+  const lines = current.split("\n");
+  const isLegacy = (l: string) => l.trim() === `${bare}/` || l.trim() === bare;
+  // A legacy unanchored entry (written pre-#79) is not merely tolerated — it IS the line
+  // that ignores `.claude/skills/graft/`, so every repo that adopted graft before the
+  // fix keeps the silent-skill-drop trap if "already present" means no-op. Rewrite the
+  // first legacy line in place (same position, under whatever comment sits above it),
+  // drop duplicates, and never add a second entry when an anchored one already exists
+  // alongside the stale one (pre-#79, a hand-anchored line didn't stop the hook-triggered
+  // build from re-appending the unanchored form, so both could sit in the same file).
+  if (lines.some(isLegacy)) {
+    const hasAnchored = lines.some((l) => l.trim() === entry);
+    const out: string[] = [];
+    let placed = hasAnchored;
+    for (const line of lines) {
+      if (isLegacy(line)) {
+        if (!placed) { out.push(entry); placed = true; }
+        continue; // drop the unanchored spelling
+      }
+      out.push(line);
+    }
+    try { writeFileSync(path, out.join("\n")); } catch { /* best-effort — build already succeeded */ }
+    return;
+  }
+  if (lines.some((l) => l.trim() === entry)) return; // idempotent — already the anchored form
   const gap = current === "" ? "" : current.endsWith("\n") ? "\n" : "\n\n";
   const block = `${gap}# ${note}\n${entry}\n`;
   try { writeFileSync(path, current + block); } catch { /* best-effort — build already succeeded */ }

@@ -466,19 +466,40 @@ test("ensureGitignored: idempotent — a second build adds nothing", () => {
   }
 });
 
-test("ensureGitignored: an existing unanchored `graft/` or hand-anchored `/graft/` is NOT re-appended (#79)", () => {
+test("ensureGitignored: a legacy unanchored `graft/`/`graft` entry migrates to `/graft/`; a hand-anchored one is kept (#79)", () => {
   for (const existing of ["graft/", "graft", "/graft/"]) {
     const dir = mkdtempSync(join(tmpdir(), "ctxgi-"));
     try {
-      writeFileSync(join(dir, ".gitignore"), `node_modules/\n${existing}\n`);
+      writeFileSync(join(dir, ".gitignore"), `node_modules/\n${existing}\ndist/\n`);
       ensureGitignored(dir, contextDirFor(dir));
       const gi = readFileSync(join(dir, ".gitignore"), "utf8");
-      // the presence check recognizes all three spellings → no duplicate graft line added
-      const graftLines = gi.split("\n").filter((l) => /^\/?graft\/?$/.test(l.trim()));
-      assert.equal(graftLines.length, 1, `existing "${existing}" must not be double-appended (got ${graftLines.length})`);
+      // exactly one graft line, in the anchored form — the unanchored spelling is what
+      // ignored `.claude/skills/graft/` pre-#79, so it must not survive a build
+      assert.equal((gi.match(/^\/graft\/$/gm) ?? []).length, 1, `existing "${existing}" → exactly one /graft/`);
+      assert.doesNotMatch(gi, /^graft\/?$/m, `existing "${existing}" → unanchored spelling must be migrated away`);
+      // the migration rewrites only the graft line — neighbours are untouched
+      assert.match(gi, /node_modules\//);
+      assert.match(gi, /dist\//);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  }
+});
+
+test("ensureGitignored: a hand-anchored `/graft/` plus a stale unanchored duplicate collapse to one line (#79)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ctxgi-"));
+  try {
+    // pre-#79 a hand-anchored entry didn't stop the (hook-triggered) build from
+    // re-appending the unanchored form, so both spellings could sit in one file —
+    // and the unanchored one kept ignoring `.claude/skills/graft/`
+    writeFileSync(join(dir, ".gitignore"), "node_modules/\n/graft/\ngraft/\n");
+    ensureGitignored(dir, contextDirFor(dir));
+    const gi = readFileSync(join(dir, ".gitignore"), "utf8");
+    assert.equal((gi.match(/^\/graft\/$/gm) ?? []).length, 1);
+    assert.doesNotMatch(gi, /^graft\/?$/m);
+    assert.match(gi, /node_modules\//);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 
@@ -494,12 +515,26 @@ test("ensureGitignored: a `--dir` subpath is root-anchored too (#79)", () => {
   }
 });
 
-test("ensureGitignored: recognizes a pre-existing bare `graft` entry (no slash) and stays silent", () => {
+test("ensureGitignored: a legacy unanchored `--dir` subpath entry migrates to the anchored form too (#79)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ctxgi-"));
+  try {
+    writeFileSync(join(dir, ".gitignore"), "node_modules/\ntools/ctx/\n");
+    ensureGitignored(dir, join(dir, "tools", "ctx"));
+    const gi = readFileSync(join(dir, ".gitignore"), "utf8");
+    assert.match(gi, /^\/tools\/ctx\/$/m);
+    assert.doesNotMatch(gi, /^tools\/ctx\/?$/m);
+    assert.match(gi, /node_modules\//);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ensureGitignored: a pre-existing bare `graft` entry (no slash) migrates to the anchored form", () => {
   const dir = mkdtempSync(join(tmpdir(), "ctxgi-"));
   try {
     writeFileSync(join(dir, ".gitignore"), "graft\n");
     ensureGitignored(dir, contextDirFor(dir));
-    assert.equal(readFileSync(join(dir, ".gitignore"), "utf8"), "graft\n");
+    assert.equal(readFileSync(join(dir, ".gitignore"), "utf8"), "/graft/\n");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

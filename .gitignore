@@ -4,8 +4,9 @@ dist/
 
 # graft's local graph cache — regenerable, not committed. Each dev runs
 # `graft build` locally (it re-adds this line itself), so the folder is a
-# personal cache like node_modules, never a shared artifact.
-graft/
+# personal cache like node_modules, never a shared artifact. Root-anchored:
+# an unanchored `graft/` would also ignore `.claude/skills/graft/` (#79).
+/graft/
 
 # Env
 .env
