@@ -54,16 +54,17 @@ import { patchBuildConfig, type BuildConfig } from "./util/state.js";
 import { normalizePathPrefix } from "./util/paths.js";
 import { latestSession, formatSessionStats, sessionInputRate } from "./claude/session-metrics.js";
 import { listSessionIds, readSession, sessionDir } from "./claude/state.js";
-import { costLabel, listNotes, noteName, notePlace, noteTargets, readingTokens, savedByNote, commitLines, PERSONAL_SAVED_LINE, SECTIONS, sectionLead, shortDate, tokensLabel, writeNote, type Note, mentionedFiles } from "./notes/notes.js";
+import { costLabel, findNotes, listNotes, noteName, notePlace, noteTargets, readingTokens, savedByNote, commitLines, PERSONAL_SAVED_LINE, SECTIONS, sectionLead, shortDate, tokensLabel, writeNote, type Note, mentionedFiles } from "./notes/notes.js";
 import { currentSessionCost } from "./notes/session-cost.js";
 import { beginPastRead, finishPastRead } from "./notes/cold-start.js";
 import { currentBranch, noteAuthor, teammatesOn } from "./notes/git-facts.js";
 import { confirm, fold, getSkill, learn, listSkills, publish, skillForAgent, skillName, skillStatus, type LearnResult } from "./skills/skills.js";
 import { clearPending, cloudLines, loginLink, sessionKey, waitForConnect } from "./cloud/nudge.js";
 import { addRepo, clearCloud, cloudEnabled, fetchMe, fetchTeam, isError, readCloud, writeCloud, type Cloud } from "./cloud/workspace.js";
-import { inWorkspace, maybeSyncInBackground, recordActivity, runSyncChild, syncRepo } from "./cloud/workspace-sync.js";
+import { inWorkspace, learningsPayload, maybeSyncInBackground, recordActivity, runSyncChild, syncRepo } from "./cloud/workspace-sync.js";
 import type { CheckResult } from "./check/types.js";
-import { checkLocally } from "./check/local-check.js";
+import { addedText, checkLocally, parseTrailDiff, trailDiffTerms } from "./check/local-check.js";
+import { opencoreTarget, recallLearnings, retainLearnings, waitForJobs } from "./cloud/opencore.js";
 import { formatOverlap, maybeRefreshBranches, overlapsWith, pushedWhen, readBranchCache, refreshBranches } from "./notes/branches.js";
 import { ensureRepoTrail, LEARNINGS_DIR } from "./notes/repo-trail.js";
 import type { AskResult } from "./ask/ask.js";
@@ -1132,6 +1133,75 @@ grouped(program.command("note", { hidden: !TRAIL }), GROUP.memory)
   .argument("[dir]", "repository root", ".")
   .action(async (dir: string, opts: NoteOptions) => {
     await runNoteCommand(resolve(dir), opts);
+  });
+
+// PROTOTYPE (todo #12): a repo's learnings in a trail-opencore memory service.
+// Hidden, and off unless TRAIL_OPENCORE_URL and TRAIL_OPENCORE_TOKEN are set.
+const opencore = program.command("opencore", { hidden: true }).description("Prototype: learnings in a trail-opencore memory service");
+opencore
+  .command("push")
+  .description("Retain every learning in the repo's .trail/ (branches included) as opencore evidence")
+  .argument("[dir]", "repository root", ".")
+  .action(async (dir: string) => {
+    const o = opencoreTarget();
+    if (!o) {
+      console.error("✗ set TRAIL_OPENCORE_URL and TRAIL_OPENCORE_TOKEN");
+      process.exitCode = 1;
+      return;
+    }
+    const repo = resolve(dir);
+    const place = repoPlace(repo);
+    const learnings = learningsPayload(place.checkout);
+    const r = await retainLearnings(o, place.key, learnings);
+    const indexed = await waitForJobs(o, r.jobs);
+    console.log(`${place.key}: ${learnings.length} learnings · ${r.retained} retained · ${r.reused} already there · ${r.conflicts.length} conflicts · ${r.failed.length} failed · indexed: ${indexed ? "yes" : "not yet"}`);
+    for (const f of r.failed) console.log(`  ✗ ${f.path}: ${f.status} ${f.detail}`);
+    for (const c of r.conflicts) console.log(`  ⚠ ${c}: changed since it was retained`);
+    if (r.failed.length) process.exitCode = 1;
+  });
+opencore
+  .command("recall")
+  .description("Learnings for a prompt (or the branch's diff, with --diff), from opencore, next to what the offline match finds")
+  .argument("[query]", "a prompt, as the prompt hook would see it")
+  .argument("[dir]", "repository root", ".")
+  .option("--diff [base]", "use the branch's diff instead of a prompt")
+  .option("-n, --limit <n>", "most learnings to show", "3")
+  .action(async (query: string | undefined, dir: string, opts: { diff?: string | boolean; limit: string }) => {
+    const o = opencoreTarget();
+    if (!o) {
+      console.error("✗ set TRAIL_OPENCORE_URL and TRAIL_OPENCORE_TOKEN");
+      process.exitCode = 1;
+      return;
+    }
+    const repo = resolve(dir);
+    const limit = Number(opts.limit) || 3;
+    let q = query?.trim() ?? "";
+    let files: string[] = [];
+    if (opts.diff) {
+      const d = branchDiff(repo, typeof opts.diff === "string" ? opts.diff : undefined);
+      if (!d) {
+        console.error("✗ not a git repository");
+        process.exitCode = 1;
+        return;
+      }
+      files = d.files.filter((f) => !f.startsWith(".trail/"));
+      const added = parseTrailDiff(d.diff).flatMap((f) => addedText(f));
+      q = [...files, ...trailDiffTerms(added, 24), ...added.slice(0, 20)].join(" ").slice(0, 2000);
+    }
+    if (!q) {
+      console.error("✗ give a query, or --diff");
+      process.exitCode = 1;
+      return;
+    }
+    const local = findNotes(listNotes(repo), q, files, limit);
+    console.log(`offline match (trail ask's findNotes): ${local.length ? "" : "nothing"}`);
+    for (const h of local) console.log(`  · ${notePlace(h.note)} · ${h.note.author}, ${h.note.date} · ${h.note.title}`);
+    const r = await recallLearnings(o, q, { limit });
+    console.log(`opencore recall: ${r.hits.length ? "" : `nothing (${r.status})`}`);
+    for (const h of r.hits) {
+      console.log(`  · ${h.path} · ${h.author}, ${h.date} · score ${h.score?.toFixed(2) ?? "?"}`);
+      console.log(`      ${h.title} — ${h.quote.split("\n")[0]}`);
+    }
   });
 
 // `trail learn` and `trail skills`: corrections become takeaways on a skill,
