@@ -244,14 +244,19 @@ export async function buildGraph(
     }
 
     const hash = contentHash(source);
-    if (cached && hash === cached.hash) {
+    // A cached `error` is not a parse result, it is the absence of one — and the
+    // absence need not be the file's fault. A wasm grammar that aborts because the
+    // run before it exhausted the heap fails whichever file happened to be in
+    // flight, so that error belongs to the *run*, not to the bytes this entry is
+    // keyed on. Replaying it pins the accident to the content hash: an untouched
+    // file stays broken on every later build, and a whole language can vanish from
+    // a graph that still exits 0 (#312). So an entry carrying an error falls
+    // through and is re-parsed — it produced no nodes, which is exactly what makes
+    // re-parsing it affordable, and a run that now succeeds repairs the entry.
+    if (cached && hash === cached.hash && !cached.error) {
       entries[rel] = { ...cached, size: f.size, mtimeMs: f.mtimeMs };
       sources.set(rel, source);
       reused++;
-      if (cached.error) {
-        errors.push(cached.error); // this file failed to parse last time too
-        return;
-      }
       nodes.push(...cached.nodes);
       rawEdges.push(...cached.rawEdges);
       langs.add(label);
