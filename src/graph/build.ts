@@ -19,6 +19,7 @@ import { walkDir } from "../ingest/fs.js";
 import { contextDirFor, ensureGitignored, ensureSearchable } from "../context/node-file.js";
 import { extractFile, languageLabelOf, languageOf, type RawEdge } from "./extract.js";
 import { extractGeneric, genericLangOf, warmGenericGrammars } from "./generic.js";
+import { ansibleClaims, extractAnsible, warmAnsibleGrammar } from "./ansible.js";
 import { containerLangOf, extractContainer, warmContainerGrammars } from "./container.js";
 import { contentHash } from "../util/id.js";
 import { relPosix } from "../util/paths.js";
@@ -201,6 +202,9 @@ export async function buildGraph(
   await warmContainerGrammars(
     new Set(files.map((f) => containerLangOf(f.abs)?.name).filter((n): n is string => !!n)),
   );
+  // Ansible tier: one grammar (yaml) for the whole repo, warmed only if some
+  // file could be Ansible. Same await-before-the-sync-loop contract.
+  if (files.some((f) => ansibleClaims(f.abs))) await warmAnsibleGrammar();
 
   files.forEach((f, i) => {
     const rel = f.rel;
@@ -213,7 +217,10 @@ export async function buildGraph(
     // breadth tier so a future grammar claiming .vue can't shadow it.
     const container = lang ? null : containerLangOf(f.abs);
     const generic = lang || container ? null : genericLangOf(f.abs);
-    const label = languageLabelOf(f.abs) ?? container?.name ?? generic?.name ?? "unknown";
+    // Ansible is last: it claims `.yml`/`.yaml`, which no other tier wants, and
+    // it is the only tier that can decline a file it claimed.
+    const ansible = !lang && !container && !generic && ansibleClaims(f.abs);
+    const label = languageLabelOf(f.abs) ?? container?.name ?? generic?.name ?? (ansible ? "ansible" : "unknown");
     const cached = priorExtract.files[rel];
 
     // Every file is read and hashed, every build — only the *parse* is memoized.
@@ -254,7 +261,10 @@ export async function buildGraph(
       }
       nodes.push(...cached.nodes);
       rawEdges.push(...cached.rawEdges);
-      langs.add(label);
+      // A tier that declined the file contributes no nodes and must not put its
+      // language in the banner — otherwise a repo of Kubernetes YAML would report
+      // `[ansible]` and claim a coverage it does not have.
+      if (cached.nodes.length) langs.add(label);
       return;
     }
 
@@ -264,11 +274,13 @@ export async function buildGraph(
         ? extractFile(rel, source, lang)
         : container
           ? extractContainer(rel, source, container)
-          : extractGeneric(rel, source, generic!.name);
+          : ansible
+            ? extractAnsible(rel, source)
+            : extractGeneric(rel, source, generic!.name);
       nodes.push(...fileNodes);
       rawEdges.push(...fileEdges);
       sources.set(rel, source);
-      langs.add(label);
+      if (fileNodes.length) langs.add(label);
       entries[rel] = { size: f.size, mtimeMs: f.mtimeMs, hash, nodes: fileNodes, rawEdges: fileEdges };
     } catch (err) {
       const message = `${rel}: parse failed — ${err instanceof Error ? err.message : String(err)}`;

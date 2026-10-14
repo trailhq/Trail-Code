@@ -17,6 +17,7 @@ import { toPosixPath } from "../util/paths.js";
 import type { EdgeV1, Kind, NodeV1, Relation } from "./types.js";
 import { languageOf, type RawEdge } from "./extract.js";
 import { genericLangOf } from "./generic.js";
+import { ansibleClaims } from "./ansible.js";
 
 const IMPORT_EXTS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".py"];
 /** C/C++ source + header extensions, for resolving `#include` targets. */
@@ -65,7 +66,7 @@ for (const group of FAMILIES) for (const lang of group) FAMILY_OF.set(lang, grou
  * A language of its own is its own family, so the common case needs no entry above.
  */
 function familyOf(path: string): string | null {
-  const lang = languageOf(path) ?? genericLangOf(path)?.name ?? null;
+  const lang = languageOf(path) ?? genericLangOf(path)?.name ?? (ansibleClaims(path) ? "ansible" : null);
   if (!lang) return null;
   return FAMILY_OF.get(lang) ?? lang;
 }

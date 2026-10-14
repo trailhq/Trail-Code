@@ -22,6 +22,7 @@ import { relPosix } from "../util/paths.js";
 import { contextDirFor } from "../context/node-file.js";
 import { extractFile, languageOf } from "./extract.js";
 import { extractGeneric, genericLangOf, warmGenericGrammars } from "./generic.js";
+import { ansibleClaims, extractAnsible, warmAnsibleGrammar } from "./ansible.js";
 import { containerLangOf, extractContainer, warmContainerGrammars } from "./container.js";
 import { listSourceFiles } from "./build.js";
 import { readGraph, wiringPath } from "./write.js";
@@ -98,15 +99,18 @@ export async function checkGraph(
   await warmContainerGrammars(
     new Set(sourceFiles.map((f) => containerLangOf(f)?.name).filter((n): n is string => !!n)),
   );
+  // Ansible tier: same warmup, same #236 reasoning.
+  if (sourceFiles.some((f) => ansibleClaims(f))) await warmAnsibleGrammar();
   const current = new Map<string, string>(); // id → body_hash
   for (const file of sourceFiles) {
-    // The same three-way branch `buildGraph` uses, in the same order. The two must
+    // The same four-way branch `buildGraph` uses, in the same order. The two must
     // stay in step: a tier the build extracts and the check cannot see reports as
     // `removed` forever, and the `graft build` the check tells you to run can never
     // repair it.
     const lang = languageOf(file);
     const container = lang ? null : containerLangOf(file);
     const generic = lang || container ? null : genericLangOf(file);
+    const ansible = !lang && !container && !generic && ansibleClaims(file);
     let source: string | null;
     try {
       source = readSourceFile(file);
@@ -122,7 +126,9 @@ export async function checkGraph(
           ? extractContainer(rel, source, container)
           : generic
             ? extractGeneric(rel, source, generic.name)
-            : null;
+            : ansible
+              ? extractAnsible(rel, source)
+              : null;
       // No tier claims this file. Spelled out rather than asserted away: the
       // `generic!` that used to stand in this position threw a TypeError on a
       // container-tier file, the catch below swallowed it as a parse failure, and
