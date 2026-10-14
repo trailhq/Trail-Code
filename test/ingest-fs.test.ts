@@ -181,6 +181,66 @@ test("walkDir retains fixed skips and filesystem fallback outside Git", () => {
   }
 });
 
+test("walkDir collects a large nested subtree outside Git without dropping paths", () => {
+  const dir = mkdtempSync(join(tmpdir(), "graft-walk-bigsubtree-"));
+  try {
+    // The non-git walker accumulates a child subtree into the parent array.
+    // Spreading the child in did that in one push() call, whose argument list
+    // V8 caps at ~128k — see the comment in walkFilesystem. This pins the
+    // accumulation itself: every path from a deep, wide subtree comes back, in
+    // one flat list, with none lost at a directory boundary.
+    const expected: string[] = [];
+
+    for (let branch = 0; branch < 8; branch += 1) {
+      for (let leaf = 0; leaf < 120; leaf += 1) {
+        const rel = `data/branch-${branch}/nested/deep/file-${leaf}.ts`;
+        write(dir, rel);
+        expected.push(rel);
+      }
+    }
+
+    write(dir, "src/app.ts");
+    expected.push("src/app.ts");
+    expected.sort();
+
+    assert.deepEqual(walked(dir), expected);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/**
+ * The crash this guards against needs a child subtree larger than V8's argument
+ * cap (~128k), which is a real cost to set up: ~2.5s to create the files on
+ * Linux. CI also runs windows-latest, where creating that many files is far
+ * slower, so this is POSIX-only — the cheap semantic test above runs everywhere.
+ */
+test("walkDir survives a subtree larger than V8's argument limit (#314)", { skip: process.platform === "win32" ? "POSIX-only: file creation cost on Windows CI" : false }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "graft-walk-argcap-"));
+
+  try {
+    const bulk = join(dir, "data");
+    mkdirSync(bulk, { recursive: true });
+
+    // Above the cap, so spreading the child array into push() throws. Files are
+    // empty and flat: the walker stats each one, and depth is not the issue.
+    const count = 150_000;
+
+    for (let i = 0; i < count; i += 1) {
+      writeFileSync(join(bulk, `f${i}.ts`), "");
+    }
+
+    write(dir, "src/app.ts");
+
+    const found = walkDir(dir);
+
+    assert.equal(found.length, count + 1);
+    assert.ok(found.includes(join(dir, "src", "app.ts")));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 /**
  * A5 — `shouldSkipDir` and its `--include-dir` override.
  *
