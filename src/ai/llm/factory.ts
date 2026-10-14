@@ -13,14 +13,20 @@
  * OrcaRouter AI gateway by default (see orcarouter.ts) so its users get the
  * gateway's routing, failover, and guardrails behind a named provider instead
  * of a bare custom base URL.
+ *
+ * `opencode` and `opencode-go` are the same again for OpenCode's two gateways
+ * (see opencode.ts). They are named providers rather than a base URL because
+ * the wire contract is not just the address: OpenCode Go rejects a request that
+ * arrives without the `x-opencode-session` header.
  */
 import type { ChatModel } from "./types.js";
 import { OpenAIChatModel } from "./openai.js";
 import { AnthropicChatModel } from "./anthropic.js";
 import { LiteLLMChatModel } from "./litellm.js";
 import { OrcaRouterChatModel } from "./orcarouter.js";
+import { OpenCodeChatModel, OpenCodeGoChatModel } from "./opencode.js";
 
-export type ProviderKind = "openai" | "anthropic" | "litellm" | "orcarouter";
+export type ProviderKind = "openai" | "anthropic" | "litellm" | "orcarouter" | "opencode" | "opencode-go";
 
 export interface ChatModelConfig {
   provider: ProviderKind;
@@ -51,6 +57,20 @@ export function createChatModel(cfg: ChatModelConfig): ChatModel {
       });
     case "orcarouter":
       return new OrcaRouterChatModel({
+        apiKey: cfg.apiKey,
+        model: cfg.model,
+        baseUrl: cfg.baseUrl,
+        headers: cfg.headers,
+      });
+    case "opencode":
+      return new OpenCodeChatModel({
+        apiKey: cfg.apiKey,
+        model: cfg.model,
+        baseUrl: cfg.baseUrl,
+        headers: cfg.headers,
+      });
+    case "opencode-go":
+      return new OpenCodeGoChatModel({
         apiKey: cfg.apiKey,
         model: cfg.model,
         baseUrl: cfg.baseUrl,

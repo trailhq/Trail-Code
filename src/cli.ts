@@ -192,10 +192,11 @@ program
   )
   .version(currentVersion, "-v, --version")
   .option("--dir <path>", "context graph directory (default: <repo>/graft)")
-  .option("--provider <name>", "LLM wire format: openai | anthropic | litellm | orcarouter (env GRAFT_PROVIDER)")
+  .option("--provider <name>", "LLM wire format: openai | anthropic | litellm | orcarouter | opencode | opencode-go (env GRAFT_PROVIDER)")
   .option("--model <id>", "model id for the LLM pass (env GRAFT_MODEL)")
   .option("--api-key <key>", "provider API key (env GRAFT_API_KEY)")
-  .option("--base-url <url>", "OpenAI-compatible endpoint URL (env GRAFT_BASE_URL)");
+  .option("--base-url <url>", "OpenAI-compatible endpoint URL (env GRAFT_BASE_URL)")
+  .option("--header <key:value...>", "extra HTTP header for the LLM endpoint, e.g. --header 'x-org: acme'; repeatable (env GRAFT_HEADERS)", collectHeader, []);
 
 interface GlobalOpts {
   dir?: string;
@@ -203,6 +204,26 @@ interface GlobalOpts {
   model?: string;
   apiKey?: string;
   baseUrl?: string;
+  header?: string[];
+}
+
+/** Accumulate repeated `--header` flags instead of overwriting. */
+function collectHeader(value: string, previous: string[] = []): string[] {
+  return [...previous, value];
+}
+
+/** Turn repeated `--header 'Key: value'` flags into a header map. */
+function parseHeaderFlags(flags: string[] | undefined): Record<string, string> | undefined {
+  if (!flags || flags.length === 0) return undefined;
+  const headers: Record<string, string> = {};
+  for (const flag of flags) {
+    const sep = flag.indexOf(":");
+    if (sep === -1) continue;
+    const key = flag.slice(0, sep).trim();
+    const value = flag.slice(sep + 1).trim();
+    if (key) headers[key] = value;
+  }
+  return Object.keys(headers).length > 0 ? headers : undefined;
 }
 
 /** Config drawn from the global CLI flags (env + defaults fill the rest). */
@@ -214,6 +235,7 @@ function cliConfig(): EngineConfig {
     model: o.model,
     apiKey: o.apiKey,
     baseUrl: o.baseUrl,
+    headers: parseHeaderFlags(o.header),
   };
 }
 

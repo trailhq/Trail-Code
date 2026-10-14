@@ -26,6 +26,12 @@ export interface EngineConfig {
   model?: string;
   /** Base URL for OpenAI-compatible endpoints. Env: GRAFT_BASE_URL. */
   baseUrl?: string;
+  /**
+   * Extra default HTTP headers for the endpoint. Env: GRAFT_HEADERS (a JSON
+   * object of string→string). Lets any gateway that needs an auth, routing, or
+   * identification header work without a provider-specific code path.
+   */
+  headers?: Record<string, string>;
 
   // --- advanced: bring your own components ---
   /** Override the whole transport (skips provider/apiKey/baseUrl). */
@@ -56,6 +62,28 @@ export interface ResolvedConfig {
 
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 const ORCAROUTER_BASE_URL = "https://api.orcarouter.ai/v1";
+const OPENCODE_BASE_URL = "https://opencode.ai/zen/v1";
+const OPENCODE_GO_BASE_URL = "https://opencode.ai/zen/go/v1";
+
+/** Parse the `GRAFT_HEADERS` JSON object into a header map, ignoring anything
+ *  that is not a string-valued entry. Malformed JSON yields no headers (and a
+ *  one-line warning) rather than failing every command that resolves config. */
+export function parseHeaders(raw: string | undefined): Record<string, string> {
+  if (!raw) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    console.error("⚠ GRAFT_HEADERS is not valid JSON — ignoring it. Expected an object, e.g. '{\"x-org\": \"acme\"}'.");
+    return {};
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+    if (typeof value === "string") out[key] = value;
+  }
+  return out;
+}
 
 /** Per-provider default model. */
 export const DEFAULT_MODELS: Record<ProviderKind, string> = {
@@ -65,6 +93,9 @@ export const DEFAULT_MODELS: Record<ProviderKind, string> = {
   litellm: "openai/gpt-4o-mini",
   // Provider-prefixed so the OrcaRouter gateway routes it; override with GRAFT_MODEL.
   orcarouter: "openai/gpt-4o-mini",
+  // Cheap, capable coding models on OpenCode Zen / Zen Go; override with GRAFT_MODEL.
+  opencode: "deepseek-v4.1-flash",
+  "opencode-go": "deepseek-v4.1-flash",
 };
 
 export const DEFAULTS = {
@@ -79,7 +110,12 @@ export function resolveConfig(config: EngineConfig = {}): ResolvedConfig {
 
   const explicitKey = config.apiKey ?? env.GRAFT_API_KEY;
   const legacyKey = env.OPENROUTER_API_KEY;
-  const apiKey = explicitKey ?? legacyKey ?? env.ORCAROUTER_API_KEY;
+  // OPENCODE_API_KEY / OPENCODE_GO_API_KEY are honored only for their own
+  // provider, so a key that other tools already keep in the environment is
+  // never sent to a different endpoint.
+  const openCodeKey = provider === "opencode" ? env.OPENCODE_API_KEY : undefined;
+  const openCodeGoKey = provider === "opencode-go" ? env.OPENCODE_GO_API_KEY : undefined;
+  const apiKey = explicitKey ?? openCodeKey ?? openCodeGoKey ?? legacyKey ?? env.ORCAROUTER_API_KEY;
   const usedLegacyEnv = !explicitKey && !!legacyKey;
 
   const model =
@@ -95,11 +131,19 @@ export function resolveConfig(config: EngineConfig = {}): ResolvedConfig {
   if (!baseUrl && provider === "openai" && usedLegacyEnv) baseUrl = OPENROUTER_BASE_URL;
   // The orcarouter provider points at the gateway unless a base URL is given.
   if (!baseUrl && provider === "orcarouter") baseUrl = ORCAROUTER_BASE_URL;
+  // Likewise for the two OpenCode gateways (OPENCODE_BASE_URL / OPENCODE_GO_BASE_URL
+  // let a deployment pin a proxy or an alternate host).
+  if (!baseUrl && provider === "opencode") baseUrl = env.OPENCODE_BASE_URL ?? OPENCODE_BASE_URL;
+  if (!baseUrl && provider === "opencode-go") baseUrl = env.OPENCODE_GO_BASE_URL ?? OPENCODE_GO_BASE_URL;
 
-  const headers =
-    provider === "openai" && baseUrl?.includes("openrouter.ai")
-      ? { "X-Title": "graft" }
-      : undefined;
+  // Built-in defaults first, then GRAFT_HEADERS, then explicit config/CLI — so a
+  // caller can always override what the provider adds.
+  const mergedHeaders: Record<string, string> = {
+    ...(provider === "openai" && baseUrl?.includes("openrouter.ai") ? { "X-Title": "graft" } : {}),
+    ...parseHeaders(env.GRAFT_HEADERS),
+    ...(config.headers ?? {}),
+  };
+  const headers = Object.keys(mergedHeaders).length > 0 ? mergedHeaders : undefined;
 
   return {
     contextDir: config.contextDir ?? env.GRAFT_DIR,
