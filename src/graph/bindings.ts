@@ -221,6 +221,14 @@ export function resolveRecvType(
     // local binding is the type itself (Swift naming: types are UpperCamelCase,
     // values lowerCamelCase — and a shadowing binding was already tried above).
     (ctx.lang === "swift" && /^[A-Z]/.test(receiver) ? receiver : undefined) ??
+    // Python type-member call `SomeClass.method()`: classmethods and staticmethods
+    // are invoked on the class itself, so an uppercase receiver with no local
+    // binding is the type. Same shape as Swift above, and PEP 8 gives the same
+    // naming signal (classes CapWords, variables lower_case). Without this the
+    // whole service-class convention — business logic on classmethods, called as
+    // `MyService.do_thing()` — resolved to nothing, so `graft callers` reported
+    // only the internal `cls.` call sites (#305).
+    (ctx.lang === "python" && /^[A-Z]/.test(receiver) ? receiver : undefined) ??
     undefined
   );
 }
