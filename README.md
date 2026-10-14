@@ -21,6 +21,7 @@
   <a href="TELEMETRY.md"><img src="https://img.shields.io/badge/telemetry-anonymous%2C%20opt--out-546FFF?style=for-the-badge" /></a>
   <a href="https://scorecard.dev/viewer/?uri=github.com/NanoNets/Graft"><img src="https://img.shields.io/ossf-scorecard/github.com/NanoNets/Graft?style=for-the-badge&label=openssf%20scorecard" /></a>
   <a href="https://app.trailhq.com/get-started?step=repo"><img src="https://img.shields.io/badge/Trail-try%20it-E5484D?style=for-the-badge&logoColor=white" /></a>
+  <a href="https://gaiaskilltree.com/named/#explorer/trailhq/graft"><img src="https://gaiaskilltree.com/badges/_assets/trailhq/graft.svg?repo=trailhq/Graft" alt="Gaia Skill: graft" /></a>
 </p>
 
 ### Up to **4× cheaper** and **3× faster**, with better or no loss of correctness.
