@@ -1,5 +1,5 @@
 /**
- * Per-file memo for Tier-1 extraction — `<outDir>/.cache/extract.json`.
+ * Per-file memo for Tier-1 extraction — `<outDir>/.cache/extract.<stamp>.ndjson`.
  *
  * `extractFile` is pure and file-local (`rel`, `source`, `lang` → `{nodes,
  * rawEdges}`), which is the whole trick: an unchanged file's parse result can be
@@ -28,12 +28,12 @@ import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { dirname, extname, join } from "node:path";
 import { CACHE_DIR } from "../context/node-file.js";
-import { readJson, writeJsonAtomic } from "../util/state.js";
+import { forEachFileLine, openAtomic, type AtomicWriter } from "../util/json-stream.js";
 import type { RawEdge } from "./extract.js";
 import type { NodeV1 } from "./types.js";
 
 /** Bump when the on-disk shape below changes. */
-const CACHE_VERSION = 1;
+const CACHE_VERSION = 2;
 export const EXTRACT_CACHE_PREFIX = "extract";
 
 export interface ExtractEntry {
@@ -59,7 +59,7 @@ export interface ExtractCache {
 }
 
 /**
- * Where this graft's memo lives: `<outDir>/.cache/extract.<stamp>.json`.
+ * Where this graft's memo lives: `<outDir>/.cache/extract.<stamp>.ndjson`.
  *
  * The stamp is in the *filename*, not just inside the file, so two grafts working
  * on one repo keep separate memos instead of evicting each other. That is the
@@ -74,7 +74,7 @@ export interface ExtractCache {
  */
 export function extractCachePath(outDir: string): string | null {
   const stamp = extractorStamp();
-  return stamp === null ? null : join(outDir, CACHE_DIR, `${EXTRACT_CACHE_PREFIX}.${stamp}.json`);
+  return stamp === null ? null : join(outDir, CACHE_DIR, `${EXTRACT_CACHE_PREFIX}.${stamp}.ndjson`);
 }
 
 /** Keep `.cache/` from growing a file per version forever: after writing, drop all
@@ -83,7 +83,7 @@ export function extractCachePath(outDir: string): string | null {
 export function pruneSidecars(cacheDir: string, prefix: string, keep = 2): void {
   try {
     const mine = readdirSync(cacheDir)
-      .filter((f) => f.startsWith(`${prefix}.`) && f.endsWith(".json"))
+      .filter((f) => f.startsWith(`${prefix}.`) && (f.endsWith(".json") || f.endsWith(".ndjson")))
       .map((f) => {
         const full = join(cacheDir, f);
         return { full, mtimeMs: statSync(full).mtimeMs };
@@ -199,25 +199,66 @@ export function readExtractCache(outDir: string): ExtractCache {
   const path = extractCachePath(outDir);
   const stamp = extractorStamp();
   if (path === null || stamp === null) return emptyExtractCache();
-  const c = readJson<ExtractCache>(path);
-  if (!c || c.version !== CACHE_VERSION || c.extractor !== stamp || typeof c.files !== "object") {
-    return emptyExtractCache();
+  // Read in chunks and decoded a line at a time: the file may be larger than any
+  // string V8 holds, and than the 2 GiB one Buffer can.
+  // No prototype: `rel` comes from disk, and `__proto__` must stay a plain key.
+  const files: Record<string, ExtractEntry> = Object.create(null) as Record<string, ExtractEntry>;
+  let ok = true;
+  let header = false;
+  try {
+    forEachFileLine(path, (line, i) => {
+      if (!ok) return;
+      if (i === 0) {
+        // A blank or missing header is no header: nothing after it is trusted.
+        const head = (line === "" ? null : JSON.parse(line)) as { version?: number; extractor?: string } | null;
+        header = head !== null && head.version === CACHE_VERSION && head.extractor === stamp;
+        if (!header) ok = false;
+        return;
+      }
+      if (line === "") return;
+      const parsed = JSON.parse(line) as { rel?: string; e?: ExtractEntry };
+      if (typeof parsed.rel !== "string" || !parsed.e || typeof parsed.e !== "object") { ok = false; return; }
+      files[parsed.rel] = parsed.e;
+    });
+  } catch {
+    ok = false; // unreadable, or a corrupt line: the whole memo is suspect
   }
-  return { version: c.version, extractor: c.extractor, files: c.files ?? {} };
+  return ok && header ? { version: CACHE_VERSION, extractor: stamp, files } : emptyExtractCache();
 }
 
 /** Best-effort write — a full graph is already on disk by the time this runs, so an
  * unwritable cache dir must never fail the build (it only costs the next build its
  * reuse). Returns false when nothing was written, including the deliberate case of
- * having no extractor identity: a parse we can't attribute must never be replayed. */
+ * having no extractor identity: a parse we can't attribute must never be replayed.
+ *
+ * NDJSON: a header line, then one line per entry. Each element is stringified on its
+ * own, so the writer never builds a string larger than one entry, and the reader — via
+ * {@link forEachFileLine} — never decodes more than one line at a time. The atomic rename
+ * means a half-written file is never visible under `path`, so it can never be read as a
+ * valid (but truncated) cache. */
 export function writeExtractCache(outDir: string, cache: ExtractCache): boolean {
   const path = extractCachePath(outDir);
   if (path === null) return false;
+  let w: AtomicWriter | null = null;
   try {
-    writeJsonAtomic(path, cache, true);
+    w = openAtomic(path);
+    w.write(`${JSON.stringify({ version: CACHE_VERSION, extractor: cache.extractor })}\n`);
+    for (const rel of Object.keys(cache.files)) {
+      w.write(`${JSON.stringify({ rel, e: cache.files[rel] })}\n`);
+    }
+    w.commit();
     pruneSidecars(join(outDir, CACHE_DIR), EXTRACT_CACHE_PREFIX);
     return true;
   } catch {
+    w?.abort();
     return false;
   }
+}
+
+/** Test seam: read, mutate, rewrite. Tests used to JSON.parse the cache file
+ * directly; the format is now line-oriented and this keeps them format-agnostic. */
+export function rewriteExtractCacheForTest(outDir: string, mutate: (files: Record<string, ExtractEntry>) => void): void {
+  const c = readExtractCache(outDir);
+  mutate(c.files);
+  writeExtractCache(outDir, c);
 }

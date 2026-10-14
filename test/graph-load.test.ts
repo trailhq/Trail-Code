@@ -41,6 +41,12 @@ function fixtureDir(): string {
   return mkdtempSync(join(tmpdir(), "graft-load-"));
 }
 
+/** A well-formed GraphV1 for these fixtures: the version lives under `meta`, never
+ * as a stray top-level key (which `writeGraph` now rejects). */
+function graphOf(nodes: NodeV1[]): GraphV1 {
+  return { meta: { version: 1, nodeCount: nodes.length, edgeCount: 0, languages: [] }, nodes, edges: [] };
+}
+
 /** Force a distinct (mtimeMs, size) from the previous write, even on
  * filesystems with coarse mtime resolution. */
 function bump(path: string): void {
@@ -51,7 +57,7 @@ function bump(path: string): void {
 
 test("loadGraphCached: two loads of an unchanged file return the same parsed object", () => {
   const dir = fixtureDir();
-  writeGraph({ version: 1, nodes: [node("a")], edges: [] } as GraphV1, dir);
+  writeGraph(graphOf([node("a")]), dir);
   __resetParseCounts();
 
   const g1 = loadGraphCached(dir);
@@ -63,7 +69,7 @@ test("loadGraphCached: two loads of an unchanged file return the same parsed obj
 
 test("loadGraphCached: rewriting the wiring file invalidates the cache", () => {
   const dir = fixtureDir();
-  writeGraph({ version: 1, nodes: [node("a")], edges: [] } as GraphV1, dir);
+  writeGraph(graphOf([node("a")]), dir);
   __resetParseCounts();
 
   const g1 = loadGraphCached(dir);
@@ -72,7 +78,7 @@ test("loadGraphCached: rewriting the wiring file invalidates the cache", () => {
 
   // Rewrite with a changed node, then force a distinct mtime so the cache
   // can't coast on a filesystem with coarse mtime granularity.
-  writeGraph({ version: 1, nodes: [node("b")], edges: [] } as GraphV1, dir);
+  writeGraph(graphOf([node("b")]), dir);
   bump(wiringPath(dir));
 
   const g2 = loadGraphCached(dir);
@@ -92,7 +98,7 @@ test("loadGraphCached: missing file returns null and a later-created file is pic
   const missAgain = loadGraphCached(dir);
   assert.equal(missAgain, null, "missing file must not be negatively cached forever");
 
-  writeGraph({ version: 1, nodes: [node("late")], edges: [] } as GraphV1, dir);
+  writeGraph(graphOf([node("late")]), dir);
   const found = loadGraphCached(dir);
   assert.equal(found?.nodes[0]?.id, "late");
   assert.equal(__parseCount.graph, 1);
@@ -100,7 +106,7 @@ test("loadGraphCached: missing file returns null and a later-created file is pic
 
 test("loadAskIndexCached: caches and invalidates the same way as the graph loader", () => {
   const dir = fixtureDir();
-  const graph = { version: 1, nodes: [node("a"), node("b")], edges: [] } as GraphV1;
+  const graph = graphOf([node("a"), node("b")]);
   writeAskIndex(dir, graph);
   __resetParseCounts();
 
@@ -110,7 +116,7 @@ test("loadAskIndexCached: caches and invalidates the same way as the graph loade
   assert.strictEqual(i1, i2);
   assert.equal(__parseCount.askIndex, 1);
 
-  writeAskIndex(dir, { version: 1, nodes: [node("a")], edges: [] } as GraphV1);
+  writeAskIndex(dir, graphOf([node("a")]));
   bump(askIndexPath(dir));
 
   const i3 = loadAskIndexCached(dir);
@@ -128,7 +134,7 @@ test("callTool: graft_trace_calls on the same dir twice doesn't reparse the grap
   mkdirSync(join(dir, "src"), { recursive: true });
   writeFileSync(join(dir, "src", "math.ts"), "export function add() { return 1; }\n");
   const graph: GraphV1 = {
-    version: 1,
+    meta: { version: 1, nodeCount: 2, edgeCount: 0, languages: ["typescript"] },
     // A real `buildGraph` always emits a `kind: "file"` node per source file;
     // include one here too so `graft_trace_calls` with depth (a `resolveSymbol` +
     // `edgeWalk` walk, the old `graft impact`) can resolve the filename-shaped
@@ -138,7 +144,7 @@ test("callTool: graft_trace_calls on the same dir twice doesn't reparse the grap
       { ...node("src/math.ts"), kind: "file", path: "src/math.ts", name: "math.ts", signature: null },
     ],
     edges: [],
-  } as GraphV1;
+  };
   // graft_trace_calls reads through `contextDirFor(root)`, i.e. `<root>/graft`
   // by default — write the graph there directly rather than round-tripping
   // through a real `graft build`.

@@ -491,6 +491,7 @@ grouped(program.command("build"), GROUP.setup)
   .option("--deep", "run the LLM pass: concept nodes (graft/*.md) + per-symbol summary/crux")
   .option("-e, --extensions <exts...>", 'code extensions to include (e.g. ".ts" ".py"); an extension with no parser is ignored with a warning that lists the supported set')
   .option("-j, --concurrency <n>", "files summarized in parallel during --deep (default 5)")
+  .option("--workers <n>", "parse in <n> child processes for a large cold build (or 'auto'); default in-process. GRAFT_PARSE_WORKERS sets the default")
   .option("--no-reuse", "re-parse every file instead of replaying unchanged ones from the extraction cache")
   .option("--lsp", "add compiler-grade call edges via a language server if one is installed (opt-in, slower; e.g. rust-analyzer, clangd)")
   .option("--allow-partial", "with --deep: exit 0 even when some files' summaries failed (default: a degraded meaning tier exits 1)")
@@ -536,6 +537,7 @@ grouped(program.command("build"), GROUP.setup)
       deep?: boolean;
       extensions?: string[];
       concurrency?: string;
+      workers?: string;
       reuse?: boolean;
       lsp?: boolean;
       allowPartial?: boolean;
@@ -563,6 +565,17 @@ grouped(program.command("build"), GROUP.setup)
       console.error(`✗ --concurrency must be a number, got "${opts.concurrency}"`);
       process.exit(1);
     }
+    // Opt-in only. The env var is read HERE, by the one command a human runs,
+    // never by buildGraph: the pre-query refresh must not fork under a query.
+    // An empty GRAFT_PARSE_WORKERS= line in a .env reads as unset, not as invalid.
+    const workersArg = (opts.workers as string | undefined) ?? (process.env.GRAFT_PARSE_WORKERS?.trim() || undefined);
+    if (workersArg !== undefined && workersArg !== "auto" && !/^\d+$/.test(workersArg)) {
+      const source = opts.workers !== undefined ? "--workers" : "GRAFT_PARSE_WORKERS";
+      console.error(`✗ ${source} must be a non-negative integer or "auto", got "${workersArg}"`);
+      process.exit(1);
+    }
+    const parseWorkers: number | "auto" | undefined =
+      workersArg === undefined ? undefined : workersArg === "auto" ? "auto" : Number(workersArg);
     warnUnsupportedExtensions(opts.extensions);
     // Persisted BEFORE the build itself runs, so this invocation's walks (and
     // every later no-flag build / hooks refresh) see it identically — the
@@ -642,6 +655,10 @@ grouped(program.command("build"), GROUP.setup)
     const buildRoot = resolve(dir);
     const buildGlobalDir = program.opts<GlobalOpts>().dir;
     if (isWorkspaceBuildRoot(buildRoot, buildGlobalDir)) {
+      // Children build in-thread; `0` asks for exactly that, so only a pool request is ignored.
+      if (parseWorkers !== undefined && parseWorkers !== 0) {
+        console.error(`⚠ --workers / GRAFT_PARSE_WORKERS is ignored for workspace builds; each repo parses in-process`);
+      }
       await runWorkspaceBuild(buildRoot, {
         deep: !!deep,
         extensions: opts.extensions,
@@ -684,6 +701,7 @@ grouped(program.command("build"), GROUP.setup)
     const g = await engine.graph(dir, {
       llm: deep,
       concurrency,
+      parseWorkers,
       reuse: opts.reuse,
       lsp: opts.lsp,
       onlyDirs,
@@ -698,6 +716,8 @@ grouped(program.command("build"), GROUP.setup)
     process.stderr.write("\n");
     console.log(`✓ wiring: ${g.nodes} nodes (${fmt(g.byKind)}), ${g.edges} edges, ${g.cards} cards [${g.languages.join(", ")}]`);
     console.log(`  parsed: ${g.parsed} of ${g.files} files (${g.reused} replayed from cache)`);
+    if (g.parseWorkers > 0 && g.poolFallback) console.log(`  workers: ${g.parseWorkers} parser processes, until the pool could not keep them alive; the rest parsed in-process`);
+    else if (g.parseWorkers > 0) console.log(`  workers: ${g.parseWorkers} parser processes`);
     // Worth one line: this build started from a graph the user never built *here*.
     if (g.seededFrom) console.log(`  seeded: copied a starting graph from ${g.seededFrom} (git worktree)`);
     if (deep) {
@@ -718,7 +738,11 @@ grouped(program.command("build"), GROUP.setup)
       },
       { repo: buildRoot },
     );
-    for (const e of g.errors) console.error(`✗ ${e}`);
+    // A poisoned WASM runtime or a broken grammar can fail tens of thousands of
+    // files identically; the first 20 say everything the rest would.
+    const MAX_ERRORS_SHOWN = 20;
+    for (const e of g.errors.slice(0, MAX_ERRORS_SHOWN)) console.error(`✗ ${e}`);
+    if (g.errors.length > MAX_ERRORS_SHOWN) console.error(`✗ … and ${g.errors.length - MAX_ERRORS_SHOWN} more (${g.errors.length} files failed to parse)`);
 
     const rel = relative(process.cwd(), g.contextDir) || "graft";
     if (process.env.GRAFT_NO_GITIGNORE) {

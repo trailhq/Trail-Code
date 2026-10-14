@@ -123,6 +123,31 @@ test("runSync's default build passes --dir <resolved> to graft build when GRAFT_
   }
 });
 
+test("runSync's default build pins --workers 0 so a background sync never forks, whatever GRAFT_PARSE_WORKERS says", () => {
+  const d = mkdtempSync(join(tmpdir(), 'graft-sync-workers-'));
+  mkdirSync(join(d, 'graft', '.graph'), { recursive: true });
+  const argsFile = join(d, 'args-seen.json');
+  const stub = join(d, 'build-stub.cjs');
+  writeFileSync(
+    stub,
+    `const fs = require('fs');\n` +
+      `fs.writeFileSync(${JSON.stringify(argsFile)}, JSON.stringify(process.argv.slice(2)));\n` +
+      `fs.writeFileSync(${JSON.stringify(join(d, 'graft', '.graph', 'wiring.json'))}, JSON.stringify({ meta: { nodeCount: 0, edgeCount: 0, languages: [] }, nodes: [], edges: [] }));\n`,
+  );
+  const prev = process.env.GRAFT_PARSE_WORKERS;
+  process.env.GRAFT_TEST_CLI = stub;
+  process.env.GRAFT_PARSE_WORKERS = 'auto';
+  try {
+    runSync(d);
+    const argsSeen: string[] = JSON.parse(readFileSync(argsFile, 'utf8'));
+    // The CLI flag outranks the env var (and a repo .env the child's dotenv loads).
+    assert.deepEqual(argsSeen, ['build', '.', '--workers', '0']);
+  } finally {
+    delete process.env.GRAFT_TEST_CLI;
+    if (prev === undefined) delete process.env.GRAFT_PARSE_WORKERS; else process.env.GRAFT_PARSE_WORKERS = prev;
+  }
+});
+
 test('runSync clears syncing even if build throws (money-safe failure)', () => {
   const d = mkdtempSync(join(tmpdir(), 'graft-sync-'));
   writeStats(d, { ...emptyStats(), dirty: true, syncing: true });

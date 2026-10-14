@@ -8,8 +8,10 @@
  * timestamps, so rebuilding an unchanged repo produces a byte-identical file and
  * git diffs stay minimal.
  */
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { constants as bufferConstants } from "node:buffer";
+import { readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { forEachFileLine, forEachLine, openAtomic, type LineWalker } from "../util/json-stream.js";
 import type { EdgeV1, GraphV1, NodeV1 } from "./types.js";
 
 /** Hidden subdir under the context dir that holds machine-only graph artifacts. */
@@ -21,11 +23,22 @@ export function wiringPath(outDir: string): string {
   return join(outDir, GRAPH_DIR, GRAPH_FILE);
 }
 
+export interface ReadGraphOptions { maxStringLength?: number }
+
 /**
  * Read an existing wiring graph for use as the Tier-2 cache. Returns null when the
  * file is absent or unparseable (a fresh build, or a corrupt file we'll replace).
+ * A file over V8's string cap is walked line by line ({@link readGraphFromBuffer})
+ * instead of read as one string; `opts.maxStringLength` lets a test force that path.
  */
-export function readGraph(path: string): GraphV1 | null {
+export function readGraph(path: string, opts: ReadGraphOptions = {}): GraphV1 | null {
+  let size: number;
+  try { size = statSync(path).size; } catch { return null; }
+  const cap = opts.maxStringLength ?? bufferConstants.MAX_STRING_LENGTH;
+  if (size > cap) {
+    // Chunked: past 2 GiB the file is too large for one Buffer, let alone a string.
+    try { return readGraphFromLines((fn) => forEachFileLine(path, fn)); } catch { return null; }
+  }
   try {
     return JSON.parse(readFileSync(path, "utf8")) as GraphV1;
   } catch {
@@ -33,34 +46,86 @@ export function readGraph(path: string): GraphV1 | null {
   }
 }
 
-export function writeGraph(graph: GraphV1, outDir: string): string {
-  const sorted: GraphV1 = {
-    ...graph,
-    nodes: [...graph.nodes].sort((a, b) => a.id.localeCompare(b.id)).map(stripBodyText),
-    edges: [...graph.edges].sort(edgeOrder),
-  };
-  const path = wiringPath(outDir);
-  mkdirSync(dirname(path), { recursive: true });
-  // Atomic write (temp + rename): the crux pass now checkpoints wiring.json
-  // periodically (#128), and a --deep run is exactly what gets killed mid-flush
-  // (SIGTERM/CI timeout/laptop sleep). A partial writeFileSync would leave a
-  // truncated, unparseable graph; rename swaps it in atomically on the same fs.
-  //
-  // pid in the temp name, and removed when the write fails — the same discipline
-  // `writeJsonAtomic` (util/state.ts) documents: a fixed name lets a concurrent
-  // build (a manual `graft build` racing the refresh child) write the same scratch
-  // file and hand the loser a corrupt graph, and a failed rename would otherwise
-  // leave a full-size orphan behind that nothing ever cleans up.
-  const tmp = `${path}.${process.pid}.tmp`;
-  try {
-    writeFileSync(tmp, JSON.stringify(sorted, null, 2) + "\n");
-    renameSync(tmp, path);
-  } catch (e) {
+/** Parse the line-per-element shape `writeGraph` produces without ever holding
+ * the whole file as one string. Null when the buffer is not in that shape. */
+export function readGraphFromBuffer(buf: Buffer): GraphV1 | null {
+  return readGraphFromLines((fn) => forEachLine(buf, fn));
+}
+
+function readGraphFromLines(eachLine: LineWalker): GraphV1 | null {
+  const NODES_OPEN = ',"nodes":[';
+  const EDGES_OPEN = '],"edges":[';
+  const END = "]}";
+  let head: Record<string, unknown> | null = null;
+  const nodes: NodeV1[] = [];
+  const edges: EdgeV1[] = [];
+  let target: NodeV1[] | EdgeV1[] | null = null;
+  let closed = false;
+  let bad = false;
+  eachLine((line, i) => {
+    if (bad || closed) { if (line !== "") bad = true; return; }
     try {
-      rmSync(tmp, { force: true });
+      if (i === 0) {
+        // Parse the whole header object (as readAskIndexFromBuffer does) rather than
+        // slicing `meta` out by fixed offsets: strip the trailing `,"nodes":[`, close
+        // the object, and JSON.parse it. This tolerates any top-level key that precedes
+        // `nodes` — not just `meta` — so a future header field round-trips instead of
+        // failing a slice that assumed `meta` was the only key before `nodes`.
+        if (!line.startsWith('{"meta":') || !line.endsWith(NODES_OPEN)) { bad = true; return; }
+        head = JSON.parse(line.slice(0, -NODES_OPEN.length) + "}") as Record<string, unknown>;
+        target = nodes;
+        return;
+      }
+      if (line === EDGES_OPEN) { target = edges; return; }
+      if (line === END) { closed = true; return; }
+      if (target === null) { bad = true; return; }
+      const body = line.endsWith(",") ? line.slice(0, -1) : line;
+      (target as unknown[]).push(JSON.parse(body));
     } catch {
-      /* nothing more we can do */
+      bad = true;
     }
+  });
+  if (bad || !closed || head === null) return null;
+  const { meta, ...rest } = head as Record<string, unknown>;
+  if (meta === undefined || meta === null) return null;
+  // Spread any other top-level header keys (there are none today) alongside meta so
+  // the reader stays forward-compatible with whatever writeGraph writes next.
+  return { ...rest, meta, nodes, edges } as GraphV1;
+}
+
+export function writeGraph(graph: GraphV1, outDir: string): string {
+  // The `head` slice below assumes the serialized object is exactly
+  // `{...meta...,"nodes":[],"edges":[]}` — meta the only key before `nodes`. A
+  // future top-level key would land between them and silently corrupt that slice,
+  // so refuse it here (naming it) rather than write a broken file.
+  for (const key of Object.keys(graph)) {
+    if (key !== "meta" && key !== "nodes" && key !== "edges") {
+      throw new Error(`writeGraph: unexpected top-level graph key ${JSON.stringify(key)} (only meta, nodes, edges are serialized)`);
+    }
+  }
+  const nodes = [...graph.nodes].sort((a, b) => a.id.localeCompare(b.id));
+  const edges = [...graph.edges].sort(edgeOrder);
+  const path = wiringPath(outDir);
+  // Streamed, one element per line: still valid JSON for every JSON.parse reader
+  // (viz/serve, the viewer, fixtures, old grafts), but a newline at each element
+  // boundary lets readGraphFromBuffer walk a file over V8's string cap without
+  // ever holding it as one string. Compact within a line: pretty-printing was
+  // ~30% of the bytes for a file only machines read (graft/ is gitignored by
+  // default), and on a 65k-file repo it was the difference between a wiring.json
+  // a query can load and one over the cap.
+  const w = openAtomic(path);
+  try {
+    const { nodes: _n, edges: _e, ...rest } = graph;
+    const head = JSON.stringify({ ...rest, nodes: [], edges: [] }); // ends with `,"nodes":[],"edges":[]}`
+    w.write(head.slice(0, head.length - '"nodes":[],"edges":[]}'.length));
+    w.write('"nodes":[');
+    nodes.forEach((n, i) => w.write("\n" + JSON.stringify(stripBodyText(n)) + (i < nodes.length - 1 ? "," : "")));
+    w.write('\n],"edges":[');
+    edges.forEach((e, i) => w.write("\n" + JSON.stringify(e) + (i < edges.length - 1 ? "," : "")));
+    w.write("\n]}\n");
+    w.commit();
+  } catch (e) {
+    w.abort();
     throw e;
   }
   return path;

@@ -1,13 +1,13 @@
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import type { GraphV1 } from '../graph/types.js';
+import { readGraph, wiringPath, type ReadGraphOptions } from '../graph/write.js';
 import type { Stats } from './state.js';
 import { resolveContextDir } from '../util/state.js';
 
-export function readWiring(projectDir: string): GraphV1 | null {
-  try {
-    return JSON.parse(readFileSync(join(resolveContextDir(projectDir), '.graph', 'wiring.json'), 'utf8')) as GraphV1;
-  } catch { return null; }
+/** The project's wiring graph, or null when it is missing or unreadable. Through
+ * `readGraph`, so a graph over V8's string cap still reads (the statusline, the
+ * hooks and the background sync all start here); `opts` lets a test force that. */
+export function readWiring(projectDir: string, opts: ReadGraphOptions = {}): GraphV1 | null {
+  return readGraph(wiringPath(resolveContextDir(projectDir)), opts);
 }
 
 export function computeStats(

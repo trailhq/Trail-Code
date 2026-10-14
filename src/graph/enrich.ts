@@ -71,10 +71,18 @@ export interface EnrichStats {
   fatal?: string;
 }
 
+/** Where the meaning pass gets a file's text. `Map<string, string>` satisfies it,
+ * which is what tests pass; `buildGraph` passes a lazy, hash-checked reader so a
+ * 65k-file build does not hold every source for a pass that touches a handful. */
+export interface SourceLookup {
+  has(path: string): boolean;
+  get(path: string): string | undefined;
+}
+
 export async function enrichGraph(
   nodes: NodeV1[],
   prior: Map<string, NodeV1>,
-  sources: Map<string, string>,
+  sources: SourceLookup,
   opts: EnrichOptions = {},
 ): Promise<EnrichStats> {
   const stats: EnrichStats = {
@@ -144,12 +152,11 @@ export async function enrichGraph(
 
   await mapWithConcurrency(files, limit, async (path) => {
     const fileNodes = byFile.get(path)!;
-    const source = sources.get(path)!;
-    const lineCount = source.split("\n").length;
 
     // Once the pass is fatal, the remaining files are not attempted: every call
     // would fail the same way, and on a metered gateway each one still costs a
     // request. They are counted so the caller can report what was left undone.
+    // Checked before `sources.get`, which reads and hashes the file from disk.
     if (gate.stopped) {
       gate.skip();
       for (const node of fileNodes) {
@@ -162,6 +169,21 @@ export async function enrichGraph(
       opts.onProgress?.({ index: done++, total: files.length, node: path });
       return;
     }
+
+    const source = sources.get(path);
+    if (source === undefined) {
+      // The file changed or vanished between parse and summary: a crux sliced
+      // against different bytes would point at the wrong lines. Leave the nodes
+      // pending; the next build re-hashes and settles them. Unlike the fatal-abort
+      // branch above, this is not a provider failure, so it does not call gate.skip().
+      for (const node of fileNodes) {
+        if (node.summary_state === "stale") stats.stale++;
+        else stats.pending++;
+      }
+      opts.onProgress?.({ index: done++, total: files.length, node: path });
+      return;
+    }
+    const lineCount = source.split("\n").length;
 
     const refs: NodeRef[] = fileNodes.map((n) => {
       const [startLine, endLine] = spanLines(n.span, lineCount);

@@ -11,7 +11,7 @@ import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { buildGraph } from "../src/graph/build.js";
 import { ensureFreshChildren, ensureFreshGraph, refreshNote } from "../src/graph/refresh.js";
-import { extractCachePath } from "../src/graph/extract-cache.js";
+import { extractCachePath, rewriteExtractCacheForTest } from "../src/graph/extract-cache.js";
 import { fingerprintPath, isClean, probeDrift } from "../src/graph/fingerprint.js";
 import { readGraph, wiringPath } from "../src/graph/write.js";
 import { acquireLock, readStats, releaseLock, writeStats, emptyStats } from "../src/util/state.js";
@@ -228,9 +228,9 @@ test("GRAFT_REFRESH=hash: drift the probe reports is drift the rebuild repairs",
   const staleHash = fp.files["src/math.ts"][2];
   fp.files["src/math.ts"] = [now.size, now.mtimeMs, staleHash];
   writeFileSync(fingerprintPath(outOf(d)), JSON.stringify(fp));
-  const memo = JSON.parse(readFileSync(extractCachePath(outOf(d)), "utf8"));
-  Object.assign(memo.files["src/math.ts"], { size: now.size, mtimeMs: now.mtimeMs });
-  writeFileSync(extractCachePath(outOf(d)), JSON.stringify(memo));
+  rewriteExtractCacheForTest(outOf(d), (files) => {
+    Object.assign(files["src/math.ts"], { size: now.size, mtimeMs: now.mtimeMs });
+  });
 
   // Nobody notices without the flag — that's the documented trade-off, and the
   // whole reason the flag exists.

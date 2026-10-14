@@ -19,9 +19,11 @@
  * contribution is folded into the stored `df` at query time (see `ask.ts`),
  * which is why `df` here counts symbol/file nodes only.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { constants as bufferConstants } from "node:buffer";
+import { readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
 import type { GraphV1 } from "../graph/types.js";
+import { forEachFileLine, forEachLine, openAtomic, type LineWalker } from "../util/json-stream.js";
 import { CACHE_DIR } from "../context/node-file.js";
 
 /** Words too common/short to carry query intent — dropped before scoring. */
@@ -116,44 +118,104 @@ export function writeAskIndex(outDir: string, graph: GraphV1): string {
     ? docs.reduce((a, d) => a + bagLen(d.body), 0) / docs.length
     : 0;
 
-  const index: AskIndex = {
-    version: 1,
-    avgBodyLen,
-    df: pairs(df),
-    docCount: nodes.length,
-    docs,
-  };
-
   const outPath = askIndexPath(outDir);
-  mkdirSync(dirname(outPath), { recursive: true });
-  writeFileSync(outPath, JSON.stringify(index) + "\n");
+  // Streamed one doc per line: still valid JSON for JSON.parse readers, but the
+  // newline at each doc boundary lets readAskIndexFromBuffer walk a file over
+  // V8's string cap without ever holding it as one string. On a 65k-file repo
+  // the one-shot string measured ~590 MB, over the ~512 MB cap. Key
+  // order matches AskIndex (version, avgBodyLen, df, docCount, docs).
+  const w = openAtomic(outPath);
+  try {
+    // The header is one line, and the whole `df` array lives on it — the streaming
+    // reader walks a line at a time, so this single line must itself fit under
+    // buffer.constants.MAX_STRING_LENGTH (~512 MB). df is the corpus vocabulary
+    // (one entry per distinct token, not per node), so even at 65k files it is a
+    // few MB — far off the ceiling. Only the per-line docs below scale with nodes.
+    w.write(`{"version":1,"avgBodyLen":${JSON.stringify(avgBodyLen)},"df":${JSON.stringify(pairs(df))},"docCount":${nodes.length},"docs":[`);
+    docs.forEach((doc, i) => w.write("\n" + JSON.stringify(doc) + (i < docs.length - 1 ? "," : "")));
+    w.write("\n]}\n");
+    w.commit();
+  } catch (e) {
+    w.abort();
+    throw e;
+  }
   return outPath;
 }
 
-/** Read the ask sidecar. Returns null on a missing file, unparseable JSON, an
- * unrecognized shape, an unknown `version`, or a `docCount` that doesn't match
- * the number of docs actually stored (a corrupted/truncated sidecar would
- * otherwise silently skew IDF) — any of which means the caller should fall
- * back to live tokenization, never crash or trust bad data. */
-export function readAskIndex(outDir: string): AskIndex | null {
+export interface ReadAskIndexOptions { maxStringLength?: number }
+
+/** Validate the shape of a parsed sidecar. Returns null on an unrecognized shape,
+ * an unknown `version`, or a `docCount` that doesn't match the number of docs
+ * actually stored (a corrupted/truncated sidecar would otherwise silently skew
+ * IDF). Runs on the result of both the JSON.parse and the streamed read path. */
+function validateAskIndex(raw: unknown): AskIndex | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  if (
+    r.version !== 1 ||
+    typeof r.docCount !== "number" ||
+    typeof r.avgBodyLen !== "number" ||
+    !Array.isArray(r.df) ||
+    !Array.isArray(r.docs) ||
+    r.docCount !== r.docs.length
+  ) {
+    return null;
+  }
+  return raw as AskIndex;
+}
+
+/** Read the ask sidecar. Returns null on a missing file, unparseable JSON, or a
+ * shape {@link validateAskIndex} rejects — any of which means the caller should
+ * fall back to live tokenization, never crash or trust bad data. A file over
+ * V8's string cap is walked line by line ({@link readAskIndexFromBuffer});
+ * `opts.maxStringLength` lets a test force that path. */
+export function readAskIndex(outDir: string, opts: ReadAskIndexOptions = {}): AskIndex | null {
   const path = askIndexPath(outDir);
-  if (!existsSync(path)) return null;
+  let size: number;
+  try { size = statSync(path).size; } catch { return null; }
+  const cap = opts.maxStringLength ?? bufferConstants.MAX_STRING_LENGTH;
+  if (size > cap) {
+    // Chunked: past 2 GiB the file is too large for one Buffer, let alone a string.
+    try { return readAskIndexFromLines((fn) => forEachFileLine(path, fn)); } catch { return null; }
+  }
+  let raw: unknown;
   try {
-    const raw = JSON.parse(readFileSync(path, "utf8"));
-    if (
-      !raw ||
-      typeof raw !== "object" ||
-      raw.version !== 1 ||
-      typeof raw.docCount !== "number" ||
-      typeof raw.avgBodyLen !== "number" ||
-      !Array.isArray(raw.df) ||
-      !Array.isArray(raw.docs) ||
-      raw.docCount !== raw.docs.length
-    ) {
-      return null;
-    }
-    return raw as AskIndex;
+    raw = JSON.parse(readFileSync(path, "utf8"));
   } catch {
     return null;
   }
+  return validateAskIndex(raw);
+}
+
+/** Parse the line-per-doc shape `writeAskIndex` produces without ever holding
+ * the whole file as one string. Null when the buffer is not in that shape or
+ * fails {@link validateAskIndex}. */
+export function readAskIndexFromBuffer(buf: Buffer): AskIndex | null {
+  return readAskIndexFromLines((fn) => forEachLine(buf, fn));
+}
+
+function readAskIndexFromLines(eachLine: LineWalker): AskIndex | null {
+  const DOCS_OPEN = ',"docs":[';
+  const END = "]}";
+  let head: Record<string, unknown> | null = null;
+  const docs: AskIndexDoc[] = [];
+  let closed = false;
+  let bad = false;
+  eachLine((line, i) => {
+    if (bad || closed) { if (line !== "") bad = true; return; }
+    try {
+      if (i === 0) {
+        if (!line.startsWith("{") || !line.endsWith(DOCS_OPEN)) { bad = true; return; }
+        head = JSON.parse(line.slice(0, -DOCS_OPEN.length) + "}") as Record<string, unknown>;
+        return;
+      }
+      if (line === END) { closed = true; return; }
+      const body = line.endsWith(",") ? line.slice(0, -1) : line;
+      docs.push(JSON.parse(body) as AskIndexDoc);
+    } catch {
+      bad = true;
+    }
+  });
+  if (bad || !closed || head === null) return null;
+  return validateAskIndex({ ...(head as Record<string, unknown>), docs });
 }

@@ -120,3 +120,15 @@ test("#127: a clean pass reports no failure at all — the flags are not noise",
   assert.equal(stats.skippedFiles, 0);
   assert.equal(stats.computed, 4);
 });
+
+test("a stopped pass does not read (and hash) the sources of the files it skips", async () => {
+  const { nodes, sources } = fixture(10);
+  const reads: string[] = [];
+  const lookup = { has: (p: string) => sources.has(p), get: (p: string) => { reads.push(p); return sources.get(p); } };
+  const stats = await enrichGraph(nodes, new Map(), lookup, {
+    summarizer: new FailingCrux("429 Request exceeds your current quota, please check your plan"),
+    concurrency: 1,
+  });
+  assert.equal(stats.skippedFiles, 9);
+  assert.deepEqual(reads, ["f0.ts"], "only the file that was actually attempted");
+});

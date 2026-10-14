@@ -216,6 +216,25 @@ test("a git worktree starts with no graph, and one query gives it a correct one"
   rmSync(wt, { recursive: true, force: true });
 });
 
+test("a seed never copies another process's half-written *.tmp sidecar", async () => {
+  const main = gitRepo();
+  await buildGraph(main);
+  const cache = join(outOf(main), ".cache");
+  const sidecars = readdirSync(cache).filter((f) => f.startsWith("extract.") || f.startsWith("fingerprint."));
+  assert.ok(sidecars.length >= 2, sidecars.join(", "));
+  // What openAtomic leaves behind when a writer dies before its rename.
+  for (const f of sidecars) writeFileSync(join(cache, `${f}.4242.tmp`), "partial");
+
+  const wt = addWorktree(main, "tmp-orphans");
+  assert.equal(seedGraph(wt).seeded, true);
+  const copied = readdirSync(join(outOf(wt), ".cache"));
+  assert.deepEqual(copied.filter((f) => f.endsWith(".tmp")), [], "no temp file travels");
+  for (const f of sidecars) assert.ok(copied.includes(f), `${f} still travels`);
+
+  rmSync(main, { recursive: true, force: true });
+  rmSync(wt, { recursive: true, force: true });
+});
+
 test("a worktree nested inside the repo is seeded too, and isn't double-indexed", async () => {
   // Claude Code's own worktree feature puts them at `<repo>/.claude/worktrees/<name>`
   // rather than off in a temp dir. Same `.git`-file shape, but nested — so the parent's

@@ -83,12 +83,49 @@ const KIND: Record<string, Kind> = {
   object: "class", property: "variable", // Scala object; Swift/Scala property
 };
 
+/** The parse-side of web-tree-sitter graft touches. Both are Emscripten-heap
+ * objects: nothing frees them but an explicit `delete()`. Declared here rather
+ * than imported so a fake can stand in for tests. `new Parser()` is assignable
+ * to `WasmParser` without a cast; if an upgrade breaks that, this is where it
+ * shows. */
+export interface WasmTree { rootNode: TsNode; delete(): void }
+export interface WasmParser {
+  parse(cb: (index: number) => string): WasmTree | null;
+  reset(): void;
+  delete(): void;
+}
 // Loaded grammars + compiled tags queries, keyed by graft lang name. Populated by
 // warmGenericGrammars; read synchronously by extractGeneric.
-export interface Loaded { language: unknown; query: unknown | null }
+/** One warmed grammar. `parser` is created once per grammar and reused for every
+ * file: creating one per parse and never deleting it is what exhausted the 2 GB
+ * WASM heap on a 65k-file repo (`Aborted()` on every file after ~12k). */
+export interface Loaded { language: unknown; query: unknown | null; parser: WasmParser }
 const loaded = new Map<string, Loaded>();
 let tsMod: typeof import("web-tree-sitter") | null = null;
 let initPromise: Promise<void> | null = null;
+
+/** The first abort message web-tree-sitter produced in this process, if any.
+ * Emscripten's abort() sets a process-wide flag and the heap never recovers, so
+ * after one real abort every further parse is doomed: better one clear error
+ * than one per remaining file. */
+let poisoned: string | null = null;
+export function wasmRuntimePoisoned(): string | null { return poisoned; }
+export function clearWasmPoisonForTest(): void { poisoned = null; }
+function notePoison(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  // WebAssembly is a real Node runtime global but is NOT in this project's TS lib
+  // (ES2022, no DOM), so read its RuntimeError constructor off globalThis through a
+  // locally typed view. A `declare global { namespace WebAssembly … }` augmentation
+  // would conflict with lib.dom's `interface`+`var` for downstream consumers and be
+  // emitted verbatim into dist/*.d.ts; this keeps the type strictly local.
+  const RuntimeError = (globalThis as { WebAssembly?: { RuntimeError?: abstract new (...args: never[]) => Error } })
+    .WebAssembly?.RuntimeError;
+  if ((RuntimeError !== undefined && err instanceof RuntimeError) || /^Aborted\(/.test(msg)) poisoned = poisoned ?? msg;
+  return msg;
+}
+function poisonedError(langName: string): Error {
+  return new Error(`${langName} grammar unavailable: web-tree-sitter aborted earlier in this process (${poisoned}); restart the process and rebuild`);
+}
 
 function requireWasm(wasm: string): Buffer | null {
   // Resolve the grammar wasm from the tree-sitter-wasm bundle (its package.json
@@ -141,7 +178,9 @@ export async function warmGenericGrammars(langNames: Iterable<string>): Promise<
       if (scm) {
         try { query = new Query(language, scm); } catch { query = null; }
       }
-      loaded.set(name, { language, query });
+      const parser = new tsMod.Parser();
+      parser.setLanguage(language);
+      loaded.set(name, { language, query, parser });
     } catch {
       /* grammar failed to instantiate — skip; files extract as file-only */
     }
@@ -164,6 +203,10 @@ export function swapGrammarForTest(name: string, entry: Loaded | null): Loaded |
   else loaded.delete(name);
   return prev;
 }
+
+/** Test seam: pre-seed the parser parseWasm will use for `language`, so a
+ * throwing parse() can be driven without a real crashing grammar. */
+export function seedWasmParserForTest(language: object, parser: WasmParser): void { parsersByLanguage.set(language, parser); }
 
 /** Load one grammar from the tree-sitter-wasms bundle, initialising
  * web-tree-sitter on first call. Null when the wasm is missing or won't
@@ -189,18 +232,30 @@ export async function loadWasmLanguage(wasm: string): Promise<unknown | null> {
 
 const PARSE_CHUNK = 16384; // <32KB slices — same tree-sitter limit workaround as extract.ts
 
-/** Parse with an already-loaded grammar. Returns the root node, or null if the
- * grammar was never warmed or the parse blew up. Companion to
- * `loadWasmLanguage` for callers outside this module. */
-export function parseWasm(language: unknown, source: string): TsNode | null {
-  if (!tsMod) return null;
+/** One shared parser per language object, for callers that loaded a grammar via
+ * `loadWasmLanguage` (the container tier) rather than `warmGenericGrammars`. */
+const parsersByLanguage = new WeakMap<object, WasmParser>();
+
+/** Parse with an already-loaded grammar. Returns the tree, or null only when
+ * web-tree-sitter was never initialised. Throws when the parse blows up, so a
+ * WASM abort is a build error and not a silently symbol-less file. The CALLER
+ * owns the tree and must `delete()` it: it lives in the WASM heap, not V8's. */
+export function parseWasm(language: unknown, source: string): WasmTree | null {
+  if (!tsMod || typeof language !== "object" || language === null) return null;
+  if (poisoned) throw poisonedError("wasm");
+  let parser = parsersByLanguage.get(language);
+  if (!parser) {
+    const p = new tsMod.Parser();
+    p.setLanguage(language as never);
+    parser = p;
+    parsersByLanguage.set(language, parser);
+  }
   try {
-    const parser = new tsMod.Parser();
-    parser.setLanguage(language as never);
-    const tree = parser.parse((i: number) => source.slice(i, i + PARSE_CHUNK));
-    return (tree?.rootNode as TsNode) ?? null;
-  } catch {
-    return null;
+    return parser.parse((i: number) => source.slice(i, i + PARSE_CHUNK));
+  } catch (err) {
+    const msg = notePoison(err);
+    try { parser.reset(); } catch { /* runtime gone */ }
+    throw new Error(msg);
   }
 }
 
@@ -225,63 +280,101 @@ export function extractGeneric(rel: string, source: string, langName: string): E
   const entry = loaded.get(langName);
   if (!entry || !tsMod) return { nodes, rawEdges };
 
-  let tree;
+  if (poisoned) throw poisonedError(langName);
+  let tree: WasmTree | null;
   try {
-    const parser = new tsMod.Parser();
-    parser.setLanguage(entry.language as never);
-    tree = parser.parse((i: number) => source.slice(i, i + PARSE_CHUNK));
+    tree = entry.parser.parse((i: number) => source.slice(i, i + PARSE_CHUNK));
   } catch (err) {
     // A grammar that throws (e.g. a WASM "memory access out of bounds" from an
     // external scanner) is not a per-file syntax problem: swallowing it here left
     // the file with only its file node and the build reporting success. Rethrow so
-    // build.ts records it in `errors`, the CLI prints it, and the extract cache
-    // remembers the failure instead of caching an empty result as clean.
-    throw new Error(`${langName} grammar threw: ${err instanceof Error ? err.message : String(err)}`);
+    // build.ts records it in `errors` and the CLI prints it.
+    //
+    // The parser is shared across files, so put it back to a known state first:
+    // a parse that threw mid-way can leave the stack half-built, and the next
+    // file would inherit it.
+    const msg = notePoison(err);
+    try { entry.parser.reset(); } catch { /* the runtime is already gone */ }
+    throw new Error(`${langName} grammar threw: ${msg}`);
   }
   if (!tree) return { nodes, rawEdges };
 
-  const minted = new Set<string>([rel]);
-  const lines = source.split("\n");
-  const defs: Def[] = [];
-  // One definition per source span: a grammar's tags.scm can capture the same node
-  // under two @definition kinds (Swift `func` is method AND function), and the
-  // walker can revisit a nested match — both would emit near-duplicate nodes.
-  const spanSeen = new Set<number>();
-  // Mint one definition node from a whole-definition tree node. Shared by both
-  // the tags.scm path and the walker fallback so id/span/signature/body_text are
-  // built identically.
-  const mkDef = (name: string, kind: Kind, whole: TsNode): void => {
-    if (spanSeen.has(whole.startIndex)) return;
-    spanSeen.add(whole.startIndex);
-    const idBase = `${rel}#${name}`;
-    let id = idBase, n = 2;
-    while (minted.has(id)) id = `${idBase}~${n++}`;
-    minted.add(id);
-    const startRow = whole.startPosition.row, endRow = whole.endPosition.row;
-    const sigLine = (lines[startRow] ?? "").trim().replace(/\s*\{?\s*$/, "");
-    nodes.push({
-      id, name, kind, path: rel,
-      span: `L${startRow + 1}-L${endRow + 1}`,
-      signature: sigLine || null, exported: true, origin: "generic",
-      body_hash: contentHash(source.slice(whole.startIndex, whole.endIndex)),
-      body_text: source.slice(whole.startIndex, whole.endIndex).replace(/\s+/g, " ").slice(0, 5000),
-      summary_state: "pending", summary: null, crux: null,
-    });
-    defs.push({ id, startIndex: whole.startIndex, endIndex: whole.endIndex });
-  };
+  try {
+    const minted = new Set<string>([rel]);
+    const lines = source.split("\n");
+    const defs: Def[] = [];
+    // One definition per source span: a grammar's tags.scm can capture the same node
+    // under two @definition kinds (Swift `func` is method AND function), and the
+    // walker can revisit a nested match — both would emit near-duplicate nodes.
+    const spanSeen = new Set<number>();
+    // Mint one definition node from a whole-definition tree node. Shared by both
+    // the tags.scm path and the walker fallback so id/span/signature/body_text are
+    // built identically.
+    const mkDef = (name: string, kind: Kind, whole: TsNode): void => {
+      if (spanSeen.has(whole.startIndex)) return;
+      spanSeen.add(whole.startIndex);
+      const idBase = `${rel}#${name}`;
+      let id = idBase, n = 2;
+      while (minted.has(id)) id = `${idBase}~${n++}`;
+      minted.add(id);
+      const startRow = whole.startPosition.row, endRow = whole.endPosition.row;
+      const sigLine = (lines[startRow] ?? "").trim().replace(/\s*\{?\s*$/, "");
+      nodes.push({
+        id, name, kind, path: rel,
+        span: `L${startRow + 1}-L${endRow + 1}`,
+        signature: sigLine || null, exported: true, origin: "generic",
+        body_hash: contentHash(source.slice(whole.startIndex, whole.endIndex)),
+        body_text: source.slice(whole.startIndex, whole.endIndex).replace(/\s+/g, " ").slice(0, 5000),
+        summary_state: "pending", summary: null, crux: null,
+      });
+      defs.push({ id, startIndex: whole.startIndex, endIndex: whole.endIndex });
+    };
 
-  if (entry.query) {
-    tagsExtract(entry.query, tree.rootNode as TsNode, rel, mkDef, defs, rawEdges, langName);
-  } else {
-    walkExtract(tree.rootNode as TsNode, mkDef); // no tags.scm → symbols only
+    if (entry.query) {
+      tagsExtract(entry.query, tree.rootNode as TsNode, rel, mkDef, defs, rawEdges, langName);
+    } else {
+      walkExtract(tree.rootNode as TsNode, mkDef); // no tags.scm → symbols only
+    }
+    // The preprocessor is invisible to tags.scm, but in C/C++ a local `#include "x.h"`
+    // IS the dependency graph — capture it as a file→file import. Likewise a Rust
+    // `use crate::…` is an in-crate module dependency.
+    if (langName === "c" || langName === "cpp") extractIncludes(tree.rootNode as TsNode, rel, rawEdges);
+    else if (langName === "rust") extractUses(tree.rootNode as TsNode, rel, rawEdges);
+    else if (langName === "php") extractPhpUses(tree.rootNode as TsNode, rel, rawEdges);
+    return { nodes, rawEdges };
+  } catch (err) {
+    // The walk is WASM-backed too (query.matches() runs in the grammar's runtime),
+    // so a real abort can surface here, not only from parse(). Route it through
+    // notePoison so one abort poisons the runtime and every later file gets the
+    // stable "aborted earlier" error instead of re-attempting a dead runtime.
+    // Rethrow the ORIGINAL error object unchanged so an ordinary walk failure keeps
+    // its message (build.ts records it per file).
+    notePoison(err);
+    throw err;
+  } finally {
+    // Every tree lives in the Emscripten heap until deleted. Without this, a
+    // 65k-file build leaks ~2 GB and tree-sitter's allocator calls abort().
+    // Swallow a throw from delete(): the primary error (from the try or the catch)
+    // must never be masked by a delete failure, and a delete() that throws means the
+    // runtime is already gone — there is nothing left to free.
+    try { tree.delete(); } catch { /* runtime already gone; keep the real error */ }
   }
-  // The preprocessor is invisible to tags.scm, but in C/C++ a local `#include "x.h"`
-  // IS the dependency graph — capture it as a file→file import. Likewise a Rust
-  // `use crate::…` is an in-crate module dependency.
-  if (langName === "c" || langName === "cpp") extractIncludes(tree.rootNode as TsNode, rel, rawEdges);
-  else if (langName === "rust") extractUses(tree.rootNode as TsNode, rel, rawEdges);
-  else if (langName === "php") extractPhpUses(tree.rootNode as TsNode, rel, rawEdges);
-  return { nodes, rawEdges };
+}
+
+/** Pre-order DFS over `root` and its named descendants, on an explicit stack: a
+ * misparse can nest one level per element (a C++ array initializer under the C
+ * grammar runs thousands deep), which overflows V8's stack if the walk recurses. Children
+ * are pushed in reverse so the visit order matches a recursive walk. */
+function forEachNamedNode(root: TsNode, fn: (n: TsNode) => void): void {
+  const stack: TsNode[] = [root];
+  while (stack.length) {
+    const n = stack.pop()!;
+    fn(n);
+    for (let i = (n.namedChildCount ?? 0) - 1; i >= 0; i--) {
+      const c = n.namedChild?.(i);
+      if (c) stack.push(c);
+    }
+  }
 }
 
 /** PHP `use App\Models\User;` → a file→class-file `imports` raw edge, one per imported
@@ -289,16 +382,11 @@ export function extractGeneric(rel: string, source: string, langName: string): E
  * those name a symbol, not a PSR-4 class file. resolve.ts settles the fully-qualified
  * name to the in-repo file by namespace suffix, and drops it when it can't. */
 function extractPhpUses(root: TsNode, rel: string, rawEdges: RawEdge[]): void {
-  const visit = (n: TsNode): void => {
+  forEachNamedNode(root, (n) => {
     if (n.type === "namespace_use_declaration") {
       for (const fqn of phpUseNames(n.text)) rawEdges.push({ source: rel, relation: "imports", specifier: fqn, file: rel });
     }
-    for (let i = 0; i < (n.namedChildCount ?? 0); i++) {
-      const c = n.namedChild?.(i);
-      if (c) visit(c);
-    }
-  };
-  visit(root);
+  });
 }
 
 /** The fully-qualified class names a PHP `use` declaration imports. Handles a plain
@@ -322,17 +410,12 @@ function phpUseNames(text: string): string[] {
  * `super::`, `self::`, external crates, and globs are skipped — resolve.ts settles the
  * path against the file's crate root, and drops it when it can't. */
 function extractUses(root: TsNode, rel: string, rawEdges: RawEdge[]): void {
-  const visit = (n: TsNode): void => {
+  forEachNamedNode(root, (n) => {
     if (n.type === "use_declaration") {
       const spec = rustUseModule(n.text);
       if (spec !== null) rawEdges.push({ source: rel, relation: "imports", specifier: spec ? `crate/${spec}` : "crate", file: rel });
     }
-    for (let i = 0; i < (n.namedChildCount ?? 0); i++) {
-      const c = n.namedChild?.(i);
-      if (c) visit(c);
-    }
-  };
-  visit(root);
+  });
 }
 
 /** The crate-relative path a Rust `use crate::…` names (`::`→`/`), or null when it is not
@@ -357,7 +440,7 @@ function rustUseModule(text: string): string | null {
  * in-repo header (relative to the including file, else a unique path-suffix match), and
  * keeps it as an external string when it cannot — never a guessed edge. */
 function extractIncludes(root: TsNode, rel: string, rawEdges: RawEdge[]): void {
-  const visit = (n: TsNode): void => {
+  forEachNamedNode(root, (n) => {
     if (n.type === "preproc_include") {
       const raw = n.childForFieldName?.("path")?.text ?? "";
       if (raw.startsWith('"')) {
@@ -365,12 +448,7 @@ function extractIncludes(root: TsNode, rel: string, rawEdges: RawEdge[]): void {
         if (spec) rawEdges.push({ source: rel, relation: "imports", specifier: spec, file: rel });
       }
     }
-    for (let i = 0; i < (n.namedChildCount ?? 0); i++) {
-      const c = n.namedChild?.(i);
-      if (c) visit(c);
-    }
-  };
-  visit(root);
+  });
 }
 
 /** tags.scm path: @definition.<kind> → nodes, @reference.call/@reference.send →
@@ -471,18 +549,13 @@ function nodeName(node: TsNode): string | null {
 /** Walker fallback: DFS every named node, emit a def for each classified one
  * (symbols only — no call resolution without a query). */
 function walkExtract(root: TsNode, mkDef: (name: string, kind: Kind, whole: TsNode) => void): void {
-  const visit = (n: TsNode): void => {
+  forEachNamedNode(root, (n) => {
     const kind = classifyKind(n.type);
     if (kind) {
       const name = nodeName(n);
       if (name) mkDef(name, kind, n);
     }
-    for (let i = 0; i < (n.namedChildCount ?? 0); i++) {
-      const c = n.namedChild?.(i);
-      if (c) visit(c);
-    }
-  };
-  visit(root);
+  });
 }
 
 /** Minimal structural view of a web-tree-sitter node — shared with container.ts. */

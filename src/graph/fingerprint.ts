@@ -43,7 +43,7 @@ type Print = [number, number, string];
 export interface Fingerprint {
   version: number;
   /** The extractor that produced the graph these prints describe — the same stamp
-   * `extract.json` carries. Without it the two sidecars can disagree about whether
+   * `extract.<stamp>.ndjson` carries. Without it the two sidecars can disagree about whether
    * the graph is current: an extractor change correctly drops every memo entry,
    * yet the prints still match the tree byte-for-byte, so the probe would report
    * clean and queries would keep answering from nodes the old extractor built. */

@@ -23,6 +23,8 @@ import {
   containerLangOf,
   containerExtensions,
   isContainerWarm,
+  CONTAINER_LANGS,
+  swapContainerGrammarForTest,
 } from "../src/graph/container.js";
 import { supportedExtensions } from "../src/graph/source-files.js";
 import { buildGraph } from "../src/graph/build.js";
@@ -289,4 +291,18 @@ test("container: a clean build of a .vue file checks as in sync", async () => {
   assert.deepEqual(check.added, []);
   assert.deepEqual(check.changed, []);
   assert.equal(check.ok, true, "a clean build checks OK");
+});
+
+test("a wrapper grammar that throws is a build error, not a clean symbol-less file", async () => {
+  await warmContainerGrammars(["vue"]);
+  const vue = CONTAINER_LANGS.find((l) => l.name === "vue")!;
+  const prev = swapContainerGrammarForTest("vue", new Proxy({}, { get(): never { throw new Error("memory access out of bounds (fake)"); } }));
+  try {
+    assert.throws(
+      () => extractContainer("App.vue", "<script>export function f() {}</script>\n", vue),
+      /vue grammar threw: memory access out of bounds/,
+    );
+  } finally {
+    swapContainerGrammarForTest("vue", prev);
+  }
 });

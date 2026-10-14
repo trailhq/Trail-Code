@@ -382,6 +382,8 @@ graft build [dir]                    # build graft/ from the code at [dir]: wiri
 graft build --deep                   # add the LLM layer: concept nodes + per-symbol summary/crux (cached)
 graft build --extensions .ts .py     # only include these code extensions
 graft build --no-reuse               # re-parse every file instead of replaying unchanged ones from cache
+graft build --workers auto           # large repo? parse in parallel child processes (opt-in; never used by the pre-query refresh)
+# very large repos (tens of thousands of files) need a bigger V8 heap: NODE_OPTIONS=--max-old-space-size=16384 graft build
 graft build --follow-submodules      # include initialized submodules; persist the choice for builds + MCP refresh
 graft build --no-follow-submodules   # exclude submodules again and persist that choice (the default)
 graft build --follow-nested-repos    # include nested git clones the index doesn't track; persist the choice
@@ -419,6 +421,8 @@ graft check --json                   # print the drift report as JSON
 #   --no-refresh                     # answer from the graph exactly as it is on disk
 #   GRAFT_NO_REFRESH=1               # same, for every command
 #   GRAFT_REFRESH=hash               # hash every file instead of trusting size+mtime
+#   GRAFT_PARSE_WORKERS=auto         # graft build only: parse in child processes (or a number); default in-process
+#                                    #   auto = min(cores-1, free memory / 300 MB, files / 200); in-process under 200 files or below 2 workers
 
 graft trail push [dir]               # read this repo's history into its Trail (the first run signs up in the browser)
 graft trail pull [dir]               # write the changes accepted in Trail into CLAUDE.md, AGENTS.md and the other context files

@@ -141,6 +141,9 @@ function seedable(rel: string): boolean {
   if (rel === "" || rel === GRAPH_DIR || rel === CACHE_DIR) return true;
   if (!rel.startsWith(`${CACHE_DIR}/`)) return false; // incl. the graph: `installGraph` places it
   const name = rel.slice(CACHE_DIR.length + 1);
+  // `<file>.<pid>.tmp`: another writer's scratch file (openAtomic), possibly
+  // orphaned by a killed build: partial, and hundreds of MB on a large repo.
+  if (name.endsWith(".tmp")) return false;
   return (
     name === ASK_INDEX_FILE ||
     name.startsWith(`${EXTRACT_CACHE_PREFIX}.`) ||
