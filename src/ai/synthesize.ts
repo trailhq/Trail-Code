@@ -155,7 +155,11 @@ export class ChatSynthesizer implements Synthesizer {
  * Prefer a real tool call; if the gateway ignored `tool_choice` (#129), recover
  * the same payload from `content`. Recovered args still go through {@link clean}.
  */
-function nodesFromResponse(res: { text: string; toolCalls: { name: string; args: unknown }[] }): {
+function nodesFromResponse(res: {
+  text: string;
+  toolCalls: { name: string; args: unknown }[];
+  stopReason?: string | null;
+}): {
   nodes?: unknown;
 } | undefined {
   const call = res.toolCalls.find((c) => c.name === RECORD_TOOL) ?? res.toolCalls[0];
@@ -166,7 +170,7 @@ function nodesFromResponse(res: { text: string; toolCalls: { name: string; args:
     toolNames: [RECORD_TOOL, "emit_json"],
     payloadKey: "nodes",
   });
-  if (!recovered) warnToolChoiceIgnored("synthesize", res.text?.trim() ? "unparsed" : "empty");
+  if (!recovered) warnToolChoiceIgnored("synthesize", res.text?.trim() ? "unparsed" : "empty", res.stopReason);
   return recovered as { nodes?: unknown } | undefined;
 }
 
