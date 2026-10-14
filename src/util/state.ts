@@ -89,9 +89,10 @@ export function writeStats(d: string, s: Stats): void { writeJsonAtomic(statsPat
  * Missing fields always retain backwards-compatible defaults.
  */
 export interface BuildConfig {
-  /** SKIP_DIRS names to include in this repo's walks, persisted so a LATER
-   * no-flag build — and the fingerprint/refresh path, which never sees CLI
-   * flags at all — behave identically to the invocation that set it. */
+  /** SKIP_DIRS names and named hidden directories (except `.git`) to include
+   * in this repo's walks, persisted so a LATER no-flag build — and the
+   * fingerprint/refresh path, which never sees CLI flags at all — behave
+   * identically to the invocation that set it. */
   includeDirs?: string[];
   /** Whether initialized Git submodules (gitlinks) are folded into this repo's
    * graph. Absent/false keeps the historical boundary at the superproject. */

@@ -28,8 +28,16 @@ export const SKIP_DIRS = new Set([
 export const MAX_FILE_BYTES = 1_000_000;
 
 /**
+ * Directory names `--include-dir` can never un-skip. `.git` is the
+ * repository's own metadata, not source — indexing it would drown the graph
+ * in objects and refs. Shared with the CLI validator so a forbidden name is
+ * rejected up front instead of persisting a no-op.
+ */
+export const NEVER_INCLUDE_DIRS = new Set([".git"]);
+
+/**
  * Whether a directory named `name` should be skipped when walking a repo tree:
- * any dot-prefixed directory (`.git`, `.github`, `.vscode`, ...) or one of
+ * any dot-prefixed directory (`.git`, `.github`, `.vscode`, `.kb`, ...) or one of
  * {@link SKIP_DIRS} not named in `includes`. The single source of truth for
  * "is this dir source" — `skippedPath` and `walkFilesystem` below and the
  * git-child discovery in `graph/scopes.ts` share it, so they can never
@@ -38,23 +46,22 @@ export const MAX_FILE_BYTES = 1_000_000;
  * `includes` is the explicit, per-repo `graft build --include-dir` override
  * (persisted via `util/state.ts`'s `readIncludeDirs`, threaded in by each
  * caller) — a name in it is removed from the effective skip set for THIS
- * repo's walks. Absent/empty ≡ today's default behavior. It lifts only
- * graft's own skip list: in a Git repo, Git's ignore rules stay authoritative
- * (see {@link walkDir}).
- *
- * KNOWN LIMITATION: a dot-directory is skipped WHOLESALE and is NEVER
- * overridable, even via `includes` — unlike `SKIP_DIRS`, there is no path to
- * un-skip one. A repo that keeps real, hand-written source under a
- * dot-prefixed directory is out of scope.
+ * repo's walks, including a named hidden directory such as `.kb`. Absent/empty
+ * ≡ today's default behavior (every dot-directory stays skipped). Names in
+ * {@link NEVER_INCLUDE_DIRS} (at least `.git`) stay skipped even when listed.
+ * It lifts only graft's own skip list: in a Git repo, Git's ignore rules stay
+ * authoritative (see {@link walkDir}).
  */
 export function shouldSkipDir(name: string, includes?: ReadonlySet<string>): boolean {
-  if (name.startsWith(".")) return true;
+  if (NEVER_INCLUDE_DIRS.has(name)) return true;
   if (includes?.has(name)) return false;
+  if (name.startsWith(".")) return true;
   return SKIP_DIRS.has(name);
 }
 
 /**
- * Recursively list all files under a directory. Skips dot-directories,
+ * Recursively list all files under a directory. Skips dot-directories
+ * (unless named in `includes`, except {@link NEVER_INCLUDE_DIRS}),
  * dependency/build directories (node_modules, dist, …) not named in
  * `includes`, and files over 1 MB.
  * In a Git worktree, tracked files plus untracked, non-ignored files come from
