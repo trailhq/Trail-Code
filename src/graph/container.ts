@@ -5,7 +5,9 @@
  * indexing lives inside its `<script>` block. Registering `tree-sitter-vue` as a
  * breadth-tier language (generic.ts) would not help — that grammar parses the
  * shell (`<template>` / `<script>` / `<style>`) and hands back the script body as
- * one opaque `raw_text` node, so the cards would come out empty.
+ * one opaque `raw_text` node, so the cards would come out empty. Svelte is the
+ * same shape, and Astro adds a second block: the `---` frontmatter fence, where a
+ * component's imports and logic actually live.
  *
  * So the container grammar is used only to answer "where does the embedded
  * language start and end", and the block itself goes to the DEPTH-tier extractor
@@ -33,20 +35,52 @@ export interface ContainerLang {
   exts: string[];
   /** wasm basename in tree-sitter-wasms/out/tree-sitter-<wasm>.wasm */
   wasm: string;
-  /** Wrapper node that represents one embedded block (e.g. Vue's script_element). */
-  block: string;
-  /** Child of `block` holding the raw embedded source (e.g. Vue's raw_text). */
-  body: string;
+  /** Every kind of node that carries embedded source, in the wrapper grammar's
+   * own terms. Vue and Svelte have one; Astro has two (frontmatter + script). */
+  blocks: readonly EmbeddedBlock[];
+  /** Look for blocks anywhere in the tree, not only among the document's direct
+   * children. Astro hoists a `<script>` from wherever it sits in the markup —
+   * a quarter of the ones carrying imports in Astro's own repo are inside a
+   * `<Layout>` — whereas Vue and Svelte only treat a top-level one as the
+   * component's script, and a nested one is markup. */
+  deep?: boolean;
   /** Depth-tier grammar for the embedded language. TypeScript is a superset of
    * JavaScript, so it parses both `<script>` and `<script lang="ts">`. */
   inner: Language;
 }
 
-/** The container registry. Svelte and Astro are the same shape and would be a
- * row each, but they are left out until someone has a repo to verify them
- * against — a wrong `body` node type would produce silently misplaced spans. */
+/** One place a wrapper grammar keeps embedded source. */
+export interface EmbeddedBlock {
+  /** Wrapper node that represents one embedded block (e.g. Vue's script_element). */
+  block: string;
+  /** Child of `block` holding the raw embedded source (e.g. Vue's raw_text). */
+  body: string;
+}
+
+/** `<script>…</script>` as the HTML-derived grammars (Vue, Svelte, Astro) all
+ * expose it. Where the `raw_text` *starts* differs — Vue and Astro begin it
+ * right after the tag's `>`, Svelte at the first non-blank character of the
+ * next line — but `extractContainer` reads the offset off the node itself, so
+ * the difference never reaches a span. */
+const SCRIPT_TAG: EmbeddedBlock = { block: "script_element", body: "raw_text" };
+
+/** The container registry. Each row was verified against a real repo before it
+ * landed — a wrong `body` node type would produce silently misplaced spans,
+ * which is worse than no support — so a new row should come with the same
+ * check (see `test/container-extract.test.ts`, "spans point at the … line"). */
 export const CONTAINER_LANGS: readonly ContainerLang[] = [
-  { name: "vue", exts: [".vue"], wasm: "vue", block: "script_element", body: "raw_text", inner: "typescript" },
+  { name: "vue", exts: [".vue"], wasm: "vue", blocks: [SCRIPT_TAG], inner: "typescript" },
+  { name: "svelte", exts: [".svelte"], wasm: "svelte", blocks: [SCRIPT_TAG], inner: "typescript" },
+  // The frontmatter is where an Astro component imports and computes; `<script>`
+  // is the client-side island. Both are TypeScript by Astro's own default.
+  {
+    name: "astro",
+    exts: [".astro"],
+    wasm: "astro",
+    blocks: [{ block: "frontmatter", body: "frontmatter_js_block" }, SCRIPT_TAG],
+    deep: true,
+    inner: "typescript",
+  },
 ];
 
 const byExt = new Map<string, ContainerLang>();
@@ -94,7 +128,7 @@ function shiftSpan(span: string, lines: number): string {
   return `L${Number(m[1]) + lines}-L${Number(m[2]) + lines}`;
 }
 
-/** The `.vue` file's own node. Deliberately describes the whole file — line
+/** The container file's own node. Deliberately describes the whole file — line
  * count, hash and size of the SFC, not of the script block — because that is
  * what a reader opening this path will see. */
 function containerFileNode(rel: string, source: string, residual: string): NodeV1 {
@@ -121,23 +155,33 @@ function containerFileNode(rel: string, source: string, residual: string): NodeV
 }
 
 /** Every embedded block in document order, as [bodyNode] — an SFC may legally
- * carry two (`<script>` for options/exports plus `<script setup>`), and each
- * needs its own offset. */
+ * carry two (`<script>` for options/exports plus `<script setup>`; Svelte's
+ * `<script module>` plus instance script; Astro's frontmatter plus `<script>`),
+ * and each needs its own offset. */
 function blocks(root: TsNode, lang: ContainerLang): TsNode[] {
   const out: TsNode[] = [];
-  const n = root.namedChildCount ?? 0;
-  for (let i = 0; i < n; i++) {
-    const child = root.namedChild?.(i);
-    if (!child || child.type !== lang.block) continue;
-    const kids = child.namedChildCount ?? 0;
-    for (let j = 0; j < kids; j++) {
-      const body = child.namedChild?.(j);
-      // An empty `<script></script>` has no body child at all — skipped here, so
-      // the file still gets its file node and nothing else, which is the same
-      // shape as a file whose grammar is missing.
-      if (body && body.type === lang.body) out.push(body);
+  const visit = (parent: TsNode): void => {
+    const n = parent.namedChildCount ?? 0;
+    for (let i = 0; i < n; i++) {
+      const child = parent.namedChild?.(i);
+      if (!child) continue;
+      const kind = lang.blocks.find((b) => b.block === child.type);
+      if (!kind) {
+        // A block cannot nest inside another block, so the descent stops at one.
+        if (lang.deep) visit(child);
+        continue;
+      }
+      const kids = child.namedChildCount ?? 0;
+      for (let j = 0; j < kids; j++) {
+        const body = child.namedChild?.(j);
+        // An empty `<script></script>` has no body child at all — skipped here, so
+        // the file still gets its file node and nothing else, which is the same
+        // shape as a file whose grammar is missing.
+        if (body && body.type === kind.body) out.push(body);
+      }
     }
-  }
+  };
+  visit(root);
   return out;
 }
 
@@ -173,12 +217,16 @@ export function extractContainer(rel: string, source: string, lang: ContainerLan
         continue; // one bad block, not a bad build
       }
 
-      // `raw_text` starts immediately after the `>` of the opening tag, so its
-      // row IS the tag's row and the slice begins with that line's newline.
-      // Script line 1 is therefore the tail of the tag line, and script line N
-      // lands on `.vue` line row + N — which is exactly "add the start row to a
-      // 1-based span". Taking the row from the tag node instead would look
-      // equivalent and be right only when the tag has no attributes.
+      // Script line N lands on file line (row + N), where `row` is the 0-based
+      // row of the body node's first character — regardless of where on that
+      // row it sits. Vue's `raw_text` starts right after the tag's `>` (row =
+      // tag row, slice begins with that line's newline, so script line 1 is
+      // the tail of the tag line); Svelte's starts at the first non-blank
+      // character of the next line (row = tag row + 1, script line 1 is that
+      // line); Astro's frontmatter block starts right after the opening `---`.
+      // All three reduce to "add the start row to a 1-based span". Taking the
+      // row from the wrapper node instead would look equivalent and be right
+      // only when the tag has no attributes and no blank line follows it.
       const shift = body.startPosition.row;
 
       // nodes[0] is the script's own file node: it describes the block, not the

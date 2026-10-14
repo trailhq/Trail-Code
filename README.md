@@ -248,6 +248,12 @@ compiler-grade layer — all `$0` and deterministic (no model, no key):
   **Rust, C, C++, C#, Ruby, Scala, Elixir, Solidity,
   OCaml, Zig, Dart, Clojure, Nix, Lua**.
 
+- **Single-file components** — **Vue** (`.vue`), **Svelte** (`.svelte`) and
+  **Astro** (`.astro`). The wrapper grammar only locates the `<script>` block
+  (and Astro's `---` frontmatter); the code inside goes through the
+  full-fidelity TypeScript extractor, so a call from a component into a `.ts`
+  module resolves to a real edge.
+
 - **Compiler-grade edges (opt-in)** — `graft build --lsp` adds precise
   `lsp_resolved` call edges (member calls the static pass can't type) when a
   language server is on your `PATH`: **rust-analyzer** (Rust), **clangd** (C/C++),
