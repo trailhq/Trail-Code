@@ -32,10 +32,17 @@ test('writes shim + hooks.json (version 1), idempotent on re-run', () => {
   assertRunnableShim(shimPath(repo), 'shim is executable');
   const cfg = JSON.parse(readFileSync(cfgPath(repo), 'utf8'));
   assert.equal(cfg.version, 1, 'Cursor hooks.json carries a schema version');
-  const sub = (event: string) => cfg.hooks[event][0].command.match(/cjs" (\S+)$/)?.[1];
+  const sub = (event: string) => cfg.hooks[event][0].command.match(/graft-hooks\.cjs (\S+)$/)?.[1];
   assert.equal(sub('postToolUse'), 'cursor-post-tool');
   assert.equal(sub('afterMCPExecution'), 'cursor-mcp');
   assert.equal(sub('sessionEnd'), 'cursor-session-end');
+  // Commands reference the shim relative to the repo root (Cursor runs project
+  // hooks from there), so no checkout path leaks into the committed config.
+  for (const ev of ['postToolUse', 'afterMCPExecution', 'sessionEnd']) {
+    const command = cfg.hooks[ev][0].command;
+    assert.equal(command, `node .cursor/hooks/graft-hooks.cjs ${sub(ev)}`);
+    assert.ok(!command.includes(repo), `${ev} command carries an absolute checkout path`);
+  }
   // postToolUse filters to the read/shell tools; the MCP + end hooks take every event.
   assert.match(cfg.hooks.postToolUse[0].matcher, /Read\|Grep\|Glob\|Search\|Shell/);
   assert.ok(!('matcher' in cfg.hooks.afterMCPExecution[0]), 'no matcher on afterMCPExecution');
@@ -64,7 +71,7 @@ test('foreign hook entries and a pre-existing version are preserved; stale graft
   const entries = JSON.parse(readFileSync(cfgPath(repo), 'utf8')).hooks.postToolUse;
   assert.equal(entries.length, 2, 'foreign kept, stale graft replaced by fresh');
   assert.ok(entries.some((e: any) => e.command === 'other-tool.sh'), 'foreign entry preserved');
-  assert.ok(entries.some((e: any) => /graft-hooks\.cjs" cursor-post-tool$/.test(e.command)), 'fresh graft entry present');
+  assert.ok(entries.some((e: any) => e.command === 'node .cursor/hooks/graft-hooks.cjs cursor-post-tool'), 'fresh graft entry present');
   assert.ok(!JSON.stringify(entries).includes('/old/'), 'stale graft entry removed');
 });
 

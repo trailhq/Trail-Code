@@ -31,6 +31,13 @@ import { writeOwned, isGraftEntry, readJsonObject, type ConfigWrite } from './co
 /** The Cursor hooks.json schema version graft writes. */
 const CURSOR_HOOKS_VERSION = 1;
 
+/**
+ * Project hooks run from the repo root (Cursor docs), so the command references
+ * the shim by its repo-relative path. An absolute checkout path here would dirty
+ * every clone and worktree on the next init; a relative one stays committed clean.
+ */
+const RELATIVE_SHIM_COMMAND = '.cursor/hooks/graft-hooks.cjs';
+
 function shimPathFor(repo: string): string {
   return join(repo, '.cursor', 'hooks', 'graft-hooks.cjs');
 }
@@ -97,7 +104,7 @@ export function installCursorHooks(repo: string): ConfigWrite[] {
   for (const d of desiredEntries()) {
     if (hooks[d.event] !== undefined && !Array.isArray(hooks[d.event])) return [shimWrite, skipped];
     const prior: unknown[] = Array.isArray(hooks[d.event]) ? hooks[d.event] : [];
-    const command = `node "${shimPath}" ${d.sub}`;
+    const command = `node ${RELATIVE_SHIM_COMMAND} ${d.sub}`;
     const entry = d.matcher ? { matcher: d.matcher, command } : { command };
     hooks[d.event] = [...prior.filter((e) => !isGraftEntry(e)), entry];
   }
