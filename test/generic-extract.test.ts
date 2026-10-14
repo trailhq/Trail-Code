@@ -17,7 +17,12 @@ import {
   loadWasmLanguage,
   parseWasm,
   swapGrammarForTest,
+  seedWasmParserForTest,
+  wasmRuntimePoisoned,
+  clearWasmPoisonForTest,
   type TsNode,
+  type Loaded,
+  type WasmParser,
 } from "../src/graph/generic.js";
 import { resolveEdges } from "../src/graph/resolve.js";
 import { buildGraph } from "../src/graph/build.js";
@@ -213,6 +218,26 @@ test("breadth tier: C #include becomes a resolved file→file import (local only
   assert.deepEqual(targetsOf("src/amb.c"), ["util.h"], "ambiguous include kept external, never guessed");
 });
 
+// A C++ header routed to the C grammar misparses a big brace initializer into
+// right-nested comma_expressions: the tree is as deep as the array is long. The
+// walks over it must not recurse per level, or V8's stack overflows (RangeError).
+test("breadth tier: a C header with a 20,000-element initializer extracts without overflowing the stack", async () => {
+  await warmGenericGrammars(["c"]);
+  const n = 20000;
+  const values = Array.from({ length: n }, (_, i) => String(i + 1)).join(", ");
+  const src =
+    '#include "dep.h"\n' +
+    "#include <array>\n" +
+    `std::array<int, ${n}> data = { ${values} };\n` +
+    "int after(void) { return 0; }\n";
+  const { nodes, rawEdges } = extractGeneric("big.h", src, "c");
+  assert.ok(
+    rawEdges.some((e) => e.relation === "imports" && e.specifier === "dep.h"),
+    "the quoted include before the array is captured",
+  );
+  assert.ok(nodes.some((x) => x.kind === "function" && x.name === "after"), "the function after the array is extracted");
+});
+
 // Rust `use crate::…` → a file→module import, resolved against the file's crate root
 // (the lib.rs/main.rs dir). The longest-prefix rule disambiguates a module from an item
 // and a `foo.rs` from a `foo/mod.rs`; std/super/external/glob are skipped, and an
@@ -397,13 +422,18 @@ function namedOfType(root: TsNode, type: string): string[] {
 async function assertPhpWasmExtractsClassAndMethods(source: string, className: string, label: string): Promise<void> {
   const language = await loadWasmLanguage("php");
   assert.ok(language, "tree-sitter-wasm must ship a php grammar");
-  const root = parseWasm(language, source);
-  assert.ok(root, `${label}: PHP wasm parse must not crash (1.1.4 threw on heredoc/nowdoc)`);
-  const classes = namedOfType(root, "class_declaration");
-  const methods = namedOfType(root, "method_declaration");
-  assert.ok(classes.includes(className), `${label}: expected class ${className}, got: ${classes.join(", ") || "(none)"}`);
-  assert.ok(methods.includes("sql"), `${label}: expected method sql, got: ${methods.join(", ") || "(none)"}`);
-  assert.ok(methods.includes("other"), `${label}: expected method other, got: ${methods.join(", ") || "(none)"}`);
+  const tree = parseWasm(language, source);
+  assert.ok(tree, `${label}: PHP wasm parse must not crash (1.1.4 threw on heredoc/nowdoc)`);
+  try {
+    const root = tree.rootNode;
+    const classes = namedOfType(root, "class_declaration");
+    const methods = namedOfType(root, "method_declaration");
+    assert.ok(classes.includes(className), `${label}: expected class ${className}, got: ${classes.join(", ") || "(none)"}`);
+    assert.ok(methods.includes("sql"), `${label}: expected method sql, got: ${methods.join(", ") || "(none)"}`);
+    assert.ok(methods.includes("other"), `${label}: expected method other, got: ${methods.join(", ") || "(none)"}`);
+  } finally {
+    tree.delete();
+  }
 }
 
 test("PHP wasm grammar extracts class + methods from a heredoc file (#139)", async () => {
@@ -421,12 +451,17 @@ test("PHP wasm grammar extracts class + methods from a nowdoc file (#139)", asyn
  * clean parse. The real crash is heap-state dependent, so a deterministically
  * throwing fake grammar is swapped in via the test seam instead.
  */
-const THROWING_GRAMMAR = {
-  // web-tree-sitter's setLanguage() inspects the language object, so any
-  // property access blowing up makes extractGeneric's try block throw exactly
-  // like a crashing wasm scanner does.
-  language: new Proxy({}, { get(): never { throw new Error("memory access out of bounds (fake)"); } }),
+const THROWING_GRAMMAR: Loaded = {
+  // The parser is created once per grammar at warm time, so the per-file failure
+  // an external scanner produces is a throw out of parse(). reset() is what
+  // extractGeneric calls on the shared parser before rethrowing.
+  language: {},
   query: null,
+  parser: {
+    parse(): never { throw new Error("memory access out of bounds (fake)"); },
+    reset(): void {},
+    delete(): void {},
+  },
 };
 
 test("extractGeneric rethrows a throwing grammar with the language named (#139)", async () => {
@@ -447,7 +482,7 @@ test("extractGeneric rethrows a throwing grammar with the language named (#139)"
   }
 });
 
-test("a throwing grammar is a per-file build error, cached as a failure (#139)", async () => {
+test("a throwing grammar is a per-file build error, and the file is retried next build (#139)", async () => {
   const dir = mkdtempSync(join(tmpdir(), "graft-throwing-grammar-"));
   writeFileSync(join(dir, "lib.rs"), "pub fn f() {}\n");
   await warmGenericGrammars(["rust"]); // so buildGraph's own warm call is a no-op
@@ -461,13 +496,236 @@ test("a throwing grammar is a per-file build error, cached as a failure (#139)",
     assert.ok(g, "graph built");
     assert.ok(!g!.nodes.some((n) => n.path === "lib.rs"), "failed file has no file node");
 
-    // The extract cache must remember the failure, not an empty success: an
-    // incremental rebuild of the unchanged file replays the error.
+    // The failure is recorded (so the freshness probe is quiet) but NOT replayed:
+    // the second build parses the unchanged file again and, the grammar still
+    // throwing, reports the error again as a fresh parse, not a cache hit.
     const second = await buildGraph(dir, { reuse: true });
-    assert.equal(second.parsed, 0, "unchanged file is not re-parsed");
-    assert.equal(second.errors.length, 1, `error replayed (got: ${second.errors.join("; ")})`);
+    assert.equal(second.errors.length, 1, `error reported again (got: ${second.errors.join("; ")})`);
     assert.match(second.errors[0], /rust grammar threw/);
+    assert.equal(second.parsed, 1, "the errored file was re-parsed, not replayed");
+    assert.equal(second.reused, 0, "an errored entry never counts as reused");
   } finally {
     swapGrammarForTest("rust", prev);
+  }
+});
+
+test("a file that failed for an environmental reason recovers on the next build without a cache delete", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "graft-recovering-grammar-"));
+  writeFileSync(join(dir, "lib.rs"), "pub fn f() {}\npub fn g() { f() }\n");
+  await warmGenericGrammars(["rust"]);
+  const prev = swapGrammarForTest("rust", THROWING_GRAMMAR);
+  try {
+    const first = await buildGraph(dir, { reuse: false });
+    assert.equal(first.errors.length, 1, "first build fails");
+  } finally {
+    swapGrammarForTest("rust", prev); // the "environment" is healthy again
+  }
+  const second = await buildGraph(dir, { reuse: true });
+  assert.equal(second.errors.length, 0, `second build clean (got: ${second.errors.join("; ")})`);
+  const g = readGraph(wiringPath(contextDirFor(dir)));
+  assert.ok(g!.nodes.some((n) => n.id === "lib.rs#f"), "the file's symbols are in the graph now");
+});
+
+/** Wrap the real rust grammar so every tree it hands out is counted on the way
+ * out and on delete(). The parse itself is real; only the bookkeeping is fake. */
+function countingGrammar(real: Loaded, hooks: { created: number; deleted: number; resets: number }): Loaded {
+  return {
+    language: real.language,
+    query: real.query,
+    parser: {
+      parse(cb) {
+        const t = real.parser.parse(cb);
+        if (!t) return null;
+        hooks.created++;
+        return { rootNode: t.rootNode, delete: () => { hooks.deleted++; t.delete(); } };
+      },
+      reset: () => { hooks.resets++; real.parser.reset(); },
+      delete: () => real.parser.delete(),
+    },
+  };
+}
+
+test("extractGeneric deletes every tree it parses", async () => {
+  await warmGenericGrammars(["rust"]);
+  const hooks = { created: 0, deleted: 0, resets: 0 };
+  const real = swapGrammarForTest("rust", null)!;
+  swapGrammarForTest("rust", countingGrammar(real, hooks));
+  try {
+    for (let i = 0; i < 25; i++) extractGeneric("src/lib.rs", `pub fn f${i}() { g() }\n`, "rust");
+    assert.equal(hooks.created, 25, "every call parsed");
+    assert.equal(hooks.deleted, 25, "every tree deleted");
+    assert.equal(hooks.resets, 0, "no reset on the happy path");
+  } finally {
+    swapGrammarForTest("rust", real);
+  }
+});
+
+test("extractGeneric deletes the tree even when the walk throws", async () => {
+  await warmGenericGrammars(["rust"]);
+  const hooks = { created: 0, deleted: 0, resets: 0 };
+  const real = swapGrammarForTest("rust", null)!;
+  // tagsExtract calls query.matches(root); a query that throws there throws mid-walk.
+  const grammar = countingGrammar(real, hooks);
+  grammar.query = { matches(): never { throw new Error("walk boom"); } };
+  swapGrammarForTest("rust", grammar);
+  try {
+    assert.throws(() => extractGeneric("src/lib.rs", "pub fn f() {}\n", "rust"), /walk boom/);
+    assert.equal(hooks.created, 1);
+    assert.equal(hooks.deleted, 1, "the tree was deleted in finally");
+  } finally {
+    swapGrammarForTest("rust", real);
+  }
+});
+
+test("a parse() that throws resets the shared parser before rethrowing", async () => {
+  await warmGenericGrammars(["rust"]);
+  const hooks = { created: 0, deleted: 0, resets: 0 };
+  const real = swapGrammarForTest("rust", null)!;
+  const grammar = countingGrammar(real, hooks);
+  grammar.parser = { ...grammar.parser, parse(): never { throw new Error("memory access out of bounds (fake)"); } };
+  swapGrammarForTest("rust", grammar);
+  try {
+    assert.throws(() => extractGeneric("src/lib.rs", "pub fn f() {}\n", "rust"), /rust grammar threw: memory access out of bounds/);
+    assert.equal(hooks.resets, 1, "reset() called once");
+    assert.equal(wasmRuntimePoisoned(), null, "an ordinary throw does not poison the runtime");
+  } finally {
+    swapGrammarForTest("rust", real);
+  }
+});
+
+test("a WebAssembly.RuntimeError poisons the runtime: every later call fails with one distinct message", async () => {
+  await warmGenericGrammars(["rust"]);
+  const real = swapGrammarForTest("rust", null)!;
+  const grammar: Loaded = {
+    language: real.language, query: real.query,
+    parser: { parse(): never { throw new WebAssembly.RuntimeError("Aborted(). Build with -sASSERTIONS for more info."); }, reset() {}, delete() {} },
+  };
+  swapGrammarForTest("rust", grammar);
+  try {
+    assert.throws(() => extractGeneric("src/lib.rs", "pub fn f() {}\n", "rust"), /rust grammar threw: Aborted\(\)/);
+    assert.match(wasmRuntimePoisoned() ?? "", /^Aborted\(\)/);
+    // The real grammar is back, but the process is poisoned: no parse is attempted.
+    swapGrammarForTest("rust", real);
+    assert.throws(
+      () => extractGeneric("src/lib.rs", "pub fn f() {}\n", "rust"),
+      /web-tree-sitter aborted earlier in this process .*restart/,
+    );
+  } finally {
+    clearWasmPoisonForTest();
+    swapGrammarForTest("rust", real);
+  }
+});
+
+test("a WebAssembly.RuntimeError from the walk poisons the runtime too", async () => {
+  await warmGenericGrammars(["rust"]);
+  const real = swapGrammarForTest("rust", null)!;
+  // query.matches() is WASM-backed, so an abort can surface from the walk, not
+  // only from parse(). It must poison the runtime the same way a parse abort does,
+  // and the thrown error must be the original object (its message carries Aborted()).
+  const grammar: Loaded = {
+    language: real.language,
+    query: { matches(): never { throw new WebAssembly.RuntimeError("Aborted(). Build with -sASSERTIONS for more info."); } },
+    parser: real.parser,
+  };
+  swapGrammarForTest("rust", grammar);
+  try {
+    assert.throws(() => extractGeneric("src/lib.rs", "pub fn f() {}\n", "rust"), /Aborted\(\)/);
+    assert.match(wasmRuntimePoisoned() ?? "", /^Aborted\(\)/);
+    // The real grammar is back, but the process is poisoned: no parse is attempted.
+    swapGrammarForTest("rust", real);
+    assert.throws(
+      () => extractGeneric("src/lib.rs", "pub fn f() {}\n", "rust"),
+      /web-tree-sitter aborted earlier in this process .*restart/,
+    );
+  } finally {
+    clearWasmPoisonForTest();
+    swapGrammarForTest("rust", real);
+  }
+});
+
+test("a tree.delete() that throws does not mask the walk's error", async () => {
+  await warmGenericGrammars(["rust"]);
+  const hooks = { created: 0, deleted: 0, resets: 0 };
+  const real = swapGrammarForTest("rust", null)!;
+  // Like countingGrammar, but the tree's delete() throws AFTER counting, and the
+  // walk throws first. The delete throw must be swallowed so the walk's real error
+  // (not the delete error) is what propagates.
+  const grammar: Loaded = {
+    language: real.language,
+    query: { matches(): never { throw new Error("walk boom"); } },
+    parser: {
+      parse(cb) {
+        const t = real.parser.parse(cb);
+        if (!t) return null;
+        hooks.created++;
+        return { rootNode: t.rootNode, delete: () => { hooks.deleted++; t.delete(); throw new Error("delete boom"); } };
+      },
+      reset: () => { hooks.resets++; real.parser.reset(); },
+      delete: () => real.parser.delete(),
+    },
+  };
+  swapGrammarForTest("rust", grammar);
+  try {
+    assert.throws(() => extractGeneric("src/lib.rs", "pub fn f() {}\n", "rust"), /walk boom/);
+    assert.equal(hooks.deleted, 1, "delete() ran (and threw) but the throw was swallowed");
+  } finally {
+    swapGrammarForTest("rust", real);
+  }
+});
+
+test("extractGeneric frees WASM memory: 400 parses of a 40 KB file do not grow RSS", async () => {
+  await warmGenericGrammars(["rust"]);
+  assert.ok(isWarm("rust"), "rust grammar warmed");
+  const fn = (i: number) => `pub fn f${i}(a: u32, b: u32) -> u32 {\n    let c = a + b;\n    if c > 10 { helper(c) } else { c }\n}\n`;
+  const source = Array.from({ length: 400 }, (_, i) => fn(i)).join("\n");
+  for (let i = 0; i < 20; i++) extractGeneric("src/lib.rs", source, "rust"); // warm-up
+  const before = process.memoryUsage().rss;
+  for (let i = 0; i < 400; i++) extractGeneric("src/lib.rs", source, "rust");
+  const grewMb = (process.memoryUsage().rss - before) / 1048576;
+  // Leaking, each parse retains ~1.9 MB of WASM heap: 400 parses grow RSS by
+  // ~750 MB (and 1,100 parses would hit the 2 GB abort, so the loop stays at
+  // 400). Freed, growth is V8 noise. 100 MB is the line.
+  assert.ok(grewMb < 100, `RSS grew by ${grewMb.toFixed(0)} MB over 400 parses: the tree is not being deleted`);
+});
+
+// parseWasm has its OWN parse-catch path (generic.ts, distinct from extractGeneric's):
+// notePoison → parser.reset() → throw. It is the path the container (.vue) tier hits.
+// parseWasm keys a WeakMap<object, WasmParser> by the language object and creates the
+// parser itself on first use, so a fake language cannot make parse() throw on its own —
+// seedWasmParserForTest pre-seeds the parser parseWasm will use, so a throwing parse()
+// can be driven without a real crashing grammar.
+test("parseWasm rethrows a throwing parse and resets the shared parser (an ordinary throw does not poison)", async () => {
+  await warmGenericGrammars(["rust"]); // initialises web-tree-sitter
+  const language = {};
+  let resets = 0;
+  const parser: WasmParser = {
+    parse(): never { throw new Error("memory access out of bounds (fake)"); },
+    reset(): void { resets++; },
+    delete(): void {},
+  };
+  seedWasmParserForTest(language, parser);
+  assert.throws(() => parseWasm(language, "x"), /memory access out of bounds/);
+  assert.equal(resets, 1, "reset() called once before rethrow");
+  assert.equal(wasmRuntimePoisoned(), null, "an ordinary throw does not poison the runtime");
+});
+
+test("parseWasm poisons the runtime on a WebAssembly.RuntimeError; every later call fails with the aborted-earlier error", async () => {
+  await warmGenericGrammars(["rust"]);
+  const language = {};
+  // The ES2022 lib has no WebAssembly type; read its RuntimeError constructor off globalThis.
+  const RuntimeError = (globalThis as { WebAssembly: { RuntimeError: new (m: string) => Error } }).WebAssembly.RuntimeError;
+  const parser: WasmParser = {
+    parse(): never { throw new RuntimeError("Aborted()."); },
+    reset(): void {},
+    delete(): void {},
+  };
+  seedWasmParserForTest(language, parser);
+  try {
+    assert.throws(() => parseWasm(language, "x"), /Aborted\(/);
+    assert.match(wasmRuntimePoisoned() ?? "", /^Aborted\(/);
+    // The runtime is poisoned now: a further parseWasm never attempts a parse.
+    assert.throws(() => parseWasm(language, "x"), /aborted earlier in this process/);
+  } finally {
+    clearWasmPoisonForTest();
   }
 });

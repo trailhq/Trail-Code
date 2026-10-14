@@ -22,7 +22,7 @@
  * fixtures whose true line numbers are known.
  */
 import { extractFile, mintId, type ExtractResult, type Language, type RawEdge } from "./extract.js";
-import { loadWasmLanguage, parseWasm, type TsNode } from "./generic.js";
+import { loadWasmLanguage, parseWasm, type TsNode, type WasmTree } from "./generic.js";
 import { contentHash } from "../util/id.js";
 import type { NodeV1 } from "./types.js";
 
@@ -65,6 +65,14 @@ export function containerExtensions(): string[] {
 }
 
 const loaded = new Map<string, unknown>();
+
+/** Test seam, same shape as generic.ts's `swapGrammarForTest`. */
+export function swapContainerGrammarForTest(name: string, language: unknown | null): unknown | null {
+  const prev = loaded.get(name) ?? null;
+  if (language) loaded.set(name, language);
+  else loaded.delete(name);
+  return prev;
+}
 
 /** Warm the container grammars this repo needs. Same contract as
  * `warmGenericGrammars`: await once before the synchronous parse loop, and an
@@ -144,9 +152,11 @@ function blocks(root: TsNode, lang: ContainerLang): TsNode[] {
 /**
  * Extract one container file. Synchronous; needs the grammar pre-warmed.
  *
- * Never throws: a missing grammar, an unparseable SFC or a script block the
- * inner extractor chokes on all degrade to "fewer nodes", because a build must
- * not fail over one component.
+ * A missing grammar, or a script block the inner extractor rejects, still
+ * degrades to "fewer nodes", because a build must not fail over one component.
+ * But a wrapper grammar that THROWS (a WASM abort, not a per-file syntax error)
+ * propagates as a build error: swallowing it would cache a clean symbol-less
+ * file as success, the exact mistake the generic tier used to make.
  */
 export function extractContainer(rel: string, source: string, lang: ContainerLang): ExtractResult {
   const nodes: NodeV1[] = [];
@@ -154,51 +164,66 @@ export function extractContainer(rel: string, source: string, lang: ContainerLan
   const residuals: string[] = [];
 
   const language = loaded.get(lang.name);
-  const root = language ? parseWasm(language, source) : null;
+  let tree: WasmTree | null = null;
+  if (language) {
+    try {
+      tree = parseWasm(language, source);
+    } catch (err) {
+      // Same contract as the generic tier: a grammar that throws is a build error
+      // for this file, never a clean file node cached as success.
+      throw new Error(`${lang.name} grammar threw: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
 
-  if (root) {
-    // Ids are minted per file by the inner extractor, so two script blocks that
-    // both define `setup` would collide. Threading one set across the blocks
-    // makes the second one `path#setup~2`, and the rename is applied to that
-    // block's edges too so nothing points at an id that no longer exists.
-    const minted = new Set<string>([rel]);
+  try {
+    if (tree) {
+      const root = tree.rootNode;
+      // Ids are minted per file by the inner extractor, so two script blocks that
+      // both define `setup` would collide. Threading one set across the blocks
+      // makes the second one `path#setup~2`, and the rename is applied to that
+      // block's edges too so nothing points at an id that no longer exists.
+      const minted = new Set<string>([rel]);
 
-    for (const body of blocks(root, lang)) {
-      const script = source.slice(body.startIndex, body.endIndex);
+      for (const body of blocks(root, lang)) {
+        const script = source.slice(body.startIndex, body.endIndex);
 
-      let inner: ExtractResult;
-      try {
-        inner = extractFile(rel, script, lang.inner);
-      } catch {
-        continue; // one bad block, not a bad build
-      }
+        let inner: ExtractResult;
+        try {
+          inner = extractFile(rel, script, lang.inner);
+        } catch {
+          continue; // one bad block, not a bad build
+        }
 
-      // `raw_text` starts immediately after the `>` of the opening tag, so its
-      // row IS the tag's row and the slice begins with that line's newline.
-      // Script line 1 is therefore the tail of the tag line, and script line N
-      // lands on `.vue` line row + N — which is exactly "add the start row to a
-      // 1-based span". Taking the row from the tag node instead would look
-      // equivalent and be right only when the tag has no attributes.
-      const shift = body.startPosition.row;
+        // `raw_text` starts immediately after the `>` of the opening tag, so its
+        // row IS the tag's row and the slice begins with that line's newline.
+        // Script line 1 is therefore the tail of the tag line, and script line N
+        // lands on `.vue` line row + N — which is exactly "add the start row to a
+        // 1-based span". Taking the row from the tag node instead would look
+        // equivalent and be right only when the tag has no attributes.
+        const shift = body.startPosition.row;
 
-      // nodes[0] is the script's own file node: it describes the block, not the
-      // file, so it is dropped and its residual folded into the .vue file node.
-      const [scriptFile, ...symbols] = inner.nodes;
-      if (scriptFile?.body_text) residuals.push(scriptFile.body_text);
+        // nodes[0] is the script's own file node: it describes the block, not the
+        // file, so it is dropped and its residual folded into the .vue file node.
+        const [scriptFile, ...symbols] = inner.nodes;
+        if (scriptFile?.body_text) residuals.push(scriptFile.body_text);
 
-      const renamed = new Map<string, string>();
-      for (const node of symbols) {
-        const id = mintId(node.id, minted);
-        if (id !== node.id) renamed.set(node.id, id);
-        nodes.push({ ...node, id, span: shiftSpan(node.span, shift) });
-      }
+        const renamed = new Map<string, string>();
+        for (const node of symbols) {
+          const id = mintId(node.id, minted);
+          if (id !== node.id) renamed.set(node.id, id);
+          nodes.push({ ...node, id, span: shiftSpan(node.span, shift) });
+        }
 
-      for (const edge of inner.rawEdges) {
-        const source_ = renamed.get(edge.source) ?? edge.source;
-        const targetId = edge.targetId === undefined ? undefined : (renamed.get(edge.targetId) ?? edge.targetId);
-        rawEdges.push({ ...edge, source: source_, ...(targetId === undefined ? {} : { targetId }) });
+        for (const edge of inner.rawEdges) {
+          const source_ = renamed.get(edge.source) ?? edge.source;
+          const targetId = edge.targetId === undefined ? undefined : (renamed.get(edge.targetId) ?? edge.targetId);
+          rawEdges.push({ ...edge, source: source_, ...(targetId === undefined ? {} : { targetId }) });
+        }
       }
     }
+  } finally {
+    // The wrapper tree is a WASM-heap object; nothing frees it but this.
+    tree?.delete();
   }
 
   // Built last so it can carry the residual, but unshifted first so the file node

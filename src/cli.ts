@@ -718,7 +718,11 @@ grouped(program.command("build"), GROUP.setup)
       },
       { repo: buildRoot },
     );
-    for (const e of g.errors) console.error(`✗ ${e}`);
+    // A poisoned WASM runtime or a broken grammar can fail tens of thousands of
+    // files identically; the first 20 say everything the rest would.
+    const MAX_ERRORS_SHOWN = 20;
+    for (const e of g.errors.slice(0, MAX_ERRORS_SHOWN)) console.error(`✗ ${e}`);
+    if (g.errors.length > MAX_ERRORS_SHOWN) console.error(`✗ … and ${g.errors.length - MAX_ERRORS_SHOWN} more (${g.errors.length} files failed to parse)`);
 
     const rel = relative(process.cwd(), g.contextDir) || "graft";
     if (process.env.GRAFT_NO_GITIGNORE) {
