@@ -58,6 +58,7 @@ export const GENERIC_LANGS: readonly GenericLang[] = [
   { name: "clojure", exts: [".clj", ".cljs", ".cljc", ".bb"], wasm: "clojure" },
   { name: "nix", exts: [".nix"], wasm: "nix" },
   { name: "lua", exts: [".lua"], wasm: "lua" },
+  { name: "bash", exts: [".sh", ".bash"], wasm: "bash" },
 ];
 
 const byExt = new Map<string, GenericLang>();
