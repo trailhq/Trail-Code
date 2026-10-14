@@ -89,7 +89,13 @@ export async function checkGraph(
   const onlyDirs = fpOnlyDirs && fpOnlyDirs.length > 0 ? new Set(fpOnlyDirs) : undefined;
   const sourceFiles = listSourceFiles(root, outDir, undefined, onlyDirs);
   await warmGenericGrammars(
-    new Set(sourceFiles.map((f) => genericLangOf(f)?.name).filter((n): n is string => !!n)),
+    // Tier precedence, as in buildGraph and in the loop below.
+    new Set(
+      sourceFiles
+        .filter((f) => !languageOf(f))
+        .map((f) => genericLangOf(f)?.name)
+        .filter((n): n is string => !!n),
+    ),
   );
   // Container-tier grammars need the same warmup as the generic ones, for the same
   // reason: extraction below is synchronous. Missing this is what made `graft

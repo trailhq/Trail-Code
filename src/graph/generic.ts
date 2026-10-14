@@ -39,7 +39,13 @@ export interface GenericLang {
 }
 
 /** The breadth registry. Add a row + a queries/<name>.scm to support a language.
- * Extensions here must NOT collide with the depth tier's EXTENSIONS (extract.ts). */
+ *
+ * An extension the depth tier also claims (extract.ts) is a FALLBACK row, not a
+ * collision: the depth tier is asked first everywhere, so such a row is reached
+ * only when that language's native grammar did not load. `.java` has always been
+ * one. `.kt`/`.kts` are one as of #323, where tree-sitter-kotlin ships no
+ * prebuilds and cannot compile without a C toolchain — with the row, that machine
+ * indexes Kotlin signatures instead of no Kotlin at all. */
 export const GENERIC_LANGS: readonly GenericLang[] = [
   { name: "rust", exts: [".rs"], wasm: "rust" },
   { name: "java", exts: [".java"], wasm: "java" },
@@ -58,6 +64,10 @@ export const GENERIC_LANGS: readonly GenericLang[] = [
   { name: "clojure", exts: [".clj", ".cljs", ".cljc", ".bb"], wasm: "clojure" },
   { name: "nix", exts: [".nix"], wasm: "nix" },
   { name: "lua", exts: [".lua"], wasm: "lua" },
+  // Fallback for the depth tier (see above), unreachable while the native Kotlin
+  // grammar loads. queries/kotlin.scm is the one this language used before it was
+  // promoted, and has been sitting unused since.
+  { name: "kotlin", exts: [".kt", ".kts"], wasm: "kotlin" },
 ];
 
 const byExt = new Map<string, GenericLang>();
