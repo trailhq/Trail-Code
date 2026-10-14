@@ -252,7 +252,9 @@ compiler-grade layer — all `$0` and deterministic (no model, no key):
   `lsp_resolved` call edges (member calls the static pass can't type) when a
   language server is on your `PATH`: **rust-analyzer** (Rust), **clangd** (C/C++),
   **gopls** (Go), **pyright** (Python), **typescript-language-server** (TS/JS).
-  It's best-effort — with no server installed the graph is unchanged.
+  Mixed-language repos use each applicable installed server, restricted to its
+  own files. It's best-effort — a missing or failed server leaves those languages
+  on the AST graph while the other servers still run.
 
 Twenty-three languages in total. A file whose language isn't listed is skipped, not
 indexed. Adding a broad-tier language is a small contribution — see

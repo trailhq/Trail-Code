@@ -16,8 +16,8 @@ import { relPosix } from "../../util/paths.js";
 import { languageLabelOf } from "../extract.js";
 import { genericLangOf } from "../generic.js";
 import type { GraphV1, NodeV1, EdgeV1 } from "../types.js";
-import { LspClient, type CallHierarchyItem } from "./client.js";
-import { pickServer } from "./registry.js";
+import { LspClient } from "./client.js";
+import { pickServers } from "./registry.js";
 
 const CALLABLE = new Set<NodeV1["kind"]>(["function", "method"]);
 const DEFN = new Set<NodeV1["kind"]>(["function", "method", "class", "struct", "interface", "type", "enum"]);
@@ -30,7 +30,7 @@ const parseSpan = (s: string): [number, number] | null => {
   return m ? [Number(m[1]), Number(m[2])] : null;
 };
 
-export interface LspEnrichResult { added: number; queried: number; server: string | null }
+export interface LspEnrichResult { added: number; queried: number; servers: string[] }
 
 export async function enrichWithLsp(
   graph: GraphV1,
@@ -39,8 +39,8 @@ export async function enrichWithLsp(
 ): Promise<LspEnrichResult> {
   const languagesPresent = new Set<string>();
   for (const n of graph.nodes) { const l = langOf(n.path); if (l) languagesPresent.add(l); }
-  const server = pickServer(languagesPresent);
-  if (!server) return { added: 0, queried: 0, server: null };
+  const servers = pickServers(languagesPresent);
+  if (!servers.length) return { added: 0, queried: 0, servers: [] };
 
   // Canonicalize the root: servers (rust-analyzer/clangd) report callee URIs
   // against the REAL path, so under a symlinked checkout (macOS /tmp →
@@ -50,7 +50,6 @@ export async function enrichWithLsp(
   root = realRoot;
 
   // Index nodes by file for both source selection and callee→node mapping.
-  const byId = new Map(graph.nodes.map((n) => [n.id, n]));
   const spansByFile = new Map<string, Span[]>();
   for (const n of graph.nodes) {
     if (n.kind === "file" || !DEFN.has(n.kind)) continue;
@@ -66,13 +65,10 @@ export async function enrichWithLsp(
     return cands.sort((a, b) => (a.to - a.from) - (b.to - b.from))[0].node;
   };
 
-  // Source nodes to query: callable nodes in files this server handles.
-  const serverLangs = new Set(server.languages);
-  let sources = graph.nodes.filter((n) => CALLABLE.has(n.kind) && serverLangs.has(langOf(n.path) ?? ""));
+  // Apply the node budget once across the repo, not once per server.
+  const covered = new Set(servers.flatMap((s) => s.languages));
+  let sources = graph.nodes.filter((n) => CALLABLE.has(n.kind) && covered.has(langOf(n.path) ?? ""));
   if (opts.maxNodes && sources.length > opts.maxNodes) sources = sources.slice(0, opts.maxNodes);
-
-  const client = new LspClient(server.command, server.args, root, server.languageId);
-  if (!(await client.initialize())) { await client.dispose(); return { added: 0, queried: 0, server: server.command }; }
 
   const existing = new Set(graph.edges.map((e) => `${e.source}\0${e.relation}\0${e.target}`));
   const fileLines = new Map<string, string[]>();
@@ -96,45 +92,51 @@ export async function enrichWithLsp(
     return null;
   };
 
-  // Wait for the server to finish indexing (it answers call-hierarchy empty
-  // until ready). Warm up on the first source node that has a findable position.
-  const warm = sources.find((s) => namePos(s));
-  if (warm) {
-    const wp = namePos(warm)!;
-    if (!(await client.waitUntilReady(join(root, warm.path), wp))) {
-      await client.dispose();
-      return { added: 0, queried: 0, server: server.command }; // never became ready
-    }
-  }
-
   let added = 0, queried = 0;
-  for (const src of sources) {
-    const abs = join(root, src.path);
-    client.didOpen(abs);
-    const pos = namePos(src);
-    if (!pos) continue;
+  const attempted: string[] = [];
+  for (const server of servers) {
+    const serverLangs = new Set(server.languages);
+    const serverSources = sources.filter((n) => serverLangs.has(langOf(n.path) ?? ""));
+    if (!serverSources.length) continue;
+    attempted.push(server.command);
+    const client = new LspClient(server.command, server.args, root, server.languageId);
+    try {
+      if (!(await client.initialize())) continue;
 
-    const items = await client.prepareCallHierarchy(abs, pos);
-    if (!items.length) continue;
-    queried++;
-    opts.onProgress?.(queried, sources.length);
-    const callees = await client.outgoingCalls(items[0]);
-    for (const callee of callees) {
-      let calleeAbs: string;
-      try { calleeAbs = fileURLToPath(callee.uri); } catch { continue; }
-      const rel = relPosix(root, calleeAbs);
-      // In-repo iff the repo-relative path doesn't escape the root. (A raw
-      // `startsWith(root)` is separator-unsafe: root=/a/foo matches /a/foo-bar.)
-      if (rel.startsWith("..") || rel.startsWith("/")) continue; // external/dependency
-      const target = nodeAt(rel, (callee.selectionRange?.start.line ?? callee.range.start.line) + 1);
-      if (!target || target.id === src.id) continue;
-      const key = `${src.id}\0calls\0${target.id}`;
-      if (existing.has(key)) continue;
-      existing.add(key);
-      graph.edges.push({ source: src.id, target: target.id, relation: "calls", confidence: "lsp_resolved" } as EdgeV1);
-      added++;
+      // Warm up only on a document this server handles. A failed server must
+      // not prevent the other languages from being enriched.
+      const warm = serverSources.find((s) => namePos(s));
+      if (warm && !(await client.waitUntilReady(join(root, warm.path), namePos(warm)!))) continue;
+
+      for (const src of serverSources) {
+        const abs = join(root, src.path);
+        client.didOpen(abs);
+        const pos = namePos(src);
+        if (!pos) continue;
+
+        const items = await client.prepareCallHierarchy(abs, pos);
+        if (!items.length) continue;
+        queried++;
+        opts.onProgress?.(queried, sources.length);
+        const callees = await client.outgoingCalls(items[0]);
+        for (const callee of callees) {
+          let calleeAbs: string;
+          try { calleeAbs = fileURLToPath(callee.uri); } catch { continue; }
+          const rel = relPosix(root, calleeAbs);
+          // Separator-safe containment: /a/foo must not match /a/foo-bar.
+          if (rel.startsWith("..") || rel.startsWith("/")) continue;
+          const target = nodeAt(rel, (callee.selectionRange?.start.line ?? callee.range.start.line) + 1);
+          if (!target || target.id === src.id) continue;
+          const key = `${src.id}\0calls\0${target.id}`;
+          if (existing.has(key)) continue;
+          existing.add(key);
+          graph.edges.push({ source: src.id, target: target.id, relation: "calls", confidence: "lsp_resolved" } as EdgeV1);
+          added++;
+        }
+      }
+    } finally {
+      await client.dispose();
     }
   }
-  await client.dispose();
-  return { added, queried, server: server.command };
+  return { added, queried, servers: attempted };
 }

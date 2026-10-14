@@ -14,7 +14,7 @@ export interface LspServer {
   languageId: string;
 }
 
-/** First-match-wins; ordering is priority. Extend by adding a row. */
+/** First installed match per language wins; ordering is priority. */
 export const LSP_SERVERS: readonly LspServer[] = [
   { languages: ["rust"], command: "rust-analyzer", args: [], languageId: "rust" },
   { languages: ["cpp", "c"], command: "clangd", args: ["--background-index"], languageId: "cpp" },
@@ -36,14 +36,18 @@ function resolveCommand(cmd: string): string | null {
   return abs;
 }
 
-/** Pick the highest-priority installed server that covers at least one of the
- * languages present in the repo, with `command` resolved to an absolute path.
- * Returns null if none is installed. */
-export function pickServer(languagesPresent: Set<string>): LspServer | null {
+/** Pick servers for all covered languages, with absolute commands. Each language
+ * is assigned once, and a server shared by several languages is started once. */
+export function pickServers(languagesPresent: Set<string>): LspServer[] {
+  const remaining = new Set(languagesPresent);
+  const servers: LspServer[] = [];
   for (const s of LSP_SERVERS) {
-    if (!s.languages.some((l) => languagesPresent.has(l))) continue;
+    const languages = s.languages.filter((l) => remaining.has(l));
+    if (!languages.length) continue;
     const abs = resolveCommand(s.command);
-    if (abs) return { ...s, command: abs };
+    if (!abs) continue;
+    servers.push({ ...s, languages, command: abs });
+    for (const language of languages) remaining.delete(language);
   }
-  return null;
+  return servers;
 }

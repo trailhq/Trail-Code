@@ -333,7 +333,7 @@ export async function buildGraph(
     const { enrichWithLsp } = await import("./lsp/enrich.js");
     const r = await enrichWithLsp(graph, root);
     graph.meta.edgeCount = graph.edges.length;
-    opts.onProgress?.({ phase: "enrich", index: r.added, total: r.queried, file: `lsp:${r.server ?? "none"}` });
+    opts.onProgress?.({ phase: "enrich", index: r.added, total: r.queried, file: `lsp:${r.servers.join(", ") || "none"}` });
   }
 
   const graphPath = writeGraph(graph, outDir);
