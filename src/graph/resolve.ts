@@ -34,6 +34,35 @@ const PY_CTOR_KINDS: Kind[] = ["class"];
  * implicit-self widening) have found nothing. */
 const SWIFT_EXT = /\.swift$/i;
 const SWIFT_CTOR_KINDS: Kind[] = ["class", "struct", "enum"];
+/** Kotlin is Swift's case again — `Mailer(host = "smtp")` is an ordinary call node with
+ * no `new` to mark it — and it has free functions too, so it takes the same fallback
+ * rather than Java's outright widening. Without it a DI-heavy backend loses most of its
+ * coupling: measured on a 717-file Kotlin monorepo (#387), a service class constructed in
+ * a Koin module and instantiated five times in its integration test reported `no indexed
+ * callers`, while the free functions in the same package resolved 51 call sites.
+ *
+ * `class` alone, unlike Swift's three kinds. `data class`, `object` and `companion
+ * object` are that kind already (see extract.ts's KOTLIN_KINDS and describeKotlin), so it
+ * covers construction. The two kinds left out are left out on measured grounds, not
+ * because the language forbids them:
+ *   - `enum`: an enum class's constructor IS private in Kotlin, so `Color(…)` cannot be
+ *     written from outside — this one really is unreachable.
+ *   - `interface`: this one is reachable in principle. A `fun interface` is SAM-converted
+ *     by writing `Action { … }`, which is an ordinary `call_expression`, and since Kotlin
+ *     1.6 an `annotation class` (also kind "interface" here) can be instantiated. It is
+ *     excluded because tree-sitter-kotlin@0.3.8 cannot parse `fun interface` at all — it
+ *     yields an ERROR node, so no such interface becomes a node to resolve against — and
+ *     admitting the kind today would widen what an unresolvable bare call can land on
+ *     while buying nothing. Worth revisiting if that grammar gap closes.
+ *
+ * And this is a fallback, so it inherits the fallback's imprecision honestly: `class` also
+ * covers `object`, where `Factory()` may be an `operator fun invoke` rather than a
+ * constructor, and a local `val Mailer = factory; Mailer()` shadows the type it names.
+ * Python and Swift already make that trade above; this one is no tighter. What keeps it
+ * safe is the ordering — a real function of that name resolves first — and resolveName's
+ * unique-match rule, which drops the ambiguous rather than picking. */
+const KOTLIN_EXT = /\.kts?$/i;
+const KOTLIN_CTOR_KINDS: Kind[] = ["class"];
 
 /**
  * Languages whose symbols can genuinely reach each other. A call edge may not
@@ -329,6 +358,9 @@ export function resolveEdges(
       }
       if (!hit && SWIFT_EXT.test(e.file)) {
         hit = resolveName(e.name!, e.file, SWIFT_CTOR_KINDS, perFileName, globalName);
+      }
+      if (!hit && KOTLIN_EXT.test(e.file)) {
+        hit = resolveName(e.name!, e.file, KOTLIN_CTOR_KINDS, perFileName, globalName);
       }
       if (hit) add(e.source, hit.id, "calls", hit.confidence); // drop unresolved calls (too noisy)
     }
