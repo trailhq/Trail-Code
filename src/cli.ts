@@ -490,7 +490,7 @@ grouped(program.command("build"), GROUP.setup)
   .option("--json", "with --check: output the drift as JSON")
   .option("--deep", "run the LLM pass: concept nodes (graft/*.md) + per-symbol summary/crux")
   .option("-e, --extensions <exts...>", 'code extensions to include (e.g. ".ts" ".py"); an extension with no parser is ignored with a warning that lists the supported set')
-  .option("-j, --concurrency <n>", "files summarized in parallel during --deep (default 5)")
+  .option("-j, --concurrency <n>", "LLM calls in parallel during --deep (summaries, synthesis batches, crux; default 5)")
   .option("--no-reuse", "re-parse every file instead of replaying unchanged ones from the extraction cache")
   .option("--lsp", "add compiler-grade call edges via a language server if one is installed (opt-in, slower; e.g. rust-analyzer, clangd)")
   .option("--allow-partial", "with --deep: exit 0 even when some files' summaries failed (default: a degraded meaning tier exits 1)")
@@ -662,10 +662,13 @@ grouped(program.command("build"), GROUP.setup)
       const c = await engine.init(dir, {
         extensions: opts.extensions,
         onlyDirs,
-        onProgress: ({ phase, index, total, file }) =>
-          process.stderr.write(
-            `\r${phase === "summarize" ? "reading" : "writing"} concepts ${index + 1}/${total}: ${file.slice(0, 40).padEnd(40)}`,
-          ),
+        concurrency,
+        onProgress: ({ phase, index, total, file }) => {
+          const line = `${phase === "summarize" ? "reading" : "writing"} concepts ${index + 1}/${total}: ${file.slice(0, 40).padEnd(40)}`;
+          // Synthesis already prints newline-terminated batch results; a \r
+          // spinner would share that line and scramble under concurrency.
+          process.stderr.write(phase === "synthesize" ? `${line}\n` : `\r${line}`);
+        },
       }).catch((err: unknown) => {
         // Only the stage and a code enum; the message stays on this machine.
         track("build_failed", { stage: "summarize", code: errorCode(err) }, { repo: buildRoot });

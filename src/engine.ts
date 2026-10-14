@@ -31,6 +31,8 @@ export interface InitOptions {
   extensions?: string[];
   /** Repo-relative directory prefixes to limit the concept pass (`--only-dir`). */
   onlyDirs?: string[];
+  /** Max LLM calls in parallel for summaries and synthesis batches. */
+  concurrency?: number;
   /** Progress callback for long builds. */
   onProgress?: (info: BuildProgress) => void;
 }
@@ -69,6 +71,7 @@ export class Graft {
       model: this.modelLabel(),
       summarizer: this.summarizer(),
       synthesizer: this.synthesizer(),
+      concurrency: opts.concurrency,
       onProgress: opts.onProgress,
     });
   }

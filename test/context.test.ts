@@ -670,3 +670,70 @@ test("#129: synthesis logs per-batch counts and warns when a multi-batch run has
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+const synthBlob = (name: string) => `export const ${name} = 1;\n// ${"x".repeat(30_000)}\n`;
+
+test("synthesis batches overlap when concurrency > 1", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ctx-synth-j-"));
+  try {
+    writeFileSync(join(dir, "a.ts"), synthBlob("a"));
+    writeFileSync(join(dir, "b.ts"), synthBlob("b"));
+    let inflight = 0;
+    let peak = 0;
+    const synthesizer: Synthesizer = {
+      async synthesize(files) {
+        inflight++;
+        peak = Math.max(peak, inflight);
+        await new Promise((r) => setTimeout(r, 40));
+        inflight--;
+        return files.map((f) => ({
+          name: f.path,
+          type: "file",
+          summary: "s",
+          sources: [f.path],
+          links: [],
+        }));
+      },
+    };
+    const r = await buildContext(dir, {
+      model: "fake",
+      summarizer: new PassthroughSummarizer(),
+      synthesizer,
+      concurrency: 2,
+    });
+    assert.ok(r.batches > 1);
+    assert.ok(peak > 1, `expected overlapping synthesis, peak ${peak}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a throwing synthesis batch does not drop siblings", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ctx-synth-err-"));
+  try {
+    writeFileSync(join(dir, "a.ts"), synthBlob("a"));
+    writeFileSync(join(dir, "b.ts"), synthBlob("b"));
+    const synthesizer: Synthesizer = {
+      async synthesize(files) {
+        if (files.some((f) => f.path === "a.ts")) throw new Error("boom");
+        return files.map((f) => ({
+          name: f.path,
+          type: "file",
+          summary: "s",
+          sources: [f.path],
+          links: [],
+        }));
+      },
+    };
+    const r = await buildContext(dir, {
+      model: "fake",
+      summarizer: new PassthroughSummarizer(),
+      synthesizer,
+      concurrency: 2,
+    });
+    assert.ok(r.errors.some((e) => /batch \d+: boom/.test(e)));
+    assert.ok(r.nodes >= 1, "the surviving batch must still be written");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

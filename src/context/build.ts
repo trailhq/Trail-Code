@@ -70,7 +70,7 @@ export interface BuildOptions {
   model: string;
   summarizer: Summarizer;
   synthesizer: Synthesizer;
-  /** Files summarized in parallel during phase 1. Default 8. Raised via `graft build -j`. */
+  /** LLM calls in parallel for file summaries and synthesis batches. Default 8. Raised via `graft build -j`. */
   concurrency?: number;
   onProgress?: (info: BuildProgress) => void;
 }
@@ -186,7 +186,8 @@ export async function buildContext(dir: string, opts: BuildOptions): Promise<Bui
   // not attempted. This pass is where #127's 1,617 doomed calls were spent, one per
   // file, before the build exited 0.
   const gate = new LlmFailureGate();
-  const work = await mapWithConcurrency(files, Math.max(1, opts.concurrency ?? 8), async (file, i): Promise<FileWork | undefined> => {
+  const limit = Math.max(1, opts.concurrency ?? 8);
+  const work = await mapWithConcurrency(files, limit, async (file, i): Promise<FileWork | undefined> => {
     const rel = relPosix(root, file);
     opts.onProgress?.({ phase: "summarize", index: i, total: files.length, file: rel });
     let code: string;
@@ -244,25 +245,50 @@ export async function buildContext(dir: string, opts: BuildOptions): Promise<Bui
   const batches = batchBySize(summarized, BATCH_CHAR_BUDGET);
   result.batches = batches.length;
 
-  const synthNodes: SynthNode[] = [];
-  for (let b = 0; b < batches.length; b++) {
-    opts.onProgress?.({ phase: "synthesize", index: b, total: batches.length, file: `batch ${b + 1}` });
-    const key = batchKey(batches[b], hashByPath);
+  // Detach from the CLI's \r summarize spinner. Synthesis progress is a
+  // full line (start) plus a full line (result) so concurrent batches
+  // cannot share a carriage-return.
+  process.stderr.write("\n");
+  const synthGate = new LlmFailureGate();
+  const batchNodes = await mapWithConcurrency(batches, limit, async (batch, b) => {
+    opts.onProgress?.({
+      phase: "synthesize",
+      index: b,
+      total: batches.length,
+      file: `batch ${b + 1}`,
+    });
+    const key = batchKey(batch, hashByPath);
     let nodes = cache.synth[key];
     // An empty array is a miss, not a hit: caching [] made a silent empty
     // synthesis permanent, the same trap #177 closed for the meaning pass (#129).
     const cached = Array.isArray(nodes) && nodes.length > 0;
     if (!cached) {
-      nodes = await opts.synthesizer.synthesize(batches[b]);
-      if (nodes.length > 0) cache.synth[key] = nodes;
-      else delete cache.synth[key];
+      if (synthGate.stopped) {
+        synthGate.skip();
+        nodes = [];
+      } else {
+        try {
+          nodes = await opts.synthesizer.synthesize(batch);
+          if (nodes.length > 0) cache.synth[key] = nodes;
+          else delete cache.synth[key];
+          maybeFlush();
+          synthGate.succeeded();
+        } catch (err) {
+          const message = errMsg(err);
+          result.errors.push(`batch ${b + 1}: ${message}`);
+          synthGate.record(message);
+          nodes = [];
+        }
+      }
     }
     const links = nodes.reduce((n, node) => n + node.links.length, 0);
     console.error(
       `  synthesis batch ${b + 1}/${batches.length}: ${nodes.length} nodes, ${links} links${cached ? " (cached)" : ""}`,
     );
-    synthNodes.push(...nodes);
-  }
+    return nodes;
+  });
+  const synthNodes = batchNodes.flat();
+  if (synthGate.fatal) result.fatal ??= synthGate.fatal;
   // Drop cache entries for batches we no longer produce, so it can't grow forever.
   // Skip empty arrays so a failed batch is retried on the next --deep, not frozen.
   cache.synth = Object.fromEntries(
