@@ -20,6 +20,7 @@ import { contextDirFor, ensureGitignored, ensureSearchable } from "../context/no
 import { extractFile, languageLabelOf, languageOf, type RawEdge } from "./extract.js";
 import { extractGeneric, genericLangOf, warmGenericGrammars } from "./generic.js";
 import { containerLangOf, extractContainer, warmContainerGrammars } from "./container.js";
+import { parseJobsInWorkers, parseWorkerCount, type ParseJob, type ParseOutcome } from "./parse-pool.js";
 import { contentHash } from "../util/id.js";
 import { relPosix } from "../util/paths.js";
 import { readSourceFile } from "../util/source.js";
@@ -43,6 +44,22 @@ import type { GraphV1, Kind, NodeV1, Relation, ScopeV1 } from "./types.js";
 import type { CruxSummarizer } from "../ai/crux.js";
 
 export { listSourceFiles } from "./source-files.js";
+
+/** One file's settled parse-phase result, parked at its list index until the
+ * ordered merge. Every branch of the old sequential loop maps to exactly one
+ * slot shape here; the merge replays them in file order. */
+interface ParseSlot {
+  entry: ExtractEntry;
+  /** Recoverable read/parse failure — pushed into `errors[]` at merge time. */
+  error?: string;
+  countedAs: "parsed" | "reused" | "neither";
+  addSource: boolean;
+  /** Depth-tier label added to `langs` only when the old loop also added it. */
+  addLang: boolean;
+  /** Decoded bytes, for `sources`. Kept on the slot (never sent to workers and
+   * back) so the merge needs no round-trip. */
+  source?: string;
+}
 
 /** Minimum non-file node count for a discovered sub-scope to stand on its own
  * (over-split guard 3). A scope with fewer nodes than this is folded into the
@@ -202,9 +219,66 @@ export async function buildGraph(
     new Set(files.map((f) => containerLangOf(f.abs)?.name).filter((n): n is string => !!n)),
   );
 
+  // The parse phase keeps the sequential loop's exact per-file semantics (read +
+  // hash every file, replay cache hits, extract misses) but splits the work in
+  // three passes so the cache-miss extraction can run across worker threads:
+  //   1. classify + read + hash + replay (main thread — cheap, order-stable)
+  //   2. extract the misses on the pool (`parse-pool.ts`), in parallel
+  //   3. merge every per-file slot back IN FILE ORDER, so nodes/edges/entries
+  //      come out byte-identical to the single-threaded loop no matter which
+  //      worker finished first (the invariant `test/graph-incremental.test.ts`
+  //      pins down).
+  // `GRAFT_PARSE_CONCURRENCY=1` (or fewer misses than workers) skips the pool
+  // and runs pass 2 inline, preserving the old single-threaded behaviour.
+  const slots: (ParseSlot | undefined)[] = new Array(files.length);
+  const labels: string[] = new Array(files.length);
+  const jobs: ParseJob[] = [];
+  // Cache-miss files keep their already-read bytes + hash on the main thread so
+  // the inline fallback needs no second read and the merge can still register
+  // `sources` without a worker round-trip.
+  const missSources: (string | undefined)[] = new Array(files.length);
+  const missHashes: (string | undefined)[] = new Array(files.length);
+
+  const freshSlot = (f: (typeof files)[number], outcome: ParseOutcome, source?: string): ParseSlot => {
+    if (outcome.status === "unreadable") {
+      // Recorded with the stat we have so the freshness probe's fast path doesn't
+      // report the file as new on every single query.
+      return {
+        entry: { size: f.size, mtimeMs: f.mtimeMs, hash: "", nodes: [], rawEdges: [], error: outcome.error },
+        error: outcome.error,
+        countedAs: "neither",
+        addSource: false,
+        addLang: false,
+      };
+    }
+    if (outcome.status === "encoding-skip") {
+      return {
+        entry: { size: f.size, mtimeMs: f.mtimeMs, hash: "", nodes: [], rawEdges: [] },
+        countedAs: "neither",
+        addSource: false,
+        addLang: false,
+      };
+    }
+    if (outcome.status === "parse-error") {
+      return {
+        entry: { size: f.size, mtimeMs: f.mtimeMs, hash: outcome.hash, nodes: [], rawEdges: [], error: outcome.error },
+        error: outcome.error,
+        countedAs: "parsed",
+        addSource: false,
+        addLang: false,
+      };
+    }
+    return {
+      entry: { size: f.size, mtimeMs: f.mtimeMs, hash: outcome.hash, nodes: outcome.nodes, rawEdges: outcome.rawEdges },
+      countedAs: "parsed",
+      addSource: true,
+      addLang: true,
+      source,
+    };
+  };
+
   files.forEach((f, i) => {
     const rel = f.rel;
-    opts.onProgress?.({ phase: "parse", index: i, total: files.length, file: rel });
     // Depth tier (hand-written, native grammar) if a language claims the file;
     // otherwise the breadth tier (generic tags.scm over a WASM grammar).
     const lang = languageOf(f.abs);
@@ -214,6 +288,7 @@ export async function buildGraph(
     const container = lang ? null : containerLangOf(f.abs);
     const generic = lang || container ? null : genericLangOf(f.abs);
     const label = languageLabelOf(f.abs) ?? container?.name ?? generic?.name ?? "unknown";
+    labels[i] = label;
     const cached = priorExtract.files[rel];
 
     // Every file is read and hashed, every build — only the *parse* is memoized.
@@ -230,52 +305,123 @@ export async function buildGraph(
       source = readSourceFile(f.abs);
     } catch (err) {
       const message = `${rel}: ${err instanceof Error ? err.message : String(err)}`;
-      errors.push(message);
-      // Record it anyway (with the stat we do have) so the freshness probe's
-      // fast path doesn't report this file as new on every single query.
-      entries[rel] = { size: f.size, mtimeMs: f.mtimeMs, hash: "", nodes: [], rawEdges: [], error: message };
+      slots[i] = {
+        entry: { size: f.size, mtimeMs: f.mtimeMs, hash: "", nodes: [], rawEdges: [], error: message },
+        error: message,
+        countedAs: "neither",
+        addSource: false,
+        addLang: false,
+      };
       return;
     }
     if (source === null) {
       // Unsupported encoding (UTF-16BE) — a skip, never an error: recorded with
       // an empty entry so the freshness probe doesn't treat it as new every run.
-      entries[rel] = { size: f.size, mtimeMs: f.mtimeMs, hash: "", nodes: [], rawEdges: [] };
+      slots[i] = {
+        entry: { size: f.size, mtimeMs: f.mtimeMs, hash: "", nodes: [], rawEdges: [] },
+        countedAs: "neither",
+        addSource: false,
+        addLang: false,
+      };
       return;
     }
 
     const hash = contentHash(source);
     if (cached && hash === cached.hash) {
-      entries[rel] = { ...cached, size: f.size, mtimeMs: f.mtimeMs };
-      sources.set(rel, source);
-      reused++;
-      if (cached.error) {
-        errors.push(cached.error); // this file failed to parse last time too
-        return;
-      }
-      nodes.push(...cached.nodes);
-      rawEdges.push(...cached.rawEdges);
-      langs.add(label);
+      slots[i] = {
+        entry: { ...cached, size: f.size, mtimeMs: f.mtimeMs },
+        source,
+        countedAs: "reused",
+        addSource: true,
+        addLang: !cached.error,
+        error: cached.error,
+      };
       return;
     }
 
-    parsed++;
-    try {
-      const { nodes: fileNodes, rawEdges: fileEdges } = lang
-        ? extractFile(rel, source, lang)
-        : container
-          ? extractContainer(rel, source, container)
-          : extractGeneric(rel, source, generic!.name);
-      nodes.push(...fileNodes);
-      rawEdges.push(...fileEdges);
-      sources.set(rel, source);
-      langs.add(label);
-      entries[rel] = { size: f.size, mtimeMs: f.mtimeMs, hash, nodes: fileNodes, rawEdges: fileEdges };
-    } catch (err) {
-      const message = `${rel}: parse failed — ${err instanceof Error ? err.message : String(err)}`;
-      errors.push(message);
-      entries[rel] = { size: f.size, mtimeMs: f.mtimeMs, hash, nodes: [], rawEdges: [], error: message };
-    }
+    missSources[i] = source;
+    missHashes[i] = hash;
+    jobs.push({
+      index: i,
+      rel,
+      abs: f.abs,
+      size: f.size,
+      mtimeMs: f.mtimeMs,
+      tier: lang ? "file" : container ? "container" : "generic",
+      lang: lang ?? undefined,
+      container: container ?? undefined,
+      generic: generic ?? undefined,
+    });
   });
+
+  if (jobs.length > 0) {
+    // Reported on completion so the counter climbs monotonically under
+    // concurrency (same convention as the crux pass).
+    let done = 0;
+    if (parseWorkerCount(jobs.length) > 1) {
+      const results = await parseJobsInWorkers(jobs, (rel) => {
+        // Reported on completion so the counter climbs monotonically under
+        // concurrency (same convention as the crux pass).
+        opts.onProgress?.({ phase: "parse", index: done++, total: files.length, file: rel });
+      });
+      for (const job of jobs) {
+        const outcome = results.get(job.index)?.outcome;
+        if (!outcome) {
+          // A worker vanished without answering for this file — fail loudly rather
+          // than silently indexing a repo that is missing files.
+          throw new Error(`parse pool returned no result for ${job.rel}`);
+        }
+        slots[job.index] = freshSlot(files[job.index], outcome, missSources[job.index]);
+      }
+    } else {
+      // Inline fallback: identical per-file behaviour to the pre-pool loop.
+      for (const job of jobs) {
+        const source = missSources[job.index]!;
+        const hash = missHashes[job.index]!;
+        opts.onProgress?.({ phase: "parse", index: done++, total: files.length, file: job.rel });
+        try {
+          const { nodes: fileNodes, rawEdges: fileEdges } =
+            job.tier === "file" && job.lang !== undefined
+              ? extractFile(job.rel, source, job.lang)
+              : job.tier === "container" && job.container !== undefined
+                ? extractContainer(job.rel, source, job.container)
+                : extractGeneric(job.rel, source, job.generic!.name);
+          slots[job.index] = freshSlot(
+            files[job.index],
+            { status: "ok", hash, nodes: fileNodes, rawEdges: fileEdges },
+            source,
+          );
+        } catch (err) {
+          const message = `${job.rel}: parse failed — ${err instanceof Error ? err.message : String(err)}`;
+          slots[job.index] = freshSlot(files[job.index], {
+            status: "parse-error",
+            hash,
+            nodes: [],
+            rawEdges: [],
+            error: message,
+          });
+        }
+      }
+    }
+  }
+
+  // Merge pass — strictly in file order, replicating the sequential loop's
+  // push/set/count behaviour for every slot kind. A slot's `entry.nodes` is
+  // exactly what its branch used to push (cache-hit replays carry the cached
+  // nodes; error/skip entries carry none).
+  for (let i = 0; i < files.length; i++) {
+    const slot = slots[i];
+    if (!slot) continue;
+    const rel = files[i].rel;
+    if (slot.error) errors.push(slot.error);
+    if (slot.countedAs === "reused") reused++;
+    else if (slot.countedAs === "parsed") parsed++;
+    if (slot.addSource && slot.source !== undefined) sources.set(rel, slot.source);
+    if (slot.addLang) langs.add(labels[i]);
+    nodes.push(...slot.entry.nodes);
+    rawEdges.push(...slot.entry.rawEdges);
+    entries[rel] = slot.entry;
+  }
 
   // Persist the memo BEFORE enrichment, because `enrichGraph` mutates these very
   // node objects (summary/crux/summary_state) and the cache must only ever hold
