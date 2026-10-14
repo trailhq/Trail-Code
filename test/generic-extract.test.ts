@@ -348,6 +348,53 @@ test("Dart file-level skeleton lists the API, not function-body locals (#134)", 
   );
 });
 
+// #293 remainder: .glsl is in tree-sitter-wasm; no tags.scm, so the walker
+// fallback must still mint struct/function symbols so skeleton is not empty.
+// .gd is #299 — do not register gdscript here.
+const GLSL = `struct Probe {
+  vec3 origin;
+  float radius;
+};
+
+float march(vec3 p) {
+  return length(p);
+}
+
+void main() {
+  float d = march(vec3(0.0));
+}
+`;
+
+test("genericLangOf routes .glsl to the breadth tier (#293)", () => {
+  assert.equal(genericLangOf("shaders/cell.glsl")?.name, "glsl");
+});
+
+test("GLSL struct and functions become symbols without a tags query (#293)", async () => {
+  await warmGenericGrammars(["glsl"]);
+  assert.ok(isWarm("glsl"), "glsl grammar should warm");
+  const { nodes, rawEdges } = extractGeneric("shaders/cell.glsl", GLSL, "glsl");
+  const symbols = nodes.filter((n) => n.kind !== "file");
+  const byName = new Map(symbols.map((n) => [n.name, n]));
+
+  assert.equal(byName.get("Probe")?.kind, "struct", "Probe is a struct");
+  assert.equal(byName.get("march")?.kind, "function", "march is a function");
+  assert.equal(byName.get("main")?.kind, "function", "main is a function");
+  assert.equal(rawEdges.length, 0, "no tags.scm → symbols only, no call edges");
+});
+
+test("GLSL file-level skeleton lists the shader API (#293)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "graft-glsl-"));
+  mkdirSync(join(dir, "shaders"));
+  writeFileSync(join(dir, "shaders", "cell.glsl"), GLSL);
+
+  await buildGraph(dir, { reuse: false });
+  const r = skeleton(dir, "shaders/cell.glsl");
+  const names = r.entries.map((e) => e.name);
+  for (const want of ["Probe", "march", "main"]) {
+    assert.ok(names.includes(want), `skeleton includes ${want} (got ${names.join(", ")})`);
+  }
+});
+
 // #139: tree-sitter-wasm 1.1.4's PHP grammar throws `memory access out of bounds`
 // on heredoc/nowdoc, and extractGeneric swallows that into a file-only result.
 // PHP is depth-tier now (.php is not claimed by the breadth registry), so this
