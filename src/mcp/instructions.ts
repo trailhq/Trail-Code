@@ -42,18 +42,18 @@ export function toolSearchQuery(prefix = `mcp__${brand()}__`): string {
 /** Under trail, the same text with trail's tool names (see brand.ts `inBrand`). */
 export function mcpInstructions(): string {
   return inBrand([
-    'This repo is indexed by graft: a prebuilt graph of every symbol, its file:line',
+    'The graph maps symbols in indexed files, their file:line',
     'span, and who calls what. Prefer these tools over grep/read — one call usually',
     'replaces several file reads.',
     '',
     `**If these tools are deferred (names shown, schemas withheld), load them all in ONE lookup:** ToolSearch "${toolSearchQuery()}" — one round trip for the whole session. Never load them one at a time.`,
     '',
     '- graft_find_code — "how does X work" / "where is Y": ranked hits, code inlined.',
-    '- graft_find_all — when you need EVERY occurrence; find_code is top-N and misses some.',
+    '- graft_find_all — EVERY occurrence in indexed files; find_code is top-N.',
     '- graft_trace_calls — who calls it, what it calls, blast radius before a rename.',
     '- graft_file_api — a file\'s whole API in ~200 tokens.',
     '- graft_repo_map — orientation in an unfamiliar repo.',
     '',
-    'Results already reflect uncommitted edits — the graph refreshes before each query.',
+    'Results reflect edits and report extension limits. Search other files directly.',
   ].join('\n'));
 }
