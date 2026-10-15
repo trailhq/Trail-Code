@@ -17,6 +17,7 @@ import { setupUncommitted } from "../src/claude/hooks.js";
 import { setupCommitLine } from "../src/notes/notes.js";
 import { ensureRepoTrail, REPO_TRAIL_README } from "../src/notes/repo-trail.js";
 import { hooksShim } from "../src/claude/shim-template.js";
+import { CI_ENV_VARS } from "../src/telemetry/gate.js";
 
 const git = (cwd: string, ...args: string[]) =>
   spawnSync("git", ["-c", "commit.gpgsign=false", "-c", "user.name=T", "-c", "user.email=t@t.test", ...args], { cwd, encoding: "utf8" });
@@ -82,6 +83,27 @@ test("trail init leaves git status with only the shared files, and writes the sk
   assert.ok(existsSync(join(home, ".claude", "skills", "trail", "SKILL.md")));
   assert.equal(existsSync(join(d, ".claude", "skills")), false);
   assert.equal(readFileSync(join(d, ".trail", "hook.cjs"), "utf8"), hooksShim());
+});
+
+test("trail init with telemetry on leaves no graft/ folder behind", () => {
+  // init's first event comes from the past-session read, before anything else
+  // is written: the repo id it mints must land in .trail/cache/, which
+  // .trail/.gitignore keeps out of git, not in a graft/ that nothing ignores.
+  const d = gitRepo("init-telemetry");
+  const home = tmpRepo("init-telemetry-home");
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    HOME: home,
+    USERPROFILE: home,
+    TRAIL_HOME: join(home, ".trail"),
+    GRAFT_POSTHOG_KEY: "phc_test_key",
+    GRAFT_POSTHOG_HOST: "https://127.0.0.1:9",
+  };
+  for (const k of [...CI_ENV_VARS, "DO_NOT_TRACK", "TRAIL_NO_FETCH", "CLAUDECODE", "TRAIL_INVOKED_AS"]) delete env[k];
+  const r = spawnSync(process.execPath, ["--import", "tsx", join(process.cwd(), "src", "bin", "trail.ts"), "init", d, "--agents", "claude", "--no-build", "--no-global"], { encoding: "utf8", env });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(existsSync(join(d, "graft")), false, "no graft/ in a repo on trail");
+  assert.ok(existsSync(join(d, ".trail", "cache", ".cache", "telemetry-repo-id.json")), "the event was queued, with its repo id under .trail/cache/");
 });
 
 test("init over a repo set up the old way moves it: old shims, repo skill and trail's server go", () => {

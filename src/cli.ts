@@ -1512,6 +1512,20 @@ async function runInitCommand(dir: string, opts: InitOptions): Promise<{ ids: st
     const wantClaude = ids.includes("claude");
     const cliPath = fileURLToPath(import.meta.url);
 
+    // Under trail, each repo gets its `.trail/learnings/`, committed with the
+    // code, and its folder in ~/.trail for personal learnings and corrections.
+    // First, before the reads below send their first event: that makes the
+    // repo one on trail, so the event's repo id lands in `.trail/cache/` and
+    // not in a `graft/` that nothing ignores.
+    const notesHome = new Map<string, { created: boolean; dir: string }>();
+    if (TRAIL)
+      for (const target of targets) {
+        const { place } = ensureRepoHome(target);
+        const created = place.git ? ensureRepoTrail(place.checkout) : false;
+        notesHome.set(target, { created, dir: place.git ? place.checkout : place.dir });
+        if (place.git) maybeRefreshBranches(place.checkout);
+      }
+
     // Under trail, with Claude Code picked: what the person kept telling Claude
     // in this repo's past sessions, and what reviewers kept flagging on its
     // merged PRs, read while the rest of init runs and saved as learnings at
@@ -1527,16 +1541,6 @@ async function runInitCommand(dir: string, opts: InitOptions): Promise<{ ids: st
     // Today's output, file by file, behind --verbose. Everything else gets one
     // line per step: the graph, then one per agent.
     const verbose = opts.verbose === true;
-    // Under trail, each repo gets its `.trail/learnings/`, committed with the
-    // code, and its folder in ~/.trail for personal learnings and corrections.
-    const notesHome = new Map<string, { created: boolean; dir: string }>();
-    if (TRAIL)
-      for (const target of targets) {
-        const { place } = ensureRepoHome(target);
-        const created = place.git ? ensureRepoTrail(place.checkout) : false;
-        notesHome.set(target, { created, dir: place.git ? place.checkout : place.dir });
-        if (place.git) maybeRefreshBranches(place.checkout);
-      }
     const reports: WireReport[] = [];
     for (const target of targets) {
       if (verbose && target !== repo) console.error(`\n— ${relative(repo, target)}/`);
