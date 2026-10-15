@@ -57,7 +57,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.122.0",
     "commander": "^15.0.0",
-    "dotenv": "^17.4.2",
+    "dotenv": "^18.0.7",
     "gray-matter": "^4.0.3",
     "openai": "^7.8.0",
     "tree-sitter": "^0.21.1",
