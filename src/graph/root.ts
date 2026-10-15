@@ -1,11 +1,14 @@
 /**
  * Where "here" is when a query names no directory. An agent session — or a plain
  * shell — started in a subdirectory of an indexed repo should still find the
- * graph, so the implicit root is the nearest ANCESTOR holding a graft index:
+ * graph, so the implicit root is the nearest ANCESTOR holding a graft index,
+ * without crossing the current repository boundary:
  * either a repo's own wiring graph (`graft/.graph/wiring.json`) or a workspace
  * parent's children index (`graft/workspace.json`). Nothing indexed anywhere
- * above → the start dir itself, so `graft build` in a fresh repo still means
- * "here" and no command silently retargets a sibling tree.
+ * above → the current repository root (when one exists), otherwise the start
+ * dir itself. The boundary matters for a worktree nested inside another checkout:
+ * walking through its `.git` file would otherwise select the parent checkout's
+ * graph before worktree seeding has a chance to run.
  *
  * Only the IMPLICIT case walks. An explicit `[dir]` argument is taken at face
  * value, and a `--dir` override short-circuits entirely: `contextDirFor` returns
@@ -14,7 +17,7 @@
  * dir that isn't the repo.
  */
 import { existsSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { contextDirFor } from "../context/node-file.js";
 import { wiringPath } from "./write.js";
 import { workspacePath } from "./workspace.js";
@@ -38,6 +41,7 @@ export function nearestGraftRoot(start: string, override?: string): RootResoluti
   let dir = from;
   for (let levels = 0; ; levels++) {
     if (hasGraftIndex(dir)) return { root: dir, levels };
+    if (existsSync(join(dir, ".git"))) return { root: dir, levels };
     const up = dirname(dir);
     if (up === dir) return { root: from, levels: 0 }; // hit the filesystem root, nothing indexed
     dir = up;

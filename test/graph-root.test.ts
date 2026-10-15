@@ -54,6 +54,20 @@ test("the NEAREST root wins — a built child inside a workspace parent, not the
   assert.deepEqual(nearestGraftRoot(deep), { root: child, levels: 1 }, "must stop at the child, not federate at the parent");
 });
 
+test("a fresh nested worktree stops at its own repository boundary (#453)", () => {
+  const main = builtRepo(tmpRepo("root-nested-worktree"));
+  const worktree = join(main, ".claude", "worktrees", "feature");
+  const deep = join(worktree, "src", "foo");
+  mkdirSync(deep, { recursive: true });
+  writeFileSync(join(worktree, ".git"), "gitdir: ../../../../.git/worktrees/feature\n");
+
+  assert.deepEqual(
+    nearestGraftRoot(deep),
+    { root: worktree, levels: 2 },
+    "must not answer from the main checkout's graph before worktree seeding can run",
+  );
+});
+
 test("nothing indexed anywhere above → the start dir, so `build` in a fresh repo still means here", () => {
   const fresh = tmpRepo("root-none");
   const deep = join(fresh, "a", "b");
