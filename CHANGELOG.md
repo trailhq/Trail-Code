@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.23.0
+
+### Changed
+
+- **One shared folder** (#619): `trail init` now shares `.trail/hook.cjs` and
+  one SessionStart line in `.claude/settings.json`. Everything else is
+  personal: `.claude/settings.local.json`, and the skill in `~/.claude`. Repos
+  set up the old way move over by themselves at the next session; commit
+  `.trail/` and `.claude/settings.json` once after that.
+- **The code map lives in `.trail/cache/`** in a repo on trail, kept out of git
+  by `.trail/.gitignore`. An existing `graft/` map is moved there, not rebuilt.
+- **No MCP server for Claude Code.** init stops adding it and removes the one
+  an older init added. Cursor keeps its server.
+- **Overlap shows up after an edit, per function** (#617): a teammate's open
+  branch is mentioned only when you both change the same function, and merged
+  or closed branches no longer count.
+- **A learning's cost counts from where its work began** (#620), not from the
+  start of a long session.
+
+### Fixed
+
+- A fresh `trail init` no longer leaves an untracked `graft/` folder behind.
+
 ## 0.22.1
 
 ### Added
