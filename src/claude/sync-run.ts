@@ -13,7 +13,9 @@ function realBuild(dir: string): void {
   // Mirrors `withContextDirArg` in hooks.ts: a no-op unless GRAFT_DIR is set, so an
   // unconfigured repo's rebuild sees byte-identical argv to before this existed.
   if (process.env.GRAFT_DIR) args.push('--dir', resolveContextDir(dir));
-  execFileSync(process.execPath, args, { cwd: dir, stdio: 'ignore', timeout: 120000 });
+  // hooks.ts starts this file detached, so it has no console on Windows. Without
+  // windowsHide, Windows gives the build a new console window that the user sees.
+  execFileSync(process.execPath, args, { cwd: dir, stdio: 'ignore', timeout: 120000, windowsHide: true });
 }
 
 export function runSync(dir: string, build: (d: string) => void = realBuild): void {
