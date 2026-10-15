@@ -79,7 +79,7 @@
     "@types/node": "^26.1.0",
     "d3-force": "^3.0.0",
     "esbuild": "^0.28.1",
-    "node-gyp": "^12.4.0",
+    "node-gyp": "^13.1.0",
     "tsx": "^4.22.4",
     "typescript": "^6.0.3"
   },
