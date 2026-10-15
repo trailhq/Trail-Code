@@ -2,6 +2,7 @@
  * Filesystem walking used by `init`/`check` to enumerate a repo's source files.
  */
 import { spawnSync } from "node:child_process";
+import { gitEnvForDirectory } from "../util/git-env.js";
 import { existsSync, lstatSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
@@ -191,6 +192,7 @@ function gitVisibleFiles(
     ["ls-files", "-t", "--stage", "--cached", "--others", "--exclude-standard", "-z", "--"],
     {
       cwd: root,
+      env: gitEnvForDirectory(),
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
       maxBuffer: 64 * 1024 * 1024,
@@ -295,6 +297,7 @@ function gitVisibleFilesShallow(root: string, includes?: ReadonlySet<string>): s
     ["ls-files", "--cached", "--others", "--exclude-standard", "-z", "--"],
     {
       cwd: root,
+      env: gitEnvForDirectory(),
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
       maxBuffer: 64 * 1024 * 1024,

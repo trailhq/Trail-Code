@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
@@ -152,4 +152,45 @@ test('unknown method returns -32601', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'graft-mcpsrv2-'));
   const rs = await rpc([{ jsonrpc: '2.0', id: 9, method: 'resources/list' }], dir, 1);
   assert.equal(rs[0].error.code, -32601);
+});
+
+
+test('one MCP server answers concurrent calls from distinct same-repository checkouts', async (t) => {
+  const base = realpathSync.native(mkdtempSync(join(tmpdir(), 'graft-mcpsrv-roots-')));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+  const main = join(base, 'main'); mkdirSync(main);
+  const git = (...args: string[]): string => execFileSync('git', ['-c', 'commit.gpgsign=false', ...args], {
+    cwd: main, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
+      GIT_AUTHOR_NAME: 'graft test', GIT_AUTHOR_EMAIL: 'test@example.invalid',
+      GIT_COMMITTER_NAME: 'graft test', GIT_COMMITTER_EMAIL: 'test@example.invalid' },
+  }).trim();
+  git('init', '-b', 'main');
+  writeFileSync(join(main, '.gitignore'), 'graft/\n');
+  writeFileSync(join(main, 'x.ts'), "export function version() { return 'older-source'; }\n");
+  git('add', '-A'); git('commit', '-m', 'older');
+  const olderHead = git('rev-parse', 'HEAD');
+  const review = join(base, 'review'); git('worktree', 'add', '--detach', review, olderHead);
+  writeFileSync(join(main, 'x.ts'), "export function version() { return 'current-source'; }\n");
+  git('add', 'x.ts'); git('commit', '-m', 'current');
+  const mainHead = git('rev-parse', 'HEAD');
+  await buildGraph(main);
+  const rs = await rpc([
+    { jsonrpc: '2.0', id: 1, method: 'tools/list' },
+    { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'graft_find_all', arguments: { pattern: 'source' } } },
+    { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'graft_find_all', arguments: { pattern: 'source', root: review } } },
+  ], main, 3);
+  assert.equal(rs.length, 3);
+  for (const tool of rs.find((r) => r.id === 1).result.tools) assert.equal(tool.inputSchema.properties.root.type, 'string');
+  for (const [id, marker, absent, root, head] of [
+    [2, 'current-source', 'older-source', main, mainHead],
+    [3, 'older-source', 'current-source', review, olderHead],
+  ] as const) {
+    const answer = rs.find((r) => r.id === id).result;
+    assert.equal(answer.isError, false);
+    const text = answer.content[0].text;
+    assert.ok(text.includes(marker), text); assert.ok(!text.includes(absent), text);
+    const footer = text.slice(text.lastIndexOf('\n[graft] root:') + 1);
+    assert.equal(footer, `[graft] root: ${realpathSync.native(root)} · HEAD: ${head}`);
+  }
 });
