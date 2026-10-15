@@ -7,7 +7,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -39,6 +39,26 @@ test("writeBuildConfig + readBuildConfig round-trip includeDirs", () => {
   assert.equal(buildConfigPath(d), join(d, ".graft", "config.json"));
   assert.equal(existsSync(join(d, "graft", ".cache", "config.json")), false);
   assert.match(readFileSync(join(d, ".gitignore"), "utf8"), /^\/\.graft\/$/m);
+});
+
+test("writeBuildConfig respects GRAFT_NO_GITIGNORE while persisting build choices", () => {
+  const d = fresh();
+  const ignore = join(d, ".gitignore");
+  writeFileSync(ignore, "build/\n");
+  const previous = process.env.GRAFT_NO_GITIGNORE;
+  try {
+    process.env.GRAFT_NO_GITIGNORE = "1";
+    writeBuildConfig(d, { followSubmodules: true });
+    assert.equal(readFileSync(ignore, "utf8"), "build/\n");
+    assert.deepEqual(readBuildConfig(d), { followSubmodules: true });
+
+    process.env.GRAFT_NO_GITIGNORE = "0";
+    writeBuildConfig(d, { followSubmodules: false });
+    assert.match(readFileSync(ignore, "utf8"), /^\/\.graft\/$/m);
+  } finally {
+    if (previous === undefined) delete process.env.GRAFT_NO_GITIGNORE;
+    else process.env.GRAFT_NO_GITIGNORE = previous;
+  }
 });
 
 test("readIncludeDirs turns a persisted list into a Set; an empty persisted list reads as undefined (default behavior)", () => {

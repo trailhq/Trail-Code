@@ -117,6 +117,8 @@ export function buildConfigPath(d: string): string { return join(d, BUILD_CONFIG
 /** Keep local build configuration out of Git without coupling it to the
  * generated graph directory. Best-effort, matching graph-cache ignore setup. */
 function ensureBuildConfigIgnored(d: string): void {
+  const noGitignore = process.env.GRAFT_NO_GITIGNORE;
+  if (noGitignore && noGitignore !== '0' && noGitignore !== 'false') return;
   const path = join(d, '.gitignore');
   let current = '';
   try { current = readFileSync(path, 'utf8'); } catch { /* no .gitignore yet */ }
