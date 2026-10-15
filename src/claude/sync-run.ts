@@ -1,8 +1,20 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, type ExecFileSyncOptions } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { readWiring, computeStats } from './stats.js';
 import { patchStats, releaseLock, resolveContextDir } from './state.js';
 import { graftCliPath } from './paths.js';
+
+/**
+ * Options for the rebuild call. `windowsHide` is load-bearing on Windows: this runs inside the
+ * sync-run child that handleStop spawns *detached*, and a detached process has no console. A
+ * console program started from it without windowsHide is given a brand-new, visible console —
+ * with Windows Terminal as the default terminal, a black window that steals focus for the whole
+ * build, at the end of every turn that edited a file. With stdio 'ignore', windowsHide makes Node
+ * pass CREATE_NO_WINDOW, so the build runs exactly the same, unseen. No-op elsewhere.
+ */
+export function buildSpawnOptions(dir: string): ExecFileSyncOptions {
+  return { cwd: dir, stdio: 'ignore', timeout: 120000, windowsHide: true };
+}
 
 /** MONEY GUARD: plain `graft build` only — structural, $0, offline. Never --deep. */
 function realBuild(dir: string): void {
@@ -13,7 +25,7 @@ function realBuild(dir: string): void {
   // Mirrors `withContextDirArg` in hooks.ts: a no-op unless GRAFT_DIR is set, so an
   // unconfigured repo's rebuild sees byte-identical argv to before this existed.
   if (process.env.GRAFT_DIR) args.push('--dir', resolveContextDir(dir));
-  execFileSync(process.execPath, args, { cwd: dir, stdio: 'ignore', timeout: 120000 });
+  execFileSync(process.execPath, args, buildSpawnOptions(dir));
 }
 
 export function runSync(dir: string, build: (d: string) => void = realBuild): void {

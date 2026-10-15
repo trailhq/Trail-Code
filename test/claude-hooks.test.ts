@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { underGraft, main, lastFileScopeHint, promptAskTimeout } from '../src/claude/hooks.js';
 import { readStats, readSession } from '../src/claude/state.js';
-import { runSync } from '../src/claude/sync-run.js';
+import { runSync, buildSpawnOptions } from '../src/claude/sync-run.js';
 import { savingsLine } from '../src/context/savings.js';
 import { CI_ENV_VARS } from '../src/telemetry/gate.js';
 import { writeStats, emptyStats, acquireLock, resolveContextDir } from '../src/claude/state.js';
@@ -121,6 +121,13 @@ test("runSync's default build passes --dir <resolved> to graft build when GRAFT_
     delete process.env.GRAFT_TEST_CLI;
     delete process.env.GRAFT_DIR;
   }
+});
+
+test("runSync's default build hides its console: the detached sync-run child has none on Windows", () => {
+  const opts = buildSpawnOptions('/repo');
+  assert.equal(opts.windowsHide, true, 'without it Windows opens a visible console window for every background rebuild');
+  assert.equal(opts.stdio, 'ignore');
+  assert.equal(opts.cwd, '/repo');
 });
 
 test('runSync clears syncing even if build throws (money-safe failure)', () => {
