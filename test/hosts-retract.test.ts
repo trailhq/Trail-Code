@@ -32,6 +32,16 @@ function byPath(rs: ReturnType<typeof runRetract>): Map<string, string> {
 
 const BLOCK = '<!-- graft:start -->\n## Graft — old text\nstale guidance\n<!-- graft:end -->';
 
+test('uninstall removes both TOML table families without consuming foreign multiline content', () => {
+  const repo = fresh(); const home = fresh();
+  const foreign = '[mcp_servers.other.env]\nSCRIPT = \'\'\'\n[mcp_servers.trail]\n\n\n[mcp_servers.graft.env]\n\'\'\'\nKEEP = "yes"\n';
+  const path = write(home, '.codex/config.toml', '[mcp_servers.trail]\ncommand = "trail"\n'
+    + foreign + '[mcp_servers.graft.env]\nOLD = "remove"\n[mcp_servers.trail.env]\nOLD = "remove"\n');
+  const result = byPath(runRetract(repo, { apply: true, home }));
+  assert.equal(result.get(path), 'removed');
+  assert.equal(readFileSync(path, 'utf8'), foreign);
+});
+
 // --------------------------------------------------------------------------
 // instruction files
 // --------------------------------------------------------------------------
@@ -334,4 +344,41 @@ test('hosts sharing one path produce a single retraction, not one each', () => {
   const agents = write(d, 'AGENTS.md', `# Notes\n\n${BLOCK}\n`);
   const rs = runRetract(d, { global: false }).filter((r) => r.path === agents);
   assert.equal(rs.length, 1, `AGENTS.md should be queued once, got ${rs.length}`);
+});
+
+// ---------------------------------------------------------------------------
+// Issue #546: retract removes dotted subtables, not just the parent table
+// ---------------------------------------------------------------------------
+
+test('[mcp_servers.graft.env] orphan does not survive retract', () => {
+  const d = fresh();
+  const toml = write(d, join('.grok', 'config.toml'),
+    '[mcp_servers.graft]\ncommand = "npx"\nargs = ["-y","@nanonets/graft","mcp"]\n\n[mcp_servers.graft.env]\nDO_NOT_TRACK = "1"\n\n[mcp_servers.keepme]\ncommand = "y"\n');
+  runRetract(d, { apply: true, global: false });
+  const text = readFileSync(toml, 'utf8');
+  assert.ok(!text.includes('mcp_servers.graft'), 'no graft residue of any depth');
+  assert.ok(text.includes('[mcp_servers.keepme]'), 'foreign table preserved');
+});
+
+test('orphan-only graft subtable is removed by retract', () => {
+  const d = fresh();
+  const toml = write(d, join('.grok', 'config.toml'),
+    '[mcp_servers.other]\ncommand = "x"\n\n[mcp_servers.graft.env]\nDO_NOT_TRACK = "1"\n');
+  runRetract(d, { apply: true, global: false });
+  const text = readFileSync(toml, 'utf8');
+  assert.ok(!text.includes('mcp_servers.graft'), 'orphan gone via uninstall path');
+  assert.ok(text.includes('[mcp_servers.other]'), 'foreign preserved');
+});
+
+test('Codex retract preserves table-looking text inside a foreign multiline string', () => {
+  const repo = fresh(); const home = fresh();
+  const foreign = '[mcp_servers.other.env]\nSCRIPT = \'\'\'\n[mcp_servers.graft.env]\ntext\n\'\'\'\nKEEP = "2"\n';
+  const toml = write(home, join('.codex', 'config.toml'),
+    '[mcp_servers.graft]\ncommand = "graft"\n' + foreign);
+  const result = byPath(runRetract(repo, { apply: true, home }));
+  assert.equal(result.get(toml), 'removed');
+  assert.equal(readFileSync(toml, 'utf8'), foreign);
+  const again = byPath(runRetract(repo, { apply: true, home }));
+  assert.equal(again.get(toml), 'absent', 'string content does not trigger another removal');
+  assert.equal(readFileSync(toml, 'utf8'), foreign);
 });
