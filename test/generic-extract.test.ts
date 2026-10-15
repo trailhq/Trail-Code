@@ -132,6 +132,14 @@ const SNIPPETS: Array<{ lang: string; file: string; src: string; defs: string[];
     src: `let\n  helper = x: x + 1;\nin {\n  greet = name: helper 2;\n  version = "1.0";\n}\n`,
     defs: ["function:greet", "function:helper"], call: ["greet", "helper"],
   },
+  {
+    // Elisp: same "every form is a bare list" shape as Clojure, but calls are
+    // gated (see the dedicated test below) so binding heads aren't mistaken
+    // for call sites.
+    lang: "elisp", file: "a.el",
+    src: `(defun helper () 1)\n\n(defun run () (helper))\n`,
+    defs: ["function:helper", "function:run"], call: ["run", "helper"],
+  },
 ];
 
 for (const s of SNIPPETS) {
@@ -147,6 +155,36 @@ for (const s of SNIPPETS) {
     assert.equal(call?.target, `${s.file}#${s.call[1]}`, `${s.lang}: resolved ${s.call[0]}→${s.call[1]}`);
   });
 }
+
+// Elisp has no dedicated call-node type — every form (a real call, a lambda-list,
+// a `let` binding pair, a bare `cond` clause test) is just a `(list . (symbol) …)`.
+// A same-named function elsewhere in the file turns that ambiguity into a real bug:
+// a `let`-bound (or parameter-bound) local silently becomes a spurious caller of the
+// unrelated function sharing its name. The query gates lambda-list params, let/let*
+// binding heads, and bare cond-clause heads off from @reference.call so this can't
+// happen, while genuine same-named calls elsewhere keep resolving.
+test("breadth tier: elisp — let/lambda-list/cond binding heads are not tagged as calls", async () => {
+  await warmGenericGrammars(["elisp"]);
+  const src =
+    `(defun prefix (x)\n` +          // a function whose name collides with a let-binding below
+    `  (concat "p-" x))\n\n` +
+    `(defun build-path ()\n` +
+    `  (let ((prefix "/usr")\n` +    // binding head "prefix" must NOT call defun prefix
+    `        (bar 2))\n` +
+    `    (cond\n` +
+    `      ((eq bar 2) (concat prefix bar))\n` +
+    `      (t bar))))\n\n` +          // bare clause head "t" must not be tagged a call
+    `(defun helper () 1)\n\n` +
+    `(defun greet () (helper))\n`;    // a genuine call must still resolve
+  const { nodes, rawEdges } = extractGeneric("a.el", src, "elisp");
+  const edges = resolveEdges(nodes, rawEdges);
+
+  const callers = edges.filter((e) => e.relation === "calls" && e.target === "a.el#prefix");
+  assert.deepEqual(callers, [], "the let-bound local 'prefix' must not resolve as a call to defun prefix");
+
+  const genuine = edges.find((e) => e.relation === "calls" && e.source.endsWith("#greet"));
+  assert.equal(genuine?.target, "a.el#helper", "greet still calls helper (gating doesn't break real calls)");
+});
 
 // Structural references the grammar already marks — a supertype (extends), an
 // implemented interface, an object creation — become `references` edges the resolver
