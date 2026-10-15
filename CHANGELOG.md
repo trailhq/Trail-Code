@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.22.1
+
+### Added
+
+- **Teammates without trail still get the learnings** (#611): in a repo with
+  committed `.trail/`, Claude reads the newest learnings, credits the one it
+  used, and then offers once to install trail.
+- **`trail init` lets you tick which learnings to keep**, and says how many
+  sessions each one came from.
+- **`trail init` learns from PR review comments**: things reviewers flagged on
+  2 or more of the last 50 merged PRs become team learnings.
+- **`trail check` flags edits to a teammate's learning.**
+
+### Fixed
+
+- **`trail init` finds Claude Code installed only as a VS Code or Cursor
+  extension**, so it no longer skips past sessions without a word. Run
+  `trail init` again to get the learnings it missed.
+
+### Removed
+
+- The GitHub App's brain build (#613).
+
 ## 0.22.0
 
 graft is now **Trail-code**. The same build ships as two packages:
