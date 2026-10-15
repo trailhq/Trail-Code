@@ -55,7 +55,7 @@
     "node": ">=20"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.122.0",
+    "@anthropic-ai/sdk": "^0.133.0",
     "commander": "^15.0.0",
     "dotenv": "^17.4.2",
     "gray-matter": "^4.0.3",
