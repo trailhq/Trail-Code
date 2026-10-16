@@ -7,7 +7,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { pickServer, LSP_SERVERS } from "../src/graph/lsp/registry.js";
-import { enrichWithLsp } from "../src/graph/lsp/enrich.js";
+import { enrichWithLsp, readinessSample, waitForReadiness } from "../src/graph/lsp/enrich.js";
 import type { GraphV1 } from "../src/graph/types.js";
 
 test("pickServer: no languages present → no server", () => {
@@ -41,4 +41,36 @@ test("enrichWithLsp is a no-op when no server matches the repo's languages", asy
   assert.equal(r.server, null, "no server selected for an unsupported language");
   assert.equal(r.added, 0);
   assert.equal(graph.edges.length, before, "graph edges untouched");
+});
+
+test("readinessSample spreads probes across files and deduplicates paths", () => {
+  const items = Array.from({ length: 20 }, (_, i) => ({ path: `src/file-${i}.ts`, i }));
+  assert.deepEqual(readinessSample(items).map((item) => item.i), [0, 4, 9, 14, 18]);
+
+  const repeated = [
+    { path: "a.ts", i: 0 },
+    { path: "a.ts", i: 1 },
+    { path: "b.ts", i: 2 },
+    { path: "b.ts", i: 3 },
+    { path: "c.ts", i: 4 },
+  ];
+  assert.deepEqual(readinessSample(repeated).map((item) => item.path), ["a.ts", "b.ts", "c.ts"]);
+});
+
+test("waitForReadiness retries until every sample member answers", async () => {
+  let round = 0;
+  const calls = [0, 0];
+  const sleeps: number[] = [];
+  const ready = await waitForReadiness([
+    async () => { calls[0]++; return true; },
+    async () => { calls[1]++; return round > 0; },
+  ], {
+    attempts: 2,
+    delayMs: 25,
+    sleep: async (ms) => { sleeps.push(ms); round++; },
+  });
+
+  assert.equal(ready, true);
+  assert.deepEqual(calls, [2, 2]);
+  assert.deepEqual(sleeps, [25]);
 });
