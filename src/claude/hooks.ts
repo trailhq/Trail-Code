@@ -155,7 +155,7 @@ function graftJson(dir: string, args: string[], timeout: number = CHILD_TIMEOUT_
     // out to the real CLI (which isn't built relative to the TS source under test).
     const cliPath = process.env.GRAFT_TEST_CLI ?? graftCliPath();
     const out = execFileSync(process.execPath, [cliPath, ...args],
-      { cwd: dir, encoding: 'utf8', timeout, stdio: ['ignore', 'pipe', 'ignore'] });
+      { cwd: dir, encoding: 'utf8', timeout, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
     return JSON.parse(out);
   } catch (e: any) {
     // `graft check` exits non-zero when the graph is stale (by design) but still
@@ -517,7 +517,7 @@ export function trackRepoSeen(dir: string, now = Date.now()): void {
     const mark = join(cacheDir(place.checkout), 'trail-repo-seen.json');
     if (now - (readJson<{ at?: number }>(mark)?.at ?? 0) < DAY_MS) return;
     writeJsonAtomic(mark, { at: now }, true);
-    const tracked = execFileSync('git', ['ls-files', '--', '.trail'], { cwd: place.checkout, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 });
+    const tracked = execFileSync('git', ['ls-files', '--', '.trail'], { cwd: place.checkout, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000, windowsHide: true });
     track(
       'repo_seen',
       { trail_committed: String(tracked.trim().length > 0), learnings_bucket: countBucket(learningFiles(place.checkout).length), workspace: String(inWorkspace(place.checkout)) },
@@ -540,7 +540,7 @@ export function trackLearningsCommitted(dir: string): void {
     const place = repoPlace(dir);
     if (!place.git) return;
     const listed = execFileSync('git', ['ls-tree', '-r', '--name-only', 'HEAD', '--', '.trail/learnings'], {
-      cwd: place.checkout, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000,
+      cwd: place.checkout, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000, windowsHide: true,
     });
     const count = listed.split('\n').filter((f) => f.endsWith('.md')).length;
     const mark = join(cacheDir(place.checkout), 'trail-learnings-committed.json');
@@ -569,7 +569,7 @@ export function uncommittedDirective(dir: string, now = Date.now()): string {
     const place = repoPlace(dir);
     if (!place.git) return '';
     const status = execFileSync('git', ['status', '--porcelain', '--untracked-files=all', '--', '.trail/learnings'], {
-      cwd: place.checkout, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000,
+      cwd: place.checkout, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000, windowsHide: true,
     });
     const n = status.split('\n').filter((l) => l.trimEnd().endsWith('.md')).length;
     const setup = setupUncommitted(place.checkout);
@@ -596,7 +596,7 @@ export function uncommittedDirective(dir: string, now = Date.now()): string {
  */
 export function setupUncommitted(checkout: string): boolean {
   if (!existsSync(join(checkout, '.trail', 'hook.cjs'))) return false;
-  const git = (args: string[]) => execFileSync('git', args, { cwd: checkout, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 });
+  const git = (args: string[]) => execFileSync('git', args, { cwd: checkout, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000, windowsHide: true });
   try {
     git(['ls-files', '--error-unmatch', '--', '.trail/hook.cjs']);
   } catch {

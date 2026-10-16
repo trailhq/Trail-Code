@@ -97,7 +97,7 @@ export function buildGraphIfMissing(dir: string, opts: { build?: boolean; cliPat
   try {
     // execArgv carries the loader graft itself was started with (tsx, when run
     // from source), so the child can run a .ts entry point too.
-    execFileSync(process.execPath, [...process.execArgv, opts.cliPath, 'build', '.'], { cwd: dir, stdio: 'inherit', timeout: 300000 });
+    execFileSync(process.execPath, [...process.execArgv, opts.cliPath, 'build', '.'], { cwd: dir, stdio: 'inherit', timeout: 300000, windowsHide: true });
     return true;
   } catch {
     return false;
@@ -255,13 +255,13 @@ function dropServer(path: string, names: string[]): void {
  */
 export function keepOutOfGit(dir: string, rel: string): void {
   try {
-    execFileSync('git', ['check-ignore', '-q', '--', rel], { cwd: dir, stdio: 'ignore' });
+    execFileSync('git', ['check-ignore', '-q', '--', rel], { cwd: dir, stdio: 'ignore', windowsHide: true });
     return; // exit 0: already ignored
   } catch (e) {
     if ((e as { status?: number }).status !== 1) return; // 128: not a git checkout
   }
   try {
-    let exclude = execFileSync('git', ['rev-parse', '--git-path', 'info/exclude'], { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    let exclude = execFileSync('git', ['rev-parse', '--git-path', 'info/exclude'], { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }).trim();
     if (!isAbsolute(exclude)) exclude = join(dir, exclude);
     const line = `/${rel.split('\\').join('/')}`;
     const text = existsSync(exclude) ? readFileSync(exclude, 'utf8') : '';
