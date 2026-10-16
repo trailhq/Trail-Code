@@ -94,6 +94,9 @@ export class GraphView {
   private edgeEls: { path: SVGPathElement; label: SVGTextElement; edge: SimEdge }[] = [];
   private nodeEls: { group: SVGGElement; circle: SVGCircleElement; ring: SVGCircleElement; label: SVGTextElement; badges: SVGGElement | null; node: SimNode }[] = [];
   private view = { x: 0, y: 0, k: 1 };
+  /** True once the pointer moved past DRAG_THRESHOLD_PX since the last pointerdown:
+   * the trailing `click` of a pan is then not a click on empty space. */
+  private panMoved = false;
   private tab: "context" | "code" = "context";
   selected: string | null = null;
   query = "";
@@ -116,7 +119,11 @@ export class GraphView {
     this.svg.appendChild(this.defs);
     this.viewport = el("g", {});
     this.svg.appendChild(this.viewport);
-    this.svg.addEventListener("click", () => this.select(null));
+    // A pan ends in a `click` on the svg too; only a still click on empty space deselects.
+    this.svg.addEventListener("click", () => {
+      if (this.panMoved) { this.panMoved = false; return; }
+      this.select(null);
+    });
   }
 
   private ensureMarkers(): void {
@@ -354,12 +361,17 @@ export class GraphView {
   }
 
   private bindPanZoom(): void {
+    const DRAG_THRESHOLD_PX = 4;
     let panStart: { x: number; y: number } | null = null;
+    let downAt = { x: 0, y: 0 };
     this.svg.addEventListener("pointerdown", (ev) => {
       panStart = { x: ev.clientX - this.view.x, y: ev.clientY - this.view.y };
+      downAt = { x: ev.clientX, y: ev.clientY };
+      this.panMoved = false;
     });
     this.svg.addEventListener("pointermove", (ev) => {
       if (!panStart) return;
+      if (!this.panMoved && Math.hypot(ev.clientX - downAt.x, ev.clientY - downAt.y) > DRAG_THRESHOLD_PX) this.panMoved = true;
       this.view.x = ev.clientX - panStart.x;
       this.view.y = ev.clientY - panStart.y;
       this.applyView();
