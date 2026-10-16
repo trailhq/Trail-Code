@@ -626,9 +626,9 @@ grouped(program.command("build"), GROUP.setup)
         throw err;
       });
       process.stderr.write("\n");
-      console.log(
-        `✓ concepts: ${c.nodes} nodes, ${c.links} links from ${c.files} files (${c.summarized} read, ${c.cached} cached)`,
-      );
+      const conceptLine = `concepts: ${c.nodes} nodes, ${c.links} links from ${c.files} files (${c.summarized} read, ${c.cached} cached)`;
+      if (c.nodes === 0) console.error(`⚠ ${conceptLine}`);
+      else console.log(`✓ ${conceptLine}`);
       for (const e of c.errors) console.error(`✗ ${e}`);
       conceptErrors = c.errors;
       conceptFatal = c.fatal;
