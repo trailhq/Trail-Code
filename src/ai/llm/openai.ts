@@ -219,6 +219,28 @@ export class OpenAIChatModel implements ChatModel {
     return this.client.chat.completions.create(attempt);
   }
 
+  /**
+   * Normalize provider message content to the plain text representation
+   * expected by the rest of Graft. Some OpenAI-compatible providers
+   * (observed with GLM-5.3 hosted on Mistral's platform) return content as
+   * structured content parts, e.g. `[{ type: "text", text: "..." }]`,
+   * instead of a plain string — this path in Graft assumed the latter.
+   */
+  private static contentToText(content: unknown): string {
+    if (typeof content === "string") return content;
+    if (content == null) return "";
+    if (Array.isArray(content)) {
+      return content
+        .filter((part) => part?.type === "text" || typeof part === "string")
+        .map((part) => (typeof part === "string" ? part : (part.text ?? "")))
+        .join("");
+    }
+    // An unrecognized shape is a signal worth surfacing loudly rather than
+    // silently coercing to "" or "[object Object]" — that hides a future
+    // provider format change instead of flagging it.
+    throw new Error(`Unsupported message.content type from provider: ${typeof content}`);
+  }
+
   private fromResponse(
     resp: OpenAI.Chat.Completions.ChatCompletion,
     format: "text" | "json" | "tool",
@@ -237,7 +259,7 @@ export class OpenAIChatModel implements ChatModel {
       }
     };
 
-    let text = msg?.content ?? "";
+    let text = OpenAIChatModel.contentToText(msg?.content);
     let toolCalls: ToolCall[] = rawCalls.map((c) => ({
       id: c.id,
       name: c.function.name,
@@ -258,7 +280,7 @@ export class OpenAIChatModel implements ChatModel {
       stopReason: choice?.finish_reason ?? null,
       assistant: {
         role: "assistant",
-        content: msg?.content ?? "",
+        content: OpenAIChatModel.contentToText(msg?.content),
         toolCalls: toolCalls.length ? toolCalls : undefined,
         providerRaw: { provider: PROVIDER, raw: msg },
       },
