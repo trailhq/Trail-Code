@@ -471,3 +471,74 @@ test("a throwing grammar is a per-file build error, cached as a failure (#139)",
     swapGrammarForTest("rust", prev);
   }
 });
+
+// #198: OCaml is registered in GENERIC_LANGS but had no tags.scm, so the walker
+// minted `let helper x = …` as kind `variable` (`value_definition` matches
+// `(^|_)(val|…)`) and emitted no call edges.
+const OCAML = `let helper x = 1
+
+let rec go x = helper x
+
+let n = 1
+
+module M = struct
+  let wrap x = go x
+end
+
+type t = { n : int }
+`;
+
+test("genericLangOf routes .ml/.mli to the breadth tier", () => {
+  assert.equal(genericLangOf("lib/example.ml")?.name, "ocaml");
+  assert.equal(genericLangOf("lib/example.mli")?.name, "ocaml");
+});
+
+test("OCaml let/let rec/module/type become symbols; call edges resolve; bare lets stay out (#198)", async () => {
+  await warmGenericGrammars(["ocaml"]);
+  assert.ok(isWarm("ocaml"), "ocaml grammar should warm");
+  const { nodes, rawEdges } = extractGeneric("lib/example.ml", OCAML, "ocaml");
+  const symbols = nodes.filter((n) => n.kind !== "file");
+  const kinds = symbols.map((n) => `${n.kind}:${n.name}`).sort();
+  assert.deepEqual(kinds, ["function:go", "function:helper", "function:wrap", "module:M", "type:t"]);
+
+  const edges = resolveEdges(nodes, rawEdges);
+  const calls = edges
+    .filter((e) => e.relation === "calls")
+    .map((e) => `${e.source.split("#")[1]}→${e.target.split("#")[1]}`);
+  assert.ok(calls.includes("go→helper"), `go → helper (got ${calls.join(", ")})`);
+  assert.ok(calls.includes("wrap→go"), `M.wrap → go (got ${calls.join(", ")})`);
+});
+
+test("OCaml mutually recursive functions keep separate symbols and call owners", async () => {
+  await warmGenericGrammars(["ocaml"]);
+  const source = "let rec even n = odd n\nand odd n = even n\n";
+  const { nodes, rawEdges } = extractGeneric("lib/recursive.ml", source, "ocaml");
+  assert.deepEqual(nodes.filter((n) => n.kind === "function").map((n) => n.name).sort(), ["even", "odd"]);
+  const calls = resolveEdges(nodes, rawEdges)
+    .filter((e) => e.relation === "calls")
+    .map((e) => `${e.source.split("#")[1]}→${e.target.split("#")[1]}`).sort();
+  assert.deepEqual(calls, ["even→odd", "odd→even"]);
+});
+
+test("OCaml grouped types and recursive modules retain every binding", async () => {
+  await warmGenericGrammars(["ocaml"]);
+  const source = `type first = int
+and second = string
+
+module rec A : sig val alpha : int -> int end = struct
+  let alpha x = x
+end
+and B : sig val beta : int -> int end = struct
+  let beta x = x
+end
+`;
+  const { nodes } = extractGeneric("lib/groups.ml", source, "ocaml");
+  assert.deepEqual(
+    nodes.filter((n) => n.kind !== "file").map((n) => `${n.kind}:${n.name}`).sort(),
+    ["function:alpha", "function:beta", "module:A", "module:B", "type:first", "type:second"],
+  );
+  assert.equal(nodes.find((n) => n.name === "first")!.span, "L1-L1");
+  assert.equal(nodes.find((n) => n.name === "second")!.span, "L2-L2");
+  assert.equal(nodes.find((n) => n.name === "A")!.span, "L4-L6");
+  assert.equal(nodes.find((n) => n.name === "B")!.span, "L7-L9");
+});
