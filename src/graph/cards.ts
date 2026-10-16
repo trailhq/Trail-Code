@@ -28,6 +28,12 @@ const INDEX_FILE = "INDEX.md";
  * node (same stem as a slug — Laravel `server.php` vs a "Server" concept). */
 const ROOT_CARD_DIR = "_root";
 
+function writeIfChanged(path: string, content: string): void {
+  if (existsSync(path) && readFileSync(path, "utf8") === content) return;
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, content);
+}
+
 export interface CardFileInfo {
   /** Card path relative to the context dir, e.g. "src/ai/providers.md". */
   card: string;
@@ -185,8 +191,7 @@ export function writeCards(graph: GraphV1, outDir: string): CardStats {
     const fileNode = group.find((n) => n.kind === "file");
     const symbols = group.filter((n) => n.kind !== "file");
     const cardPath = cardPathFor(outDir, sourcePath);
-    mkdirSync(dirname(cardPath), { recursive: true });
-    writeFileSync(cardPath, renderCard(sourcePath, fileNode, symbols, concepts.get(sourcePath) ?? []));
+    writeIfChanged(cardPath, renderCard(sourcePath, fileNode, symbols, concepts.get(sourcePath) ?? []));
     written.add(cardPath);
     files.push({ card: relPosix(outDir, cardPath), path: sourcePath, symbols: symbols.length });
   }
@@ -249,7 +254,7 @@ export function writeIndex(outDir: string, files: CardFileInfo[]): void {
     );
   }
 
-  writeFileSync(join(outDir, INDEX_FILE), lines.join("\n"));
+  writeIfChanged(join(outDir, INDEX_FILE), lines.join("\n"));
 }
 
 /** One symbol a concept node covers: its name, kind, and `path:span` pointer. */
@@ -309,7 +314,7 @@ export function writeCovers(graph: GraphV1, outDir: string): number {
 
     // Re-stringify with covers appended last, so re-runs produce a stable diff.
     const { covers: _prev, ...rest } = parsed.data as Record<string, unknown>;
-    writeFileSync(full, matter.stringify(parsed.content, { ...rest, covers }));
+    writeIfChanged(full, matter.stringify(parsed.content, { ...rest, covers }));
     enriched++;
   }
   return enriched;
