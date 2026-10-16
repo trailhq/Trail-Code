@@ -4,13 +4,13 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 import { buildContext } from "../src/context/build.js";
 import { checkContext, indexFreshness, staleBanner } from "../src/context/check.js";
-import { contextDirFor, ensureGitignored, ensureSearchable } from "../src/context/node-file.js";
+import { contextDirFor, ensureGitignored, ensureSearchable, slugify } from "../src/context/node-file.js";
 import { buildGraph } from "../src/graph/build.js";
 import { writeBuildConfig } from "../src/util/state.js";
 import { fakeProviders, PassthroughSummarizer } from "./helpers.js";
@@ -91,6 +91,137 @@ test("check passes immediately after init", async () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("deep builds preserve separate non-Latin concepts and their links across cached rebuilds (#543)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ctx-unicode-concepts-"));
+  const names = ["Доставка сповіщень", "Ізоляція орендарів", "用户认证", "إدارة الحسابات", "Κανόνες πρόσβασης"];
+  try {
+    writeFileSync(join(dir, "concepts.ts"),
+      names.slice(1).map(name => `// [[${names[0]}]] ==depends_on==> [[${name}]]`).join("\n") + "\nexport const value = 1;\n");
+    const result = await buildContext(dir, buildOpts());
+    assert.equal(result.nodes, names.length, "distinct concept names must not collapse into node.md");
+    assert.equal(result.links, names.length - 1);
+    const ctx = join(dir, "graft");
+    const first = JSON.parse(readFileSync(join(ctx, "manifest.json"), "utf8"));
+    assert.equal(new Set(first.nodes.map((n: { slug: string }) => n.slug)).size, names.length);
+    for (const name of names) {
+      const node = first.nodes.find((n: { name: string }) => n.name === name);
+      assert.ok(node, `manifest retains ${name}`);
+      assert.ok(existsSync(join(ctx, `${node.slug}.md`)));
+      assert.deepEqual(node.sources, ["concepts.ts"]);
+    }
+    const cached = await buildContext(dir, buildOpts());
+    assert.equal(cached.nodes, names.length);
+    assert.equal(cached.links, names.length - 1);
+    const second = JSON.parse(readFileSync(join(ctx, "manifest.json"), "utf8"));
+    assert.deepEqual(second.nodes, first.nodes, "cached synthesis retains the same concept identities");
+    assert.equal(checkContext(dir).ok, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("mixed-script concept slugs retain the distinguishing words instead of only URL (#543)", () => {
+  const first = slugify("Канонізація URL і паритет");
+  const second = slugify("Канонічний URL та ключі");
+  assert.notEqual(first, second);
+  assert.equal(slugify("Auth Service"), "auth-service", "ASCII names stay compatible");
+  assert.equal(slugify("Cafe\u0301"), slugify("Café"), "canonical Unicode equivalents share a stable slug");
+});
+
+test("deep builds resolve links using the same canonical Unicode identities as slugs", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ctx-unicode-links-"));
+  try {
+    writeFileSync(join(dir, "concepts.ts"), "export const value = 1;\n");
+    const synthesizer: Synthesizer = {
+      async synthesize() {
+        return [
+          { name: "Service", type: "concept", summary: "Service", sources: ["concepts.ts"], links: [
+            { to: "Cafe\u0301", relation: "uses" },
+            { to: "И\u0306ого API", relation: "uses" },
+          ] },
+          { name: "Café", type: "concept", summary: "Café", sources: ["concepts.ts"], links: [] },
+          { name: "Його API", type: "concept", summary: "Його API", sources: ["concepts.ts"], links: [] },
+        ];
+      },
+    };
+    const opts = { model: "fake", summarizer: new PassthroughSummarizer(), synthesizer };
+    const first = await buildContext(dir, opts);
+    assert.equal(first.nodes, 3);
+    assert.equal(first.links, 2);
+    const content = readFileSync(join(dir, "graft", "service.md"), "utf8");
+    assert.match(content, /\[\[café\]\]/);
+    assert.match(content, /\[\[його-api\]\]/);
+    const cached = await buildContext(dir, opts);
+    assert.equal(cached.links, 2);
+    assert.equal(readFileSync(join(dir, "graft", "service.md"), "utf8"), content);
+    assert.equal(checkContext(dir).ok, true);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("an ASCII primary of a formerly merged Unicode concept gets a backup, then retains new notes", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ctx-unicode-ascii-primary-"));
+  try {
+    const names = ["URL", "Канонізація URL і паритет"];
+    writeFileSync(join(dir, "concepts.ts"), names.map(name => `// [[${name}]]`).join("\n") + "\nexport const value = 1;\n");
+    await buildContext(dir, buildOpts());
+    const ctx = join(dir, "graft");
+    const legacy = readFileSync(join(ctx, "url.md"), "utf8") + "\nMERGED_THEMES_NOTE\n";
+    writeFileSync(join(ctx, "url.md"), legacy);
+    rmSync(join(ctx, `${slugify(names[1])}.md`));
+    const manifestPath = join(ctx, "manifest.json");
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    delete manifest.slugPolicy;
+    manifest.nodes = manifest.nodes.filter((node: { slug: string }) => node.slug === "url");
+    writeFileSync(manifestPath, JSON.stringify(manifest));
+
+    await buildContext(dir, buildOpts());
+    assert.doesNotMatch(readFileSync(join(ctx, "url.md"), "utf8"), /MERGED_THEMES_NOTE/);
+    const backups = readdirSync(join(ctx, ".cache", "slug-upgrades"));
+    assert.equal(backups.length, 1);
+    assert.equal(readFileSync(join(ctx, ".cache", "slug-upgrades", backups[0]), "utf8"), legacy);
+    assert.equal(JSON.parse(readFileSync(manifestPath, "utf8")).slugPolicy, "unicode-nfc");
+
+    const modern = readFileSync(join(ctx, "url.md"), "utf8") + "\nCURRENT_URL_NOTE\n";
+    writeFileSync(join(ctx, "url.md"), modern);
+    await buildContext(dir, buildOpts());
+    assert.equal(readFileSync(join(ctx, "url.md"), "utf8"), modern, "notes authored after upgrade belong to the ASCII concept");
+    assert.deepEqual(readdirSync(join(ctx, ".cache", "slug-upgrades")), backups);
+    assert.equal(checkContext(dir).ok, true);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+for (const names of [["Café"], ["Café", "Cafê"], ["Café", "Caf"]]) {
+  const ambiguous = names.length > 1;
+  test(`Unicode slug upgrade preserves legacy notes for ${names.join(" / ")}`, async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ctx-unicode-upgrade-"));
+    try {
+      writeFileSync(join(dir, "concepts.ts"), names.map(name => `// [[${name}]]`).join("\n") + "\nexport const value = 1;\n");
+      await buildContext(dir, buildOpts());
+      const ctx = join(dir, "graft");
+      const legacy = readFileSync(join(ctx, "café.md"), "utf8").replace("slug: café", "slug: caf") + "\nLEGACY_HANDWRITTEN_NOTE\n";
+      for (const name of names) rmSync(join(ctx, `${slugify(name)}.md`));
+      writeFileSync(join(ctx, "caf.md"), legacy);
+      const manifestPath = join(ctx, "manifest.json");
+      const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+      manifest.nodes = [{ ...manifest.nodes.find((node: { name: string }) => node.name === "Café"), slug: "caf" }];
+      writeFileSync(manifestPath, JSON.stringify(manifest));
+      const result = await buildContext(dir, buildOpts());
+      assert.equal(result.nodes, names.length);
+      const modern = readFileSync(join(ctx, "café.md"), "utf8");
+      assert.equal(modern.includes("LEGACY_HANDWRITTEN_NOTE"), !ambiguous);
+      if (names.includes("Caf")) assert.equal(readFileSync(join(ctx, "caf.md"), "utf8").includes("LEGACY_HANDWRITTEN_NOTE"), false);
+      const backups = readdirSync(join(ctx, ".cache", "slug-upgrades"));
+      assert.equal(backups.length, 1);
+      assert.equal(readFileSync(join(ctx, ".cache", "slug-upgrades", backups[0]), "utf8"), legacy);
+      assert.equal(checkContext(dir).ok, true);
+      await buildContext(dir, buildOpts());
+      assert.equal(readFileSync(join(ctx, "café.md"), "utf8"), modern, "repeat upgrade is idempotent");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
 
 // #213 — per-file cards for root-level sources land in graft/<stem>.md, the same
 // directory readNodes() scans for concept nodes. Nested cards (graft/src/…) are

@@ -26,10 +26,12 @@ import type { FileSummary, SynthNode, Synthesizer } from "../ai/synthesize.js";
 import {
   CACHE_DIR,
   MANIFEST_VERSION,
+  SLUG_POLICY,
   contextDirFor,
   deleteNode,
   digestSources,
   existingNodeSlugs,
+  preserveRenamedNodeNotes,
   slugify,
   writeManifest,
   writeNode,
@@ -333,6 +335,7 @@ export async function buildContext(dir: string, opts: BuildOptions): Promise<Bui
   });
   nodes.sort((a, b) => a.slug.localeCompare(b.slug));
 
+  preserveRenamedNodeNotes(outDir, nodes);
   const liveSlugs = new Set(nodes.map((n) => n.slug));
   for (const slug of existingNodeSlugs(outDir)) {
     if (!liveSlugs.has(slug)) deleteNode(outDir, slug);
@@ -357,6 +360,7 @@ export async function buildContext(dir: string, opts: BuildOptions): Promise<Bui
     .sort((a, b) => a.path.localeCompare(b.path));
   const manifest: Manifest = {
     version: MANIFEST_VERSION,
+    slugPolicy: SLUG_POLICY,
     model: opts.model,
     repoDigest: digestSources(fileRefs),
     files: fileRefs,
@@ -403,12 +407,12 @@ function batchKey(batch: FileSummary[], hashByPath: Map<string, string>): string
 }
 
 function registerName(table: Map<string, string>, name: string, slug: string): void {
-  const key = name.trim().toLowerCase();
+  const key = name.trim().toLowerCase().normalize("NFC");
   if (key && !table.has(key)) table.set(key, slug);
 }
 
 function resolveSlug(table: Map<string, string>, name: string): string | undefined {
-  return table.get(name.trim().toLowerCase());
+  return table.get(name.trim().toLowerCase().normalize("NFC"));
 }
 
 function errMsg(err: unknown): string {
