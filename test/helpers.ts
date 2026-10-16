@@ -92,6 +92,44 @@ export function runCli(args: string[], opts: { home?: string; timeoutMs?: number
   return res;
 }
 
+/**
+ * Run the CLI after replacing the WASM parser's language setter with a
+ * deterministic failure. The real exhaustion crash depends on accumulated
+ * WASM state; this process-boundary seam exercises the same recoverable
+ * structural-error path without consuming unbounded memory.
+ */
+export function runCliWithWasmParserFailure(
+  args: string[],
+  opts: { home?: string; timeoutMs?: number } = {},
+): CliRun {
+  const res = spawnSync(process.execPath, wasmParserFailureCliArgs(args), {
+    encoding: "utf8",
+    timeout: opts.timeoutMs ?? 120_000,
+    env: opts.home ? homeEnv(opts.home) : process.env,
+  }) as CliRun;
+  res.describe = () =>
+    [
+      `graft ${args.join(" ")} (injected WASM failure)`,
+      `  status: ${res.status}${res.signal ? ` (signal ${res.signal})` : ""}`,
+      `  stdout: ${JSON.stringify(res.stdout ?? "")}`,
+      `  stderr: ${JSON.stringify(res.stderr ?? "")}`,
+    ].join("\n");
+  return res;
+}
+
+/** Node arguments for an async or sync CLI child with parser failure injected. */
+export function wasmParserFailureCliArgs(args: string[]): string[] {
+  const script = [
+    'import { Parser } from "web-tree-sitter";',
+    'Parser.prototype.setLanguage = function () { throw new Error("injected WASM parse failure"); };',
+    // Commander detects eval mode and treats argv after the executable as user
+    // arguments, so there is no script-path slot in this process shape.
+    `process.argv = [process.execPath, "graft", ...${JSON.stringify(args)}];`,
+    'await import("./src/cli.ts");',
+  ].join("\n");
+  return ["--import", "tsx", "--input-type=module", "--eval", script];
+}
+
 /** Summarizer that passes the source through unchanged, so tests control the text. */
 export class PassthroughSummarizer implements Summarizer {
   async summarize(code: string): Promise<string> {

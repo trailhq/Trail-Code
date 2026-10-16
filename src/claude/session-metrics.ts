@@ -202,7 +202,7 @@ export function formatSessionStats(s: SessionSummary | null): string {
     `  graft reads:   ${graft}`,
     `  source reads:  ${source}   (Read / Grep / Glob)`,
     `  mix:           ${mix}`,
-    `  tokens saved:  ~${saved.toLocaleString()}`,
+    `  tokens saved:  ~${saved.toLocaleString("en-US")}`,
   ];
   // Omitted, not zeroed, when no turn has been billed yet: a host whose hooks
   // name no transcript can't know what a token costs here, and a made-up rate

@@ -173,6 +173,9 @@ export interface GraphBuildResult {
    * and the packages to allow at install to fix it. Absent when everything loaded. */
   nativeFallback?: NativeFallback;
   meaning: EnrichStats;
+  /** Recoverable Tier-1/build-output errors. These leave a partial graph on
+   * disk, but the CLI must not report the build as successful. */
+  structuralErrors: number;
   errors: string[];
 }
 
@@ -467,6 +470,7 @@ export async function buildGraph(
       ? { nativeFallback: { languages: [...fellBackLabels].sort(), packages: missingNativePackages(fellBack) } }
       : {}),
     meaning,
+    structuralErrors: errors.length - meaning.errors.length,
     errors,
   };
 }

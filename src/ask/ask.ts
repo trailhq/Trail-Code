@@ -1553,9 +1553,9 @@ function askSavingsLine(r: AskResult, body: string): string {
   const saved = base - pack;
   const pct = Math.round((saved / base) * 100);
   return (
-    `${tag()} tokens saved ≈ ${saved.toLocaleString()} (${pct}%) — this pack ≈ ` +
-    `${pack.toLocaleString()} tok vs reading the ${r.saved.files} source file(s) whole ≈ ` +
-    `${base.toLocaleString()} tok. Estimate (baseline = those files read in full).` +
+    `${tag()} tokens saved ≈ ${saved.toLocaleString("en-US")} (${pct}%) — this pack ≈ ` +
+    `${pack.toLocaleString("en-US")} tok vs reading the ${r.saved.files} source file(s) whole ≈ ` +
+    `${base.toLocaleString("en-US")} tok. Estimate (baseline = those files read in full).` +
     savingsTurnNudge(saved)
   );
 }

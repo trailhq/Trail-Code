@@ -120,9 +120,9 @@ export function savingsLine(body: string, saved: Savings | undefined): string {
   const delta = base - pack;
   const pct = Math.round((delta / base) * 100);
   return (
-    `${tag()} tokens saved ≈ ${delta.toLocaleString()} (${pct}%) — this output ≈ ` +
-    `${pack.toLocaleString()} tok vs reading the ${saved.files} file(s) it covers whole ≈ ` +
-    `${base.toLocaleString()} tok (estimate).` +
+    `${tag()} tokens saved ≈ ${delta.toLocaleString("en-US")} (${pct}%) — this output ≈ ` +
+    `${pack.toLocaleString("en-US")} tok vs reading the ${saved.files} file(s) it covers whole ≈ ` +
+    `${base.toLocaleString("en-US")} tok (estimate).` +
     savingsTurnNudge(delta)
   );
 }
