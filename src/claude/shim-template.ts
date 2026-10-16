@@ -167,7 +167,9 @@ if (fs.existsSync(target)) import(pathToFileURL(target).href).then((m) => ${call
 // where their learnings are. In the order of the 13 Oct onboarding plan: when
 // one shapes a reply, Claude credits it, and only after the first credit does
 // it offer, once, to set trail up. Plain Node, no package: it's the one part of
-// trail a teammate without it still runs.
+// trail a teammate without it still runs. A title may be quoted either way:
+// trail writes JSON's double quotes, and a repo's Prettier may rewrite them to
+// single ones.
 const OFFER_TRAIL = `
 else if (process.argv[2] === 'session-start') offerTrail();
 
@@ -178,7 +180,10 @@ function offerTrail() {
   if (files.length === 0) return;
   const field = (text, key) => {
     const line = text.split('\\n').find((l) => l.startsWith(key + ':'));
-    return line ? line.slice(key.length + 1).trim().replace(/^"|"$/g, '') : '';
+    const v = line ? line.slice(key.length + 1).trim() : '';
+    if (/^'.*'$/.test(v)) return v.slice(1, -1).replace(/''/g, "'");
+    if (/^".*"$/.test(v)) { try { return JSON.parse(v); } catch { return v.slice(1, -1); } }
+    return v;
   };
   const lines = [];
   for (const f of files.slice(0, 12)) {

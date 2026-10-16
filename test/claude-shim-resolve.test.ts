@@ -252,6 +252,18 @@ test('each learning is listed with its author, newest first, so the credit can n
   assert.ok(sam >= 0 && anirudh > sam, ctx);
 });
 
+test('a learning title reads clean whichever quotes it has, as trail wrote it or as Prettier left it', () => {
+  const root = tmpRepo('shim-offer-quotes');
+  const repo = clonedWithLearnings(root, 'Kumar', ['Anirudh']);
+  const dir = join(repo, '.trail', 'learnings');
+  writeFileSync(join(dir, '2026-10-15-single.md'), `---\ntitle: 'assign: one PR into dev, it''s the rule'\nauthor: Priya\n---\n`);
+  writeFileSync(join(dir, '2026-10-16-double.md'), `---\ntitle: ${JSON.stringify('graft: say "trail" now')}\nauthor: Sam\n---\n`);
+  const ctx: string = JSON.parse(runBare(root, repo, 'session-start')).hookSpecificOutput.additionalContext;
+  assert.ok(ctx.includes("- assign: one PR into dev, it's the rule (Priya) ·"), ctx);
+  assert.ok(ctx.includes('- graft: say "trail" now (Sam) ·'), ctx);
+  assert.ok(ctx.includes('- Retries decision 0 (Anirudh) ·'), ctx);
+});
+
 test('without trail, other events and a repo with no learnings stay silent', () => {
   const root = tmpRepo('shim-offer-quiet');
   const repo = clonedWithLearnings(root, 'Kumar', ['Anirudh']);
