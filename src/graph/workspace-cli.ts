@@ -71,7 +71,7 @@ export async function runWorkspaceBuild(root: string, opts: WorkspaceBuildOption
     }
     const engine = new Graft({ ...opts.childConfig, contextDir: undefined });
     if (opts.deep) await engine.init(childDir, { extensions: opts.extensions });
-    const g = await engine.graph(childDir, { llm: opts.deep, concurrency: opts.concurrency });
+    const g = await engine.graph(childDir, { llm: opts.deep, concurrency: opts.concurrency, extensions: opts.extensions });
     console.log(`✓ ${childName}/: ${g.nodes} nodes, ${g.edges} edges, ${g.cards} cards [${g.languages.join(", ")}]`);
     for (const e of g.errors) console.error(`✗ ${childName}/: ${e}`);
     for (const l of g.nativeFallback?.languages ?? []) fellBack.languages.add(l);

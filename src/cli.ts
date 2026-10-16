@@ -636,6 +636,7 @@ grouped(program.command("build"), GROUP.setup)
 
     // Wiring graph — always; LLM meaning only with --deep.
     const g = await engine.graph(dir, {
+      extensions: opts.extensions,
       llm: deep,
       concurrency,
       reuse: opts.reuse,
