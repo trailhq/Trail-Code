@@ -745,6 +745,22 @@ scripts/            7 files · 7 symbols   hubs: bump (graph-quality.mjs, 1←),
 hotspots: wiringPath · function · src/graph/write.ts:L20-L22 · 48←  tmpRepo · function · test/helpers.ts:L30-L32 · 46←  cmd · function · src/brand.ts:L63-L70 · 45←  ...
 ```
 
+`graft map [dir] --scc` (also `trail map`) explicitly switches to the full
+strongly connected component (SCC) condensation DAG. It lists every indexed
+member with its definition location and every directed link between components,
+including direct links with alternate paths. Links supported by exactly one
+stored dependency are marked as candidate single-edge abstraction boundaries;
+counts are stored dependencies, not call sites. `--scc --json` returns the direct
+`{ components, edges }` result, including all original edge endpoints, relations,
+and confidences for both single- and multi-edge links.
+
+MCP clients can request the same text view with `graft_repo_map { "scc": true }`.
+This opt-in view may be large: it has no directory/token budget and cannot be
+combined with `--max-dirs` / `max_dirs`. At a multi-repository workspace parent,
+pass a child root to the CLI or start MCP in that child; SCCs cover one stored
+repository graph. Ordinary maps and the main skill workflow are unchanged;
+SCC analysis never runs implicitly.
+
 ## Monorepos, submodules & multi-repo folders
 
 The graft map supports these layouts:

@@ -1,10 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { TOOLS, callTool, canonicalToolName } from '../src/mcp/tools.js';
+import { contextDirFor } from '../src/context/node-file.js';
+import { wiringPath } from '../src/graph/write.js';
 
 function builtRepo(): string {
   const d = mkdtempSync(join(tmpdir(), 'graft-mcptools-'));
@@ -14,6 +16,28 @@ function builtRepo(): string {
   execFileSync(process.execPath, ['--import', 'tsx', 'src/cli.ts', 'build', d], { stdio: 'pipe' });
   return d;
 }
+
+test('SCC map rejects conflicting budgets before refresh and valid requests see source edits', async () => {
+  const dir = builtRepo();
+  const wiring = wiringPath(contextDirFor(dir));
+  const before = readFileSync(wiring);
+  appendFileSync(join(dir, 'src', 'math.ts'), '\nexport function afterSccEdit() { return 1; }\n');
+  const noRefresh = process.env.GRAFT_NO_REFRESH;
+  delete process.env.GRAFT_NO_REFRESH;
+  try {
+    const rejected = await callTool(dir, 'graft_repo_map', { scc: true, max_dirs: 1 });
+    assert.equal(rejected.isError, true);
+    assert.deepEqual(readFileSync(wiring), before);
+
+    const result = await callTool(dir, 'graft_repo_map', { scc: true });
+    assert.equal(result.isError, false);
+    assert.match(result.text, /afterSccEdit \(src\/math\.ts:L\d+-L\d+\)/);
+    assert.notDeepEqual(readFileSync(wiring), before);
+  } finally {
+    if (noRefresh === undefined) delete process.env.GRAFT_NO_REFRESH;
+    else process.env.GRAFT_NO_REFRESH = noRefresh;
+  }
+});
 
 /** Three-deep call chain (compute -> sub -> add) so a `--depth`/`depth` param
  * has something to distinguish: depth 1 from `add` reaches only `sub`, the

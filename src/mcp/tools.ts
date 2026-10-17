@@ -16,6 +16,7 @@ import { sessionInputRate } from '../claude/session-metrics.js';
 import { grepGraph } from '../search/grep.js';
 import { formatGrepResult, zeroHitNote } from '../search/grep-cli.js';
 import { buildRepoMap, formatRepoMap } from '../graph/map.js';
+import { buildCondensation, formatCondensation } from '../graph/scc.js';
 import {
   federateAsk,
   federateCallers,
@@ -116,11 +117,15 @@ export const TOOLS: ToolDef[] = [
   {
     name: 'graft_repo_map',
     description:
-      'Token-budgeted repo orientation — directory clusters, per-directory hubs, and global hotspots computed purely from the wiring graph ($0, no LLM). Use this to get oriented in an unfamiliar repo before diving into files.',
+      'Token-budgeted repo orientation — directory clusters, per-directory hubs, and global hotspots computed purely from the wiring graph ($0, no LLM). Use this to get oriented in an unfamiliar repo before diving into files. Set scc:true for the complete SCC view and single-edge boundaries.',
     inputSchema: {
       type: 'object',
       properties: {
         max_dirs: { type: 'number', description: 'max directory entries shown, rest counted into dropped (default 16)' },
+        scc: {
+          type: 'boolean',
+          description: 'return the full SCC condensation DAG with member definition locations and single-edge boundaries instead of the directory view (default false; may be large)',
+        },
       },
     },
   },
@@ -223,6 +228,17 @@ export async function callTool(
   try {
     const name = canonicalToolName(requestedName);
     const ws = readWorkspace(root, dirOverride);
+    if (name === 'graft_repo_map' && args.scc === true) {
+      if (args.max_dirs !== undefined) {
+        return { text: 'SCC view cannot be combined with max_dirs', isError: true };
+      }
+      if (ws) {
+        return {
+          text: `SCC view requires one repository graph; run ${cmd('graft map')} <child-root> --scc or start the MCP server in that child`,
+          isError: true,
+        };
+      }
+    }
     // Freshness first: an answer that cites file:line has to be about the code as
     // it is right now, including edits nobody has committed (or even saved through
     // this agent). ~3ms when nothing moved; a structural, $0 rebuild when it did.
@@ -320,6 +336,10 @@ async function callSingleTool(
       case 'graft_repo_map': {
         const w = loadGraphCached(contextDirFor(root, dirOverride));
         if (!w) return { text: noGraph(), isError: true };
+        if (args.scc === true) {
+          const result = buildCondensation(w);
+          return { text: formatCondensation(result), isError: false };
+        }
         const maxDirs = typeof args.max_dirs === 'number' && Number.isFinite(args.max_dirs) && args.max_dirs > 0 ? args.max_dirs : undefined;
         const map = buildRepoMap(w, { maxDirs });
         return { text: formatRepoMap(map), isError: false };
