@@ -182,6 +182,7 @@ async function callWorkspaceTool(
       const { result, coverage } = federateGrep(root, dirOverride, pattern, {
         ignoreCase: typeof args.ignore_case === 'boolean' ? args.ignore_case : undefined,
         fixed: typeof args.fixed === 'boolean' ? args.fixed : undefined,
+        in: typeof args.in === 'string' && args.in ? args.in : undefined,
       });
       const text = result.totalHits === 0 ? zeroHitNote(result) : formatGrepResult(result);
       return { text: coverage ? `${text}\n${coverage}` : text, isError: false };

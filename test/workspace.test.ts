@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,6 +21,8 @@ import {
   isWorkspaceBuildRoot,
 } from "../src/graph/workspace.js";
 import { formatAsk } from "../src/ask/ask.js";
+import { grepGraph } from "../src/search/grep.js";
+import { callTool } from "../src/mcp/tools.js";
 import type { GraphV1 } from "../src/graph/types.js";
 
 /** A parent dir with git children (each a `.git` dir + one source file). */
@@ -46,6 +49,16 @@ async function buildWorkspace(parent: string): Promise<{ children: string[]; mig
 const REPOS = {
   repoA: { "a.ts": "export function alphaHandler() { return helperThing(); }\nfunction helperThing() { return 1; }\n" },
   repoB: { "b.ts": "export function betaHandler() { return 2; }\n" },
+};
+
+const GREP_REPOS = {
+  repoA: {
+    "src/a.ts": REPOS.repoA["a.ts"],
+    "src-extra/extra.ts": "export function outsideHandler() { return 3; }\n",
+  },
+  repoAB: { "a.ts": "export function siblingHandler() { return 4; }\n" },
+  repoB: REPOS.repoB,
+  repoEmpty: {},
 };
 
 /** N unrelated functions, to pad a child's corpus to a realistic size so
@@ -367,6 +380,98 @@ test("grep federation merges groups across children with child-prefixed paths", 
   rmSync(p, { recursive: true, force: true });
 });
 
+test("workspace grep scopes to an exact child and its indexed paths", async () => {
+  const p = workspaceFx(GREP_REPOS);
+  try {
+    await buildWorkspace(p);
+    const graph = loadWorkspaceGraphs(p).loaded.find((r) => r.child === "repoA")!.graph;
+    for (const [scope, childIn] of [
+      ["repoA", undefined],
+      ["repoA/", undefined],
+      ["repoA/src", "src"],
+      ["./repoA/src/", "src"],
+      [join("repoA", "src"), "src"],
+    ]) {
+      const { result } = federateGrep(p, undefined, "Handler", { in: scope });
+      const standalone = grepGraph(graph, join(p, "repoA"), "Handler", { in: childIn });
+      assert.equal(result.filesSearched, standalone.filesSearched);
+      assert.equal(result.totalHits, standalone.totalHits);
+      assert.deepEqual(result.truncated, standalone.truncated);
+      assert.deepEqual(result.saved, standalone.saved);
+      assert.deepEqual(result.groups.map((g) => g.path).sort(), childIn
+        ? ["repoA/src/a.ts"]
+        : ["repoA/src-extra/extra.ts", "repoA/src/a.ts"]);
+      assert.ok(result.groups.every((g) => g.symbol?.path === g.path));
+    }
+    assert.throws(() => federateGrep(p, undefined, "Handler", { in: "repo" }),
+      /no workspace repo "repo".*repoA.*repoAB.*repoB.*repoEmpty/s);
+    assert.throws(() => federateGrep(p, undefined, "Handler", { in: "repoA/nowhere" }),
+      /nothing indexed under/);
+    const empty = federateGrep(p, undefined, "Handler", { in: "repoEmpty" });
+    assert.equal(empty.result.totalHits, 0);
+    assert.equal(empty.result.filesSearched, 0);
+    assert.equal(empty.coverage, "");
+    const ask = federateAsk(p, undefined, "handler", { in: "./repoA/src/" });
+    assert.ok(ask.hits.length > 0);
+    assert.ok(ask.hits.every((hit) => hit.pointer.startsWith("repoA/src/")));
+  } finally {
+    rmSync(p, { recursive: true, force: true });
+  }
+});
+
+test("workspace grep CLI forwards scopes and rejects invalid paths", async () => {
+  const p = workspaceFx(GREP_REPOS);
+  try {
+    await buildWorkspace(p);
+    const args = ["--import", "tsx", "src/cli.ts", "grep", "Handler", p];
+    const stdout = execFileSync(process.execPath,
+      [...args, "--in", "repoA/src", "--json", "--no-refresh"], { encoding: "utf8" });
+    const result = JSON.parse(stdout);
+    assert.equal(result.filesSearched, 1);
+    assert.equal(result.totalHits, 1);
+    assert.deepEqual(result.groups.map((g: { path: string }) => g.path), ["repoA/src/a.ts"]);
+    for (const [scope, error] of [
+      ["repo", /no workspace repo "repo".*repoA.*repoB/s],
+      ["repoA/nowhere", /nothing indexed under/],
+    ] as const) {
+      const invalid = spawnSync(process.execPath,
+        [...args, "--in", scope, "--json", "--no-refresh"], { encoding: "utf8" });
+      assert.equal(invalid.status, 1);
+      assert.match(invalid.stderr, error);
+    }
+    const noHits = spawnSync(process.execPath,
+      ["--import", "tsx", "src/cli.ts", "grep", "absent-needle", p,
+        "--in", "repoA/src", "--json", "--no-refresh"], { encoding: "utf8" });
+    assert.equal(noHits.status, 0);
+    assert.equal(JSON.parse(noHits.stdout).totalHits, 0);
+  } finally {
+    rmSync(p, { recursive: true, force: true });
+  }
+});
+
+test("workspace graft_find_all forwards scopes and returns scope errors", async () => {
+  const p = workspaceFx(GREP_REPOS);
+  try {
+    await buildWorkspace(p);
+    const result = await callTool(p, "graft_find_all", { pattern: "Handler", in: "repoA/src" });
+    assert.equal(result.isError, false);
+    assert.match(result.text, /repoA\/src\/a\.ts/);
+    assert.doesNotMatch(result.text, /repoB\/|repoAB\/|src-extra/);
+    for (const [scope, error] of [
+      ["repo", /no workspace repo "repo".*repoA.*repoB/s],
+      ["repoA/nowhere", /nothing indexed under/],
+    ] as const) {
+      const invalid = await callTool(p, "graft_find_all", { pattern: "Handler", in: scope });
+      assert.equal(invalid.isError, true);
+      assert.match(invalid.text, error);
+    }
+    const noHits = await callTool(p, "graft_find_all", { pattern: "absent-needle", in: "repoA/src" });
+    assert.equal(noHits.isError, false);
+  } finally {
+    rmSync(p, { recursive: true, force: true });
+  }
+});
+
 test("one unbuilt child is surfaced, not silently skipped", async () => {
   const p = workspaceFx({
     ...REPOS,
@@ -383,6 +488,10 @@ test("one unbuilt child is surfaced, not silently skipped", async () => {
     coverageNote(wg),
     "2 of 3 workspace repos have graphs; run graft build to cover repoC",
   );
+  const scoped = federateGrep(p, undefined, "Handler", { in: "repoC" });
+  assert.equal(scoped.result.filesSearched, 0);
+  assert.equal(scoped.result.totalHits, 0);
+  assert.equal(scoped.coverage, coverageNote(wg));
   rmSync(p, { recursive: true, force: true });
 });
 

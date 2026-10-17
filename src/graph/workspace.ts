@@ -51,6 +51,7 @@ import { fuseScopes, STRONG_FLOOR, HIGH_FLOOR, type ScopedDoc } from "../ask/fus
 import { grepGraph, type GrepGroup, type GrepResult } from "../search/grep.js";
 import { formatGrepResult, zeroHitNote } from "../search/grep-cli.js";
 import { withSavings, type Savings } from "../context/savings.js";
+import { normalizePathPrefix } from "../util/paths.js";
 import { cmd } from "../brand.js";
 
 /** The parent index written to `<parent>/graft/workspace.json`. Nodes/edges
@@ -165,6 +166,19 @@ export function coverageNote(g: WorkspaceGraphs): string {
   return `${g.loaded.length} of ${total} workspace repos have graphs; run ${cmd("graft build")} to cover ${g.missing.join(", ")}`;
 }
 
+function resolveWorkspaceIn(
+  wg: WorkspaceGraphs,
+  scope?: string,
+): { onlyChild?: string; childIn?: string } {
+  if (!scope) return {};
+  const [onlyChild, ...rest] = normalizePathPrefix(scope).split("/");
+  const allChildren = [...wg.loaded.map((l) => l.child), ...wg.missing].sort();
+  if (!allChildren.includes(onlyChild)) {
+    throw new Error(`no workspace repo "${onlyChild}" - repos: ${allChildren.join(", ")}`);
+  }
+  return { onlyChild, childIn: rest.length ? rest.join("/") : undefined };
+}
+
 /** Prefix a hit pointer with its child dir so a `path:span` (or concept path
  * list) opens correctly from the parent. Leaves free-text fragments alone. */
 function prefixPointer(child: string, pointer: string): string {
@@ -250,18 +264,7 @@ export function federateAsk(
 
   // `--in` scopes to a single child (and, past the first segment, a sub-scope
   // within it). A prefix naming no known child at all is a caller mistake.
-  let onlyChild: string | undefined;
-  let childIn: string | undefined;
-  if (opts.in) {
-    const prefix = opts.in.replace(/\/+$/, "");
-    const [name, ...rest] = prefix.split("/");
-    const allChildren = [...wg.loaded.map((l) => l.child), ...wg.missing].sort();
-    if (!allChildren.includes(name)) {
-      throw new Error(`no workspace repo "${name}" - repos: ${allChildren.join(", ")}`);
-    }
-    onlyChild = name;
-    childIn = rest.length ? rest.join("/") : undefined;
-  }
+  const { onlyChild, childIn } = resolveWorkspaceIn(wg, opts.in);
 
   // Pass 1: run each child's ask; keep its hits + RAW top-hit coverage.
   const runs: ChildRun[] = [];
@@ -565,9 +568,10 @@ export function federateGrep(
   root: string,
   override: string | undefined,
   pattern: string,
-  opts: { ignoreCase?: boolean; fixed?: boolean } = {},
+  opts: { ignoreCase?: boolean; fixed?: boolean; in?: string } = {},
 ): { result: GrepResult; coverage: string } {
   const wg = loadWorkspaceGraphs(root, override);
+  const { onlyChild, childIn } = resolveWorkspaceIn(wg, opts.in);
   const groups: GrepGroup[] = [];
   let filesSearched = 0;
   let totalHits = 0;
@@ -576,9 +580,11 @@ export function federateGrep(
   let savedChars = 0;
 
   for (const { child, graph } of wg.loaded) {
+    if (onlyChild && child !== onlyChild) continue;
     const r = grepGraph(graph, join(root, child), pattern, {
       ignoreCase: opts.ignoreCase,
       fixed: opts.fixed,
+      in: childIn,
     });
     filesSearched += r.filesSearched;
     totalHits += r.totalHits;

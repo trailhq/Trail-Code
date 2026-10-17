@@ -1057,7 +1057,7 @@ grouped(program.command("grep"), GROUP.find)
       const globalOpts = program.opts<{ dir?: string }>();
       if (readWorkspace(dir, globalOpts.dir)) {
         runWorkspaceGrep(dir, globalOpts.dir, pattern, {
-          ignoreCase: opts.ignoreCase, fixed: opts.fixed, json: opts.json,
+          ignoreCase: opts.ignoreCase, fixed: opts.fixed, in: opts.in, json: opts.json,
         });
         return;
       }
