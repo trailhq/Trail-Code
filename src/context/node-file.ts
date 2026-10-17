@@ -171,9 +171,8 @@ export function ensureGitignored(root: string, contextDir: string, note = GRAPH_
  * higher precedence than `.gitignore`, so re-admitting the tree there restores
  * search without git ever tracking a byte of it.
  *
- * The two negative entries matter as much as the positive one: `.cache/` holds a
- * multi-MB parse memo and `.graph/` holds `wiring.json`, and dropping either into
- * every repo-wide search would be worse than the problem being fixed.
+ * Hidden directories hold generated caches, including the parse memo and
+ * wiring.json. Exclude all of them so new cache kinds cannot leak into search.
  *
  * Same contract as {@link ensureGitignored}: idempotent, skips a context dir
  * outside `root`, and swallows write failures — a build that already succeeded
@@ -186,18 +185,39 @@ export function ensureSearchable(root: string, contextDir: string): void {
   const rel = relPosix(root, contextDir);
   if (rel === "" || rel.startsWith("..")) return; // outside the repo — nothing to re-admit
   const dir = stripTrailingSlashes(rel);
-  const entry = `!${dir}/`;
+  const entry = `!/${dir}/`;
+  const hiddenEntry = `/${dir}/.*`;
   const path = join(root, ".ignore");
   let current = "";
   try { current = readFileSync(path, "utf8"); } catch { /* no .ignore yet — we create one */ }
-  // Any mention of the negation means a human (or a previous build) has already
-  // had an opinion here; leave it alone rather than append a second copy.
-  if (current.split("\n").some((l) => l.trim() === entry)) return;
+  const lines = current.split("\n");
+  // Migrate the exact legacy re-admit entry in place. Leave other user rules
+  // and comments intact, including explicit exceptions for individual files.
+  const legacyEntry = `!${dir}/`;
+  const hasEntry = lines.some((line) => [entry, legacyEntry].includes(line.trim()));
+  if (hasEntry) {
+    let retainedEntry = false;
+    const migrated = lines.flatMap((line) => {
+      if (![entry, legacyEntry].includes(line.trim())) return [line];
+      if (retainedEntry) return [];
+      retainedEntry = true;
+      return [entry];
+    });
+    if (!migrated.some((line) => line.trim() === hiddenEntry)) {
+      const position = migrated.indexOf(entry);
+      migrated.splice(position + 1, 0, hiddenEntry);
+    }
+    const updated = migrated.join("\n");
+    if (updated !== current) {
+      try { writeFileSync(path, updated); } catch { /* best-effort */ }
+    }
+    return;
+  }
   const gap = current === "" ? "" : current.endsWith("\n") ? "\n" : "\n\n";
   const block =
     `${gap}# graft's cards are gitignored but should stay greppable: ripgrep reads\n` +
     `# .ignore before .gitignore, so this re-admits the tree to search only.\n` +
-    `${entry}\n${dir}/${CACHE_DIR}/\n${dir}/${GRAPH_DIR}/\n`;
+    `${entry}\n${hiddenEntry}\n`;
   try { writeFileSync(path, current + block); } catch { /* best-effort */ }
 }
 

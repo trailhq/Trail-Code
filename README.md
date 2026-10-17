@@ -111,6 +111,8 @@ That is the whole setup. `trail init` asks which of your coding agents to wire u
 
 Commit the setup so your teammates get it too. The graft map itself, in `graft/`, is a local cache like `node_modules` and is added to `.gitignore`, so it stays out of the commit:
 
+The generated `.ignore` re-admits only the configured context directory from the repository root. Hidden files and directories beneath it stay excluded from search, including current and future caches. Builds migrate the exact legacy unanchored re-admit entry in place and preserve other search rules. `GRAFT_NO_IGNORE=1` disables these updates.
+
 ```bash
 git add .claude .mcp.json .trail .gitignore .ignore && git commit -m "set up Trail-code"
 ```

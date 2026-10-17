@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { buildContext } from "../src/context/build.js";
 import { checkContext, indexFreshness, staleBanner } from "../src/context/check.js";
 import { contextDirFor, ensureGitignored, ensureSearchable } from "../src/context/node-file.js";
@@ -555,6 +555,21 @@ test("graft build with GRAFT_NO_GITIGNORE and GRAFT_NO_IGNORE does not touch ign
   }
 });
 
+test("ensureSearchable: only re-admits root cards and keeps future hidden caches out of ripgrep", { skip: spawnSync("rg", ["--version"]).status !== 0 }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "ctxsearch-rg-"));
+  try {
+    execFileSync("git", ["init", "-q", dir]);
+    writeFileSync(join(dir, ".gitignore"), "/graft/\nnested/graft/\n");
+    for (const folder of ["graft", "graft/.future-cache", "nested/graft"]) mkdirSync(join(dir, folder), { recursive: true });
+    for (const file of ["graft/card.md", "graft/.future-cache/memo.json", "nested/graft/card.md"]) writeFileSync(join(dir, file), "marker");
+    ensureSearchable(dir, contextDirFor(dir));
+    const matches = execFileSync("rg", ["--hidden", "--files", "-g", "!.git"], { cwd: dir, encoding: "utf8" }).split("\n");
+    assert.ok(matches.includes("graft/card.md"));
+    assert.ok(!matches.includes("nested/graft/card.md"), "nested unrelated trees remain ignored");
+    assert.ok(!matches.includes("graft/.future-cache/memo.json"), "future caches remain ignored");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 // ensureSearchable — gitignoring the graph must not also hide it from `grep`.
 // ripgrep honours .gitignore, so without this the cards are unreachable by the
 // one mechanism they were designed around.
@@ -563,9 +578,8 @@ test("ensureSearchable: re-admits the card tree while excluding the caches", () 
   try {
     ensureSearchable(dir, contextDirFor(dir));
     const ig = readFileSync(join(dir, ".ignore"), "utf8");
-    assert.match(ig, /^!graft\/$/m, "the tree is re-admitted to search");
-    assert.match(ig, /^graft\/\.cache\/$/m, "but not the multi-MB parse memo");
-    assert.match(ig, /^graft\/\.graph\/$/m, "and not wiring.json");
+    assert.match(ig, /^!\/graft\/$/m, "the tree is re-admitted to search");
+    assert.match(ig, /^\/graft\/\.\*$/m, "but not current or future hidden caches");
     assert.match(ig, /ripgrep reads/, "carries the why, for whoever finds this file");
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -582,22 +596,34 @@ test("ensureSearchable: appends to an existing .ignore, and is idempotent", () =
     ensureSearchable(dir, contextDirFor(dir));
     const twice = readFileSync(join(dir, ".ignore"), "utf8");
     assert.equal(once, twice);
-    assert.equal((twice.match(/^!graft\/$/gm) ?? []).length, 1);
+    assert.equal((twice.match(/^!\/graft\/$/gm) ?? []).length, 1);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("ensureSearchable: leaves a hand-written negation alone", () => {
+test("ensureSearchable: migrates a legacy negation while retaining its comment", () => {
   const dir = mkdtempSync(join(tmpdir(), "ctxsearch-"));
   try {
-    // Someone already had an opinion here — don't append a competing block.
+    // Keep the comment in place while narrowing the old generated entry.
     writeFileSync(join(dir, ".ignore"), "# mine\n!graft/\n");
     ensureSearchable(dir, contextDirFor(dir));
-    assert.equal(readFileSync(join(dir, ".ignore"), "utf8"), "# mine\n!graft/\n");
+    assert.equal(readFileSync(join(dir, ".ignore"), "utf8"), "# mine\n!/graft/\n/graft/.*\n");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("ensureSearchable: scopes a custom context dir and migrates duplicate entries idempotently", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ctxsearch-custom-"));
+  try {
+    writeFileSync(join(dir, ".ignore"), "vendor/\n!tools/cards/\n!/tools/cards/\n!tools/cards/special.json\n");
+    ensureSearchable(dir, join(dir, "tools/cards"));
+    const once = readFileSync(join(dir, ".ignore"), "utf8");
+    assert.equal(once, "vendor/\n!/tools/cards/\n/tools/cards/.*\n!tools/cards/special.json\n");
+    ensureSearchable(dir, join(dir, "tools/cards"));
+    assert.equal(readFileSync(join(dir, ".ignore"), "utf8"), once);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("ensureSearchable: no-op when the graph dir is outside the repo root", () => {
