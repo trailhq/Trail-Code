@@ -91,7 +91,8 @@ function envTruthy(name: string): boolean {
 /** Turn a display name into a stable, filesystem- and link-safe slug. */
 export function slugify(name: string): string {
   const base = normalizeName(name)
-    .replace(/[^a-z0-9]+/g, "-")
+    .normalize("NFC")
+    .replace(/[^\p{L}\p{N}\p{M}]+/gu, "-")
     .replace(/^-+|-+$/g, "");
   return base || "node";
 }
@@ -265,6 +266,47 @@ export function writeNode(dir: string, node: ContextNode): string {
   }
   writeFileSync(path, renderNodeFile(node));
   return path;
+}
+
+/** Carry unambiguous notes across the old ASCII slug policy; retain every
+ * changed note file in the cache when an old slug may have merged concepts. */
+export function preserveRenamedNodeNotes(dir: string, nodes: ContextNode[]): void {
+  const key = (name: string) => normalizeName(name).normalize("NFC");
+  const legacy = (name: string) => normalizeName(name).replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "node";
+  const byLegacy = new Map<string, ContextNode[]>();
+  for (const node of nodes) {
+    const slug = legacy(node.name);
+    byLegacy.set(slug, [...(byLegacy.get(slug) ?? []), node]);
+  }
+  for (const previous of readNodes(dir)) {
+    const candidates = byLegacy.get(previous.slug);
+    if (!candidates || !/^[a-z0-9-]+$/.test(previous.slug)) continue;
+    const sameSlug = nodes.find(node => node.slug === previous.slug);
+    if (sameSlug && key(sameSlug.name) === key(previous.name)) continue;
+    const path = join(dir, `${previous.slug}.md`);
+    if (!existsSync(path)) continue;
+    const content = readFileSync(path, "utf8");
+    const human = preserveHuman(matter(content).content);
+    if (!human.trim() || human.trim() === defaultHuman().trim()) continue;
+
+    // The full content hash makes backups stable and prevents overwriting a
+    // different historical note file on a later upgrade.
+    const backupDir = join(dir, CACHE_DIR, "slug-upgrades");
+    mkdirSync(backupDir, { recursive: true });
+    const backup = join(backupDir, `${previous.slug}-${contentHash(content)}.md`);
+    if (!existsSync(backup)) writeFileSync(backup, content, { flag: "wx" });
+    else if (readFileSync(backup, "utf8") !== content) throw new Error(`Conflicting legacy notes backup: ${backup}`);
+
+    const matching = candidates.filter(node => key(node.name) === key(previous.name));
+    if (candidates.length === 1 && matching.length === 1 && !existsSync(join(dir, `${matching[0].slug}.md`))) {
+      matching[0].human = human;
+    } else {
+      console.error(`Legacy notes for ${previous.name} were saved to ${backup}; review them before assigning them to a concept.`);
+    }
+    // A newly distinct concept may reuse the old ASCII slug. Its notes must
+    // not inherit the former merged concept's human region.
+    if (sameSlug) rmSync(path);
+  }
 }
 
 /** A node file parsed back off disk (frontmatter only; body is not needed for `check`). */

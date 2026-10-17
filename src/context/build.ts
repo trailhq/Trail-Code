@@ -30,6 +30,7 @@ import {
   deleteNode,
   digestSources,
   existingNodeSlugs,
+  preserveRenamedNodeNotes,
   slugify,
   writeManifest,
   writeNode,
@@ -333,6 +334,7 @@ export async function buildContext(dir: string, opts: BuildOptions): Promise<Bui
   });
   nodes.sort((a, b) => a.slug.localeCompare(b.slug));
 
+  preserveRenamedNodeNotes(outDir, nodes);
   const liveSlugs = new Set(nodes.map((n) => n.slug));
   for (const slug of existingNodeSlugs(outDir)) {
     if (!liveSlugs.has(slug)) deleteNode(outDir, slug);
