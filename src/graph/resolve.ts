@@ -128,6 +128,11 @@ export function resolveEdges(
   // node ids. A `use App\Models\User` names a PSR-4 class whose file mirrors the namespace
   // tail under some (unknown) source root, so the suffix is the portable key.
   const phpFilesBySuffix = new Map<string, string[]>();
+  // Python module resolution: a file's importable path-suffix (`app/db/session.py`
+  // → `app/db/session`, `app/db/__init__.py` → `app/db`) → its file node ids. An
+  // absolute import names a module by dotted path relative to a sys.path root the
+  // repo never states, so — as for Java and PHP — the suffix is the portable key.
+  const pythonFilesByModule = new Map<string, string[]>();
   const hasGoModules = !!opts.goModules?.length;
   for (const n of nodes) {
     if (n.kind === "file") {
@@ -149,6 +154,13 @@ export function resolveEdges(
       if (n.path.endsWith(".php")) {
         const parts = toPosixPath(n.path).split("/");
         for (let i = 0; i < parts.length; i++) push(phpFilesBySuffix, parts.slice(i).join("/"), n.id);
+      }
+      if (n.path.endsWith(".py")) {
+        // `pkg/__init__.py` IS the module `pkg`, so the marker is dropped before
+        // indexing — an import names the package, never the init file.
+        const module = toPosixPath(n.path).replace(/\.py$/, "").replace(/\/__init__$/, "");
+        const parts = module.split("/");
+        for (let i = 0; i < parts.length; i++) push(pythonFilesByModule, parts.slice(i).join("/"), n.id);
       }
       {
         const p = toPosixPath(n.path);
@@ -216,7 +228,9 @@ export function resolveEdges(
                 ? resolveRustUse(e.specifier, e.file, byId, rustCrateRoots)
                 : e.file.endsWith(".php")
                   ? resolvePhpUse(e.specifier, phpFilesBySuffix)
-                  : resolveImport(e.specifier, e.file, byId);
+                  : e.file.endsWith(".py")
+                    ? resolvePythonImport(e.specifier, e.file, byId, pythonFilesByModule)
+                    : resolveImport(e.specifier, e.file, byId);
       add(e.source, target, "imports", "extracted");
     } else if (e.relation === "extends" || e.relation === "implements") {
       // `implements` also resolves to a `trait` — PHP models trait composition
@@ -268,6 +282,46 @@ export function resolveEdges(
         if (hit && hit.id !== e.source) add(e.source, hit.id, "references", hit.confidence);
       }
     } else if (e.relation === "calls") {
+      // Python imports identify the target module. A named receiver can be a
+      // class or a submodule; both resolve within their explicit import path.
+      if (e.specifier && e.name && e.file.endsWith(".py")) {
+        const moduleFile = resolvePythonImport(e.specifier, e.file, byId, pythonFilesByModule);
+        let targetFile = moduleFile;
+        let candidates: NodeV1[];
+        if (e.viaMember && e.recvType) {
+          const owners = (perFileName.get(moduleFile)?.get(e.recvType) ?? [])
+            .filter((n) => n.id.replace(/~\d+$/, "") === `${moduleFile}#${e.recvType}`);
+          if (owners.length === 1 && owners[0].kind === "class") {
+            candidates = (ownerMethod.get(`${e.recvType}.${e.name}`) ?? [])
+              .filter((n) => n.path === moduleFile && n.id.replace(/~\d+$/, "") === `${owners[0].id}.${e.name}`);
+          } else if (owners.length === 0) {
+            // `from pkg import submodule` shares the syntax of a named import. A
+            // resolved package anchors the submodule to its own directory; an
+            // ambiguous one drops the call rather than pick a sys.path root.
+            const spec = e.specifier.endsWith(".") ? `${e.specifier}${e.recvType}` : `${e.specifier}.${e.recvType}`;
+            if (byId.has(moduleFile)) {
+              const dir = moduleFile.endsWith("/__init__.py") ? posix.dirname(moduleFile) : null;
+              // Python's finder tries the package directory before the module file.
+              targetFile = (dir && [`${dir}/${e.recvType}/__init__.py`, `${dir}/${e.recvType}.py`].find((c) => byId.has(c))) || spec;
+            } else {
+              const parentHits = e.specifier.startsWith(".") ? 0 : (pythonFilesByModule.get(e.specifier.replace(/\./g, "/"))?.length ?? 0);
+              targetFile = parentHits > 1 ? spec : resolvePythonImport(spec, e.file, byId, pythonFilesByModule);
+            }
+            candidates = (perFileName.get(targetFile)?.get(e.name) ?? [])
+              .filter((n) => n.id.replace(/~\d+$/, "") === `${targetFile}#${e.name}` && (n.kind === "function" || n.kind === "class"));
+          } else {
+            candidates = [];
+          }
+        } else {
+          candidates = (perFileName.get(targetFile)?.get(e.name) ?? [])
+            .filter((n) => n.id.replace(/~\d+$/, "") === `${targetFile}#${e.name}` && (n.kind === "function" || n.kind === "class"));
+        }
+        if (candidates.length === 1) {
+          add(e.source, candidates[0].id, "calls", "extracted");
+        }
+        // Explicit imports must not fall through to an unrelated global name.
+        continue;
+      }
       if (e.viaMember) {
         if (!e.recvType) continue;
         const hit = resolveTypedMember(e.recvType, e.name!, e.file, ownerMethod, classParents, classTraits, e.argCount);
@@ -485,6 +539,41 @@ function resolveTraitMember(
     return { id: c.id, confidence: c.path === file ? "extracted" : "inferred" };
   }
   return "ambiguous";
+}
+
+/**
+ * Resolve a Python import's dotted module path to an in-repo file node id;
+ * otherwise return the raw specifier (stdlib or third-party package).
+ *
+ * Two shapes, one answer. A RELATIVE import (`.service`, `..core.config`) states
+ * its anchor: one leading dot is the importing file's own package, each further
+ * dot climbs one level, so the path is computed, not searched. An ABSOLUTE import
+ * (`app.db.session`) names a module relative to a sys.path root the repo never
+ * writes down — it may be the repo root, a `src/` dir, or a package dir — so the
+ * dotted tail is matched against each file's importable path SUFFIX, exactly the
+ * root-agnostic key Java and PHP imports use here.
+ *
+ * A suffix shared by two files (`a/util.py` and `b/util.py` for `import util`) is
+ * left unresolved: picking one would invent an edge the source does not state.
+ */
+function resolvePythonImport(
+  spec: string,
+  file: string,
+  byId: Map<string, NodeV1>,
+  filesByModule: Map<string, string[]>,
+): string {
+  if (spec.startsWith(".")) {
+    const dots = /^\.+/.exec(spec)![0].length;
+    const tail = spec.slice(dots).replace(/\./g, "/");
+    // One dot = the importing file's own package, so the first dot costs no climb.
+    const base = posix.dirname(toPosixPath(file));
+    const anchor = posix.normalize(posix.join(base, ...Array(dots - 1).fill("..")));
+    const target = tail ? posix.join(anchor, tail) : anchor;
+    for (const c of [`${target}.py`, `${target}/__init__.py`]) if (byId.has(c)) return c;
+    return spec;
+  }
+  const hits = filesByModule.get(spec.replace(/\./g, "/"));
+  return hits?.length === 1 ? hits[0] : spec;
 }
 
 /**

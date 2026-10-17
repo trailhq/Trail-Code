@@ -45,7 +45,7 @@ concurrency:
 jobs:
   publish:
     if: github.event.action != 'closed'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
       pull-requests: write
@@ -252,7 +252,7 @@ jobs:
   # 1 MB files. Removed with the PR, not on a timer.
   cleanup:
     if: github.event.action == 'closed'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:

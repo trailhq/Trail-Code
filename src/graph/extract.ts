@@ -304,6 +304,8 @@ const FUNCTION_VALUE_TYPES = new Set([
 ]);
 
 const EMPTY_SET: ReadonlySet<string> = new Set();
+const EMPTY_MODULE_MAP: ReadonlyMap<string, string> = new Map();
+const EMPTY_NAMED_IMPORTS: ReadonlyMap<string, { name: string; specifier: string }> = new Map();
 
 export interface WalkCtx {
   rel: string;
@@ -317,6 +319,20 @@ export interface WalkCtx {
   enclosingClass: string | null; // nearest enclosing class (py/ts `self`/`this`)
   goReceiverVar: string | null; // Go receiver var, e.g. `w` in `func (w *Worker)`
   importedSymbols: ReadonlyMap<string, { name: string; specifier: string }>;
+  /** Python only: local name → the dotted module path it may bind, from
+   * `import a.b as x` / `from a.b import c [as x]`. A call through such a name
+   * (`x.f()`) is a module-member call: the module names the target file and the
+   * attribute names the symbol, so resolve.ts can resolve it exactly instead of
+   * dropping it for want of a receiver type. Empty for every other language. */
+  importedModules: ReadonlyMap<string, string>;
+  /** Python only: unconditional module-level `from a.b import c [as x]` bindings,
+   * local name → imported name and module. Kept apart from importedSymbols so they
+   * feed call resolution only, not identifier references. */
+  pythonNamedImports: ReadonlyMap<string, { name: string; specifier: string }>;
+  /** Python only: names an import binds in scope, from module-level imports
+   * (conditional ones included) and the enclosing defs' own imports. A call through
+   * one that neither import map resolves here is dropped, never matched globally. */
+  pythonImportedNames: ReadonlySet<string>;
   // R6 (Phase 2): which list we're inside while walking an `R6Class(...)` call's
   // arguments — set only for the direct span of a `public =`/`private =`/
   // `active =` `list(...)`'s own entries (see walk()'s special-cased `argument`
@@ -371,6 +387,14 @@ function parseSource(parser: Parser, source: string): Parser.SyntaxNode {
 export function extractFile(rel: string, source: string, lang: Language): ExtractResult {
   const root = parseSource(nativeParser(lang), source);
   const bindings = collectBindings(root, lang);
+  const pythonSymbols = new Map<string, { name: string; specifier: string }>();
+  const pythonImportedNames = new Set<string>();
+  // Module-level rebinding (an assignment, a def or a conditional re-import) drops
+  // an import binding for the whole file.
+  const importedModules = lang === "python"
+    ? withoutPythonShadowedModules(collectPythonImportedModules(root, pythonSymbols, pythonImportedNames), root)
+    : EMPTY_MODULE_MAP;
+  const pythonNamedImports = lang === "python" ? withoutPythonShadowedModules(pythonSymbols, root) : EMPTY_NAMED_IMPORTS;
   const importedSymbols = collectImportedSymbols(root, lang);
   const rGenerics = lang === "r" ? collectRGenerics(root) : EMPTY_SET;
 
@@ -405,6 +429,9 @@ export function extractFile(rel: string, source: string, lang: Language): Extrac
     enclosingClass: null,
     goReceiverVar: null,
     importedSymbols,
+    importedModules,
+    pythonNamedImports,
+    pythonImportedNames,
     rR6Access: null,
     rGenerics,
     rSuperClass: null,
@@ -625,6 +652,18 @@ function walk(node: Parser.SyntaxNode, ctx: WalkCtx, out: NodeV1[], edges: RawEd
         desc.kind === "function" || desc.kind === "method"
           ? withoutShadowedImports(ctx.importedSymbols, node)
           : ctx.importedSymbols,
+      importedModules:
+        ctx.lang === "python" && (desc.kind === "function" || desc.kind === "method")
+          ? withoutPythonShadowedModules(ctx.importedModules, node)
+          : ctx.importedModules,
+      pythonNamedImports:
+        ctx.lang === "python" && (desc.kind === "function" || desc.kind === "method")
+          ? withoutPythonShadowedModules(ctx.pythonNamedImports, node)
+          : ctx.pythonNamedImports,
+      pythonImportedNames:
+        ctx.lang === "python" && (desc.kind === "function" || desc.kind === "method")
+          ? withPythonLocalImportNames(ctx.pythonImportedNames, node)
+          : ctx.pythonImportedNames,
       // Reset on every new definition — this is a purely local marker for "we're
       // still inside THIS class-defining call's own public=/private=/active=
       // argument chain," not something that should leak into a nested definition
@@ -645,6 +684,20 @@ function walk(node: Parser.SyntaxNode, ctx: WalkCtx, out: NodeV1[], edges: RawEd
               : null
           : ctx.rSuperClass,
     };
+    if (ctx.lang === "python" && (desc.kind === "function" || desc.kind === "method")) {
+      // Defaults and annotations run in the enclosing scope, before the parameters bind.
+      const header = [node.childForFieldName("parameters"), node.childForFieldName("return_type")];
+      const inHeader = (c: Parser.SyntaxNode): boolean => header.some((h) => sameSyntaxNode(c, h));
+      const headerCtx: WalkCtx = {
+        ...childCtx,
+        importedModules: ctx.importedModules,
+        pythonNamedImports: ctx.pythonNamedImports,
+        pythonImportedNames: ctx.pythonImportedNames,
+      };
+      walkNamedChildren(node.namedChildren.filter(inHeader), headerCtx, out, edges, minted);
+      walkNamedChildren(node.namedChildren.filter((c) => !inHeader(c)), childCtx, out, edges, minted);
+      return;
+    }
     walkNamedChildren(node.namedChildren, childCtx, out, edges, minted);
     return;
   }
@@ -748,8 +801,37 @@ function walk(node: Parser.SyntaxNode, ctx: WalkCtx, out: NodeV1[], edges: RawEd
           implicitSelf: true,
         });
       } else {
-        const recvType = resolveRecvType(callee.receiver, ctx);
-        edges.push(recvType ? { ...callEdge, recvType } : callEdge);
+        // Python `mod.fn()` where `mod` is an imported module alias: the import
+        // states the file and the attribute states the symbol, which is the same
+        // two-halves evidence a named import gives a `references` edge. Carry the
+        // module as the specifier so resolve.ts can look the name up in that file
+        // alone — no bare-name guessing, and no receiver type to infer.
+        const importedName = callee.viaMember ? callee.receiver : callee.name;
+        const imported = ctx.lang === "python" && importedName
+          ? ctx.pythonNamedImports.get(importedName)
+          : undefined;
+        const moduleSpec =
+          ctx.lang === "python" && callee.viaMember && callee.receiver
+            ? ctx.importedModules.get(callee.receiver)
+            : undefined;
+        // A name an import binds resolves through that import or not at all: shadowed
+        // here, or bound by an import neither map keeps, it must not fall through to
+        // receiver typing or global name lookup.
+        const shadowed = ctx.lang === "python" && !!importedName && ctx.pythonImportedNames.has(importedName)
+          && (!(imported || moduleSpec) || pythonCallHasLocalBinding(node, importedName));
+        const recvType = moduleSpec ? undefined : resolveRecvType(callee.receiver, ctx);
+        if (imported && !shadowed) {
+          edges.push({
+            ...callEdge,
+            name: callee.viaMember ? callee.name : imported.name,
+            specifier: imported.specifier,
+            ...(callee.viaMember ? { recvType: imported.name } : {}),
+          });
+        } else if (!shadowed) {
+          // A shadowed bare import must not reconnect through global name lookup.
+          if (moduleSpec) edges.push({ ...callEdge, specifier: moduleSpec });
+          else edges.push(recvType ? { ...callEdge, recvType } : callEdge);
+        }
       }
     }
   } else if (ctx.lang === "php" && node.type === "use_declaration") {
@@ -829,6 +911,260 @@ function walk(node: Parser.SyntaxNode, ctx: WalkCtx, out: NodeV1[], edges: RawEd
   }
 
   for (const child of node.namedChildren) walk(child, ctx, out, edges, minted);
+}
+
+/**
+ * Python import bindings, as MODULE paths: local name → the dotted path that
+ * name may denote. `import a.b as x` and `from a.b import c as x` both bind one
+ * name to one dotted path (`a.b`, `a.b.c`); a relative import keeps its leading
+ * dots (`from . import c` → `.c`) for resolve.ts to anchor against the importing
+ * file's directory.
+ *
+ * `from a.b import c` is ambiguous in Python's own grammar — `c` is a submodule
+ * or an exported symbol, and only the file tree can say which. That is resolve.ts's
+ * job: the path is offered as a candidate here, and a call through it resolves only
+ * if the module file actually exists. A plain `import a.b` (no alias) binds the
+ * TOP package name, so the call site reads `a.b.f()` — a two-hop receiver Python's
+ * callee reader does not report — and is therefore left out rather than guessed at.
+ */
+function collectPythonImportedModules(
+  root: Parser.SyntaxNode,
+  symbols: Map<string, { name: string; specifier: string }>,
+  importNames: Set<string>,
+): Map<string, string> {
+  const out = new Map<string, string>();
+  const bind = (aliasNode: Parser.SyntaxNode, path: string): void => {
+    const names = aliasNode.namedChildren;
+    if (aliasNode.type === "aliased_import") {
+      const target = aliasNode.childForFieldName("name") ?? names[0];
+      const alias = aliasNode.childForFieldName("alias") ?? names[1];
+      if (target && alias) out.set(alias.text, joinModulePath(path, target.text));
+      return;
+    }
+    // `from a.b import c` binds `c`; a plain `import a.b` binds the top package,
+    // which the header explains is deliberately left alone.
+    if (aliasNode.type === "dotted_name" && path) {
+      out.set(aliasNode.text, joinModulePath(path, aliasNode.text));
+    }
+  };
+  const visit = (node: Parser.SyntaxNode, inDefinition: boolean): void => {
+    if (node.type === "import_statement" || node.type === "import_from_statement") {
+      const moduleNode = node.type === "import_from_statement"
+        ? (node.childForFieldName("module_name") ??
+          node.namedChildren.find((c) => c.type === "dotted_name" || c.type === "relative_import"))
+        : undefined;
+      if (node.type === "import_from_statement" && !moduleNode) return;
+      // ponytail: only unconditional module-level imports resolve. Conditional ones
+      // need per-scope binding tables; until then their names are recorded so a call
+      // through them is dropped rather than guessed. Imports inside a def are added
+      // per function (withPythonLocalImportNames).
+      const moduleLevel = node.parent?.type === "module";
+      for (const child of node.namedChildren) {
+        if (sameSyntaxNode(child, moduleNode)) continue;
+        if (child.type !== "aliased_import" && child.type !== "dotted_name") continue;
+        const name = child.childForFieldName("name")?.text ?? child.text;
+        // `import a.b` binds the top package `a`; every other form binds its alias or name.
+        const local = child.childForFieldName("alias")?.text ?? (moduleNode ? name : name.split(".")[0]);
+        if (!inDefinition) importNames.add(local);
+        if (!moduleLevel) continue;
+        if (moduleNode) {
+          bind(child, moduleNode.text);
+          symbols.set(local, { name, specifier: moduleNode.text });
+        } else if (child.type === "aliased_import") {
+          bind(child, "");
+        }
+      }
+      return;
+    }
+    const definition = node.type === "function_definition" || node.type === "class_definition" || node.type === "lambda";
+    for (const child of node.namedChildren) visit(child, inDefinition || definition);
+  };
+  visit(root, false);
+  return out;
+}
+
+/** Names a def's own imports bind, visible in its body and nested defs. */
+function withPythonLocalImportNames(names: ReadonlySet<string>, definition: Parser.SyntaxNode): ReadonlySet<string> {
+  const body = definition.childForFieldName("body");
+  if (!body) return names;
+  const local = new Set<string>();
+  const visit = (node: Parser.SyntaxNode): void => {
+    if (node.type === "function_definition" || node.type === "class_definition" || node.type === "lambda") return;
+    if (node.type === "import_statement" || node.type === "import_from_statement") {
+      const moduleNode = node.childForFieldName("module_name") ??
+        node.namedChildren.find((c) => c.type === "dotted_name" || c.type === "relative_import");
+      for (const child of node.namedChildren) {
+        if (node.type === "import_from_statement" && sameSyntaxNode(child, moduleNode)) continue;
+        const alias = child.type === "aliased_import" ? child.childForFieldName("alias") : null;
+        if (alias) local.add(alias.text);
+        else if (child.type === "dotted_name") local.add(node.type === "import_statement" ? child.text.split(".")[0] : child.text);
+      }
+      return;
+    }
+    for (const child of node.namedChildren) visit(child);
+  };
+  visit(body);
+  return local.size === 0 ? names : new Set([...names, ...local]);
+}
+
+/** `a.b` + `c` → `a.b.c`; a relative prefix keeps its dots (`.` + `c` → `.c`). */
+function joinModulePath(prefix: string, tail: string): string {
+  if (!prefix) return tail;
+  return prefix.endsWith(".") ? `${prefix}${tail}` : `${prefix}.${tail}`;
+}
+
+/** Binding patterns exclude type annotations, default values and attribute names. */
+function collectPythonBindingNames(node: Parser.SyntaxNode, names: Set<string>): void {
+  if (node.type === "identifier") names.add(node.text);
+  else if (node.type === "default_parameter" || node.type === "typed_default_parameter") {
+    const name = node.childForFieldName("name");
+    if (name) collectPythonBindingNames(name, names);
+  } else if (node.type !== "attribute" && node.type !== "subscript") {
+    const type = node.childForFieldName("type");
+    for (const child of node.namedChildren) {
+      if (!sameSyntaxNode(child, type)) collectPythonBindingNames(child, names);
+    }
+  }
+}
+
+/**
+ * True when a lambda, comprehension or class body between the call and its
+ * function binds `name`. Those scopes are not definitions, so the import maps
+ * the walk carries do not account for them.
+ */
+function pythonCallHasLocalBinding(call: Parser.SyntaxNode, name: string): boolean {
+  let below: Parser.SyntaxNode = call;
+  let nested = false; // inside a lambda or comprehension, which cannot see class-body names
+  for (let scope = call.parent; scope; below = scope, scope = scope.parent) {
+    let names: Set<string> | undefined;
+    if (scope.type === "function_definition") {
+      // Defaults and annotations run in the enclosing scope; a body call stops here.
+      if (!pythonDefinitionHeader(scope).some((h) => sameSyntaxNode(below, h))) break;
+      continue;
+    }
+    if (scope.type === "lambda") {
+      const params = scope.childForFieldName("parameters");
+      if (sameSyntaxNode(below, params)) continue;
+      nested = true;
+      names = new Set();
+      if (params) collectPythonBindingNames(params, names);
+      const body = scope.childForFieldName("body");
+      if (body) collectPythonWalrusTargets(body, names);
+    } else if (scope.type.endsWith("comprehension") || scope.type === "generator_expression") {
+      const clauses = scope.namedChildren.filter((c) => c.type === "for_in_clause");
+      // The leftmost iterable runs in the enclosing scope.
+      if (clauses.length === 0 || sameSyntaxNode(below, clauses[0])) continue;
+      nested = true;
+      names = new Set();
+      for (const clause of clauses) {
+        const left = clause.childForFieldName("left");
+        if (left) collectPythonBindingNames(left, names);
+      }
+    } else if (scope.type === "class_definition") {
+      const body = scope.childForFieldName("body");
+      if (nested || !body || !sameSyntaxNode(below, body)) continue;
+      // ponytail: any binding in the class body suppresses the import there, even
+      // one after the call; order-aware class scoping would keep the earlier call.
+      names = new Set();
+      collectPythonScopeBindings(body, names);
+    }
+    if (names?.has(name)) return true;
+  }
+  return false;
+}
+
+/** The parts of a def, lambda or class that run in the enclosing scope. */
+function pythonDefinitionHeader(node: Parser.SyntaxNode): Array<Parser.SyntaxNode | null> {
+  if (node.type === "class_definition") return [node.childForFieldName("superclasses")];
+  return [node.childForFieldName("parameters"), node.childForFieldName("return_type")];
+}
+
+/** Walrus targets bind in the enclosing lambda, through any comprehension inside it. */
+function collectPythonWalrusTargets(node: Parser.SyntaxNode, names: Set<string>): void {
+  if (node.type === "named_expression") {
+    const target = node.childForFieldName("name");
+    if (target) names.add(target.text);
+  }
+  if (node.type === "lambda" || node.type === "function_definition" || node.type === "class_definition") return;
+  for (const child of node.namedChildren) collectPythonWalrusTargets(child, names);
+}
+
+/**
+ * Names a scope's own statements bind: assignment, loop, with and except targets,
+ * walrus, match captures, del, local imports and nested def or class names.
+ * Nested functions, classes and lambdas are not entered.
+ */
+function collectPythonScopeBindings(body: Parser.SyntaxNode, names: Set<string>): void {
+  const visit = (node: Parser.SyntaxNode): void => {
+    if (node.type === "function_definition" || node.type === "class_definition" || node.type === "lambda") {
+      const name = node.childForFieldName("name");
+      if (name) names.add(name.text);
+      // A walrus in a default, annotation or base binds here, where the header runs.
+      for (const part of pythonDefinitionHeader(node)) if (part) collectPythonWalrusTargets(part, names);
+      return;
+    }
+    if (node.type === "type_alias_statement") {
+      // `type X = ...` or `type X[T] = ...`: the alias is the first `type` child.
+      const head = node.namedChildren[0]?.namedChildren[0];
+      const alias = head?.type === "generic_type" ? head.namedChildren[0] : head;
+      if (alias?.type === "identifier") names.add(alias.text);
+    }
+    if (node.type === "assignment" || node.type === "augmented_assignment" || node.type === "for_statement") {
+      const left = node.childForFieldName("left");
+      if (left) collectPythonBindingNames(left, names);
+    }
+    if (node.type === "named_expression") {
+      const target = node.childForFieldName("name");
+      if (target) collectPythonBindingNames(target, names);
+    }
+    if (node.type === "as_pattern") {
+      // `case ... as x` carries no alias field; its name is the last child.
+      const last = node.lastNamedChild;
+      const target = node.childForFieldName("alias") ?? (last?.type === "identifier" ? last : null);
+      if (target) collectPythonBindingNames(target, names);
+    }
+    // A bare name in a match pattern is a capture (a dotted name is a value); `_` binds nothing.
+    if (node.type === "dotted_name" && node.namedChildCount === 1 && node.text !== "_"
+      && (node.parent?.type === "case_pattern" || node.parent?.type === "keyword_pattern")) {
+      names.add(node.text);
+    }
+    if (node.type === "splat_pattern") {
+      const target = node.namedChildren[0];
+      if (target?.type === "identifier" && target.text !== "_") names.add(target.text);
+    }
+    if (node.type === "delete_statement") {
+      collectPythonBindingNames(node, names);
+    }
+    if (node.parent?.type !== "module" && (node.type === "import_statement" || node.type === "import_from_statement")) {
+      for (const child of node.namedChildren) {
+        if (child.type === "aliased_import") {
+          const alias = child.childForFieldName("alias");
+          if (alias) names.add(alias.text);
+        } else if (child.type === "dotted_name" && !sameSyntaxNode(child, node.childForFieldName("module_name"))) {
+          names.add(child.text.split(".")[0]);
+        }
+      }
+    }
+    for (const child of node.namedChildren) visit(child);
+  };
+  visit(body);
+}
+
+/** Remove imports rebound in this scope, retaining bindings used by nested scopes. */
+function withoutPythonShadowedModules<T>(
+  modules: ReadonlyMap<string, T>,
+  definition: Parser.SyntaxNode,
+): ReadonlyMap<string, T> {
+  if (modules.size === 0) return modules;
+  const shadowed = new Set<string>();
+  const params = definition.childForFieldName("parameters");
+  if (params) collectPythonBindingNames(params, shadowed);
+  const body = definition.type === "module" ? definition : definition.childForFieldName("body");
+  if (body) collectPythonScopeBindings(body, shadowed);
+  if (![...shadowed].some((name) => modules.has(name))) return modules;
+  const out = new Map(modules);
+  for (const name of shadowed) out.delete(name);
+  return out;
 }
 
 /**
@@ -2479,7 +2815,12 @@ function importSpecifier(node: Parser.SyntaxNode, lang: Language): string | null
   if (lang === "python") {
     const m =
       node.childForFieldName("module_name") ??
-      node.namedChildren.find((c) => c.type === "dotted_name" || c.type === "relative_import");
+      node.namedChildren.find((c) => c.type === "dotted_name" || c.type === "relative_import") ??
+      // `import a.b as x` wraps the path in an `aliased_import`, so a child-level
+      // search finds nothing and the import went unrecorded entirely.
+      node.namedChildren
+        .find((c) => c.type === "aliased_import")
+        ?.childForFieldName("name");
     return m?.text ?? null;
   }
   if (lang === "go") {
