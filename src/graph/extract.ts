@@ -682,6 +682,12 @@ function walk(node: Parser.SyntaxNode, ctx: WalkCtx, out: NodeV1[], edges: RawEd
   }
 
   // not a definition — capture calls/imports/references, then descend with the same context
+  if (ctx.lang === "php") {
+    const ref = phpTypeReference(node, ctx);
+    if (ref) {
+      edges.push({ source: ctx.parentId, relation: "references", ...ref, file: ctx.rel });
+    }
+  }
   // R's `call` node is also its ONLY vehicle for library()/require()/source() —
   // there's no separate import-statement grammar construct to key off, so isImport
   // must be checked before the generic calls path or every import call would be
@@ -951,7 +957,36 @@ function phpAttributeClassRef(
   const nameNode =
     attr.childForFieldName("name") ??
     attr.namedChildren.find((c) => c.type === "name" || c.type === "qualified_name");
-  if (!nameNode) return null;
+  return phpClassRef(nameNode, ctx);
+}
+
+/** Only class-name positions count: a variable, member name or declaration is not a type use. */
+function phpTypeReference(node: Parser.SyntaxNode, ctx: WalkCtx): { name: string; specifier?: string } | null {
+  let nameNode: Parser.SyntaxNode | null | undefined;
+  switch (node.type) {
+    case "named_type":
+    case "object_creation_expression":
+    case "class_constant_access_expression":
+      nameNode = node.namedChildren[0];
+      break;
+    case "scoped_call_expression":
+    case "scoped_property_access_expression":
+      nameNode = node.childForFieldName("scope");
+      break;
+    case "binary_expression":
+      if (node.childForFieldName("operator")?.text === "instanceof") nameNode = node.childForFieldName("right");
+      break;
+  }
+  // This grammar also parses object and relative class keywords as named_type.
+  if (nameNode?.type === "name" && /^(object|self|parent|static)$/i.test(nameNode.text)) return null;
+  return phpClassRef(nameNode, ctx);
+}
+
+function phpClassRef(
+  nameNode: Parser.SyntaxNode | null | undefined,
+  ctx: WalkCtx,
+): { name: string; specifier?: string } | null {
+  if (!nameNode || (nameNode.type !== "name" && nameNode.type !== "qualified_name")) return null;
   if (nameNode.type === "qualified_name") {
     const fqn = nameNode.text.replace(/^\\/, "");
     return { name: fqn.replace(/^.*\\/, ""), specifier: fqn };
