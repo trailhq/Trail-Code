@@ -87,7 +87,11 @@ export interface RawEdge {
   relation: Relation;
   file: string; // the file this edge originates in (scopes name resolution)
   targetId?: string; // already-resolved target (contains)
-  specifier?: string; // module path to resolve (imports / imported-symbol references)
+  /** module path to resolve (imports / imported-symbol references). On a
+   * `calls` edge (TypeScript): the callee is a named import from this module,
+   * and `name` is its EXPORTED name; resolve.ts then confines resolution to
+   * that module instead of guessing from a unique repo-wide name match (#330). */
+  specifier?: string;
   name?: string; // symbol name to resolve (extends/implements/calls)
   viaMember?: boolean; // calls: was it `obj.foo()` (→ prefer method targets)?
   /** calls with viaMember: the receiver's resolved type name (from bindings /
@@ -705,12 +709,23 @@ function walk(node: Parser.SyntaxNode, ctx: WalkCtx, out: NodeV1[], edges: RawEd
       consumedCallee === "R6Class" || (consumedCallee === "list" && rIsMixinContainer(node));
     const callee = isConsumedRClassCall ? null : calleeName(node, ctx.lang);
     if (callee) {
+      // A bare TypeScript call through a named import carries where the callee
+      // comes from. `ctx.importedSymbols` already excludes bindings shadowed by
+      // a local declaration in scope, so `useRouter()` under a local
+      // `function useRouter` stays a bare name. Without this, resolve.ts's
+      // unique-name fallback bound a call to `useRouter` from "next/navigation"
+      // to an unrelated test mock of the same name (#330).
+      const imported =
+        !callee.viaMember && (ctx.lang === "typescript" || ctx.lang === "tsx")
+          ? ctx.importedSymbols.get(callee.name)
+          : undefined;
       const callEdge: RawEdge = {
         source: ctx.parentId,
         relation: "calls",
-        name: callee.name,
+        name: imported ? imported.name : callee.name,
         viaMember: callee.viaMember,
         file: ctx.rel,
+        ...(imported ? { specifier: imported.specifier } : {}),
         ...(callee.kinds ? { kinds: callee.kinds } : {}),
       };
       // Overloading languages: the call site's argument count, to pick the right

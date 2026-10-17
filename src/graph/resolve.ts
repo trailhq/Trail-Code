@@ -317,6 +317,25 @@ export function resolveEdges(
           : e.file.endsWith(".java")
             ? ["class", "struct", "enum", "interface"]
             : ["function"]);
+      // A call through a named import (TypeScript, extract.ts) names its module.
+      // An external or unresolved module means the callee is not in this repo:
+      // drop the edge rather than let the unique-name fallback bind it to an
+      // unrelated same-named local function (a test mock, a helper named
+      // `expect`) and report it as a production dependency (#330). An in-repo
+      // module that defines the name resolves to that definition alone; one
+      // that does not (a barrel re-export) keeps the name-based fallback.
+      if (e.specifier) {
+        const targetFile = resolveImport(e.specifier, e.file, byId);
+        if (!byId.has(targetFile)) continue;
+        const inModule = (perFileName.get(targetFile)?.get(e.name!) ?? []).filter((n) =>
+          callKinds.includes(n.kind),
+        );
+        if (inModule.length === 1) {
+          add(e.source, inModule[0].id, "calls", "extracted");
+          continue;
+        }
+        if (inModule.length > 1) continue;
+      }
       let hit = resolveName(e.name!, e.file, callKinds, perFileName, globalName);
       // Python is the Java case without the `new` to mark it: `Widget()` is an
       // ordinary call node, so a constructor edge dies against the function-only
