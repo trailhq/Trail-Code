@@ -711,7 +711,8 @@ export async function main(event: string): Promise<void> {
 
   if (event === 'prompt') {
     const prompt = String(input?.prompt ?? '').trim();
-    if (prompt.length < MIN_PROMPT_CHARS) return;
+    // Background completion notices are machine events, not user queries.
+    if (prompt.length < MIN_PROMPT_CHARS || prompt.startsWith('<task-notification>')) return;
     // Pointers-only, small, gated. No --source: per-prompt injected tokens are
     // fresh full-price input on every turn (unlike the cached SessionStart
     // orientation), so the pack carries locators, never inlined code — the agent

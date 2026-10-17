@@ -389,6 +389,48 @@ test('prompt branch stays silent and writes no session when graft is not built',
   assert.equal(existsSync(join(d, 'graft', '.cache', 'session', 'p1.json')), false, 'no session file on no-op');
 });
 
+for (const prompt of [
+  '<task-notification><task-id>abc</task-id><status>completed</status></task-notification>',
+  '  \n<task-notification>Background analysis completed</task-notification>',
+]) {
+  test('prompt hook ignores a background task notification without retrieval or session writes', async () => {
+    const d = mkdtempSync(join(tmpdir(), 'graft-notification-'));
+    const { stub, argsFile } = writeAskArgsStub(d);
+    const output: string[] = [];
+    const originalWrite = process.stdout.write;
+    process.stdout.write = ((chunk: unknown) => { output.push(String(chunk)); return true; }) as typeof process.stdout.write;
+    process.env.CLAUDE_PROJECT_DIR = d;
+    process.env.GRAFT_TEST_CLI = stub;
+    try {
+      await runWithStdin(JSON.stringify({ session_id: 'background', prompt }), () => main('prompt'));
+      assert.equal(existsSync(argsFile), false, 'machine notice must not invoke graft ask');
+      assert.equal(existsSync(join(d, 'graft', '.cache', 'session', 'background.json')), false);
+      assert.equal(output.join(''), '', 'machine notice must not inject retrieval guidance');
+    } finally {
+      process.stdout.write = originalWrite;
+      delete process.env.GRAFT_TEST_CLI;
+      delete process.env.CLAUDE_PROJECT_DIR;
+    }
+  });
+}
+
+test('prompt hook still retrieves a human query mentioning the notification tag later', async () => {
+  const d = mkdtempSync(join(tmpdir(), 'graft-notification-human-'));
+  const { stub, argsFile } = writeAskArgsStub(d);
+  const prompt = 'Explain how the <task-notification> tag is handled in this project';
+  process.env.CLAUDE_PROJECT_DIR = d;
+  process.env.GRAFT_TEST_CLI = stub;
+  try {
+    await runWithStdin(JSON.stringify({ session_id: 'human', prompt }), () => main('prompt'));
+    const args: string[] = JSON.parse(readFileSync(argsFile, 'utf8'));
+    assert.ok(args.includes(prompt));
+    assert.equal(readSession(d, 'human').lastQuery, prompt);
+  } finally {
+    delete process.env.GRAFT_TEST_CLI;
+    delete process.env.CLAUDE_PROJECT_DIR;
+  }
+});
+
 test('tool-savings sums the [graft] footer into the session total, keyed by session_id', async () => {
   const d = mkdtempSync(join(tmpdir(), 'graft-savings-'));
   process.env.CLAUDE_PROJECT_DIR = d;
