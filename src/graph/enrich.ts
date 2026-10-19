@@ -19,7 +19,7 @@
  * once, to cut `crux.code` verbatim from the source. `crux.span` is a pointer
  * only and is never used to re-slice.
  */
-import { formatCruxMiss, type CruxMissKind, type CruxSummarizer, type NodeCrux, type NodeRef } from "../ai/crux.js";
+import { CruxChunkError, formatCruxMiss, type CruxMissKind, type CruxSummarizer, type NodeCrux, type NodeRef } from "../ai/crux.js";
 import { LlmFailureGate } from "../ai/failure.js";
 import type { Crux, NodeV1 } from "./types.js";
 
@@ -265,6 +265,11 @@ async function collectFileCrux(
       for (const r of list) if (!results.has(r.id)) results.set(r.id, r);
       missing = refs.filter((r) => !results.has(r.id));
     } catch (err) {
+      // A later chunk can fail after earlier ones completed. Keep those results,
+      // but still report the provider error and stop retries (especially quota/auth).
+      if (err instanceof CruxChunkError) {
+        for (const r of err.partialResults) if (!results.has(r.id)) results.set(r.id, r);
+      }
       error = err instanceof Error ? err.message : String(err);
       break;
     }
