@@ -43,10 +43,13 @@ const gitEnv = {
   GIT_CONFIG_KEY_1: "tag.gpgsign", GIT_CONFIG_VALUE_1: "false",
 };
 
+// A graft repo moves to trail when a session opens on a machine with the trail
+// command, so a contributor who has trail installed would see test repos move.
+// Off for the run; the tests of the move turn it back on.
 const result = spawnSync(process.execPath, ["--import", "tsx", "--test", ...files], {
   cwd: repoRoot,
   stdio: "inherit",
-  env: { ...process.env, ...gitEnv },
+  env: { ...process.env, ...gitEnv, GRAFT_NO_TRAIL_SWITCH: "1" },
 });
 
 if (result.error) {

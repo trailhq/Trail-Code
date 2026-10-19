@@ -26,15 +26,20 @@
 import { readFileSync, writeFileSync, existsSync, rmSync, rmdirSync, statSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
-import { HOSTS } from './registry.js';
+import { HOSTS, hostRelPath } from './registry.js';
 import { ALL_MARKERS, type Markers } from './sections.js';
 import { mcpTargets, stripTomlSection } from './mcp-config.js';
 import { hookTargets } from './codex-hooks.js';
+import { cursorHookTargets } from './cursor-hooks.js';
 import { antigravitySkillTargets } from './antigravity.js';
 import { claudeGlobalTargets } from './claude-global.js';
-import { claudeTargets } from '../claude/init.js';
+import { claudeTargetsFor, legacyClaudeTargets, TRAIL_HOOK, TRAIL_STATUSLINE, trailSkillPath } from '../claude/init.js';
 import { isGraftAllowEntry, isGraftFooterRegex } from '../claude/settings-merge.js';
 import type { WriteScope } from './plan.js';
+import type { Brand } from '../brand.js';
+
+/** Both names a file can go by: graft's, and trail's in a repo that uses trail. */
+const NAMES: readonly Brand[] = ['graft', 'trail'];
 
 /** What a retraction did to one target. */
 export type RetractAction =
@@ -183,11 +188,13 @@ function removeJsonKey(path: string, topKey: string, apply: boolean): RetractAct
   const bucket = root[topKey];
   if (typeof bucket !== 'object' || bucket === null || Array.isArray(bucket)) return 'absent';
   const map = bucket as Record<string, unknown>;
-  if (!('graft' in map)) return 'absent';
+  // Either name: a repo that uses trail registers the server as `trail`.
+  const ours = ['graft', 'trail'].filter((k) => k in map);
+  if (ours.length === 0) return 'absent';
   if (!apply) {
-    return Object.keys(map).length === 1 && Object.keys(root).length === 1 ? 'deleted' : 'removed';
+    return Object.keys(map).length === ours.length && Object.keys(root).length === 1 ? 'deleted' : 'removed';
   }
-  delete map.graft;
+  for (const k of ours) delete map[k];
   if (Object.keys(map).length === 0) delete root[topKey];
   if (Object.keys(root).length === 0) return removeFile(path, true);
   writeFileSync(path, `${JSON.stringify(root, null, 2)}\n`);
@@ -195,7 +202,7 @@ function removeJsonKey(path: string, topKey: string, apply: boolean): RetractAct
 }
 
 /**
- * Delete the `[mcp_servers.graft]` table from a TOML config.
+ * Delete the `[mcp_servers.graft]` and `[mcp_servers.trail]` tables from a TOML config.
  *
  * Line-based on purpose: a real TOML parse-and-reserialize would reformat the
  * user's whole file. The table runs from its header to the next `[`-header or
@@ -203,8 +210,10 @@ function removeJsonKey(path: string, topKey: string, apply: boolean): RetractAct
  */
 function removeTomlSection(path: string, apply: boolean): RetractAction {
   if (!existsSync(path)) return 'absent';
-  const { rest: kept, found } = stripTomlSection(readFileSync(path, 'utf8'));
-  if (!found) return 'absent';
+  const graft = stripTomlSection(readFileSync(path, 'utf8'), 'graft');
+  const trail = stripTomlSection(graft.rest, 'trail');
+  const kept = trail.rest;
+  if (!graft.found && !trail.found) return 'absent';
   if (!apply) return isBlank(kept) ? 'deleted' : 'removed';
   if (isBlank(kept)) return removeFile(path, true);
   writeFileSync(path, kept.endsWith('\n') ? kept : `${kept}\n`);
@@ -229,7 +238,7 @@ function stripClaudeSettings(path: string, apply: boolean): RetractAction {
   }
   if (typeof root !== 'object' || root === null || Array.isArray(root)) return 'skipped-unparseable';
   const before = JSON.stringify(root);
-  const isGraftCmd = (v: unknown) => JSON.stringify(v ?? '').includes('graft-statusline.cjs');
+  const isGraftCmd = (v: unknown) => /(graft|trail)-statusline\.cjs|\.trail\/statusline\.cjs/.test(JSON.stringify(v ?? ''));
 
   for (const key of ['statusLine', 'subagentStatusLine']) {
     if (root[key] !== undefined && isGraftCmd(root[key])) delete root[key];
@@ -239,7 +248,7 @@ function stripClaudeSettings(path: string, apply: boolean): RetractAction {
     for (const event of Object.keys(root.hooks)) {
       const prior = root.hooks[event];
       if (!Array.isArray(prior)) continue;
-      const kept = prior.filter((e: unknown) => !JSON.stringify(e ?? '').includes('graft-hooks.cjs'));
+      const kept = prior.filter((e: unknown) => !/(graft|trail)-hooks\.cjs|\/\.trail\/hook\.cjs/.test(JSON.stringify(e ?? '')));
       if (kept.length === 0) delete root.hooks[event];
       else root.hooks[event] = kept;
     }
@@ -267,8 +276,12 @@ function stripClaudeSettings(path: string, apply: boolean): RetractAction {
   return 'removed';
 }
 
-/** Remove graft's PostToolUse/SessionStart/etc. entries from Codex's hooks.json. */
-function stripCodexHooks(path: string, apply: boolean): RetractAction {
+/**
+ * Remove graft's hook entries from a hooks config: Codex's `~/.codex/hooks.json`
+ * (PostToolUse/SessionStart/etc.), or Cursor's `.cursor/hooks.json`, whose
+ * schema `version` is graft's too, so a file holding nothing else goes.
+ */
+function stripHookEntries(path: string, apply: boolean, ours: string[] = []): RetractAction {
   if (!existsSync(path)) return 'absent';
   let root: Record<string, any>;
   try {
@@ -282,14 +295,15 @@ function stripCodexHooks(path: string, apply: boolean): RetractAction {
   for (const event of Object.keys(root.hooks)) {
     const prior = root.hooks[event];
     if (!Array.isArray(prior)) continue;
-    const kept = prior.filter((e: unknown) => !JSON.stringify(e ?? '').includes('graft-hooks.cjs'));
+    const kept = prior.filter((e: unknown) => !/(graft|trail)-hooks\.cjs/.test(JSON.stringify(e ?? '')));
     if (kept.length === 0) delete root.hooks[event];
     else root.hooks[event] = kept;
   }
   if (Object.keys(root.hooks).length === 0) delete root.hooks;
   if (JSON.stringify(root) === before) return 'absent';
-  if (!apply) return Object.keys(root).length === 0 ? 'deleted' : 'removed';
-  if (Object.keys(root).length === 0) return removeFile(path, true);
+  const empty = Object.keys(root).every((k) => ours.includes(k));
+  if (!apply) return empty ? 'deleted' : 'removed';
+  if (empty) return removeFile(path, true);
   writeFileSync(path, `${JSON.stringify(root, null, 2)}\n`);
   return 'removed';
 }
@@ -368,17 +382,20 @@ function targets(repo: string, opts: RetractOpts): Target[] {
    * rewrite it immediately afterwards. Exclude by path as well, so retraction
    * never depends on what runs next.
    */
+  // Under both names: init rewrites a kept host under the repo's name and
+  // clears the other name's copy itself.
   const keptPaths = new Set<string>();
   for (const host of HOSTS) {
-    if (exclude.has(host.id)) keptPaths.add(join(repo, host.relPath));
+    if (exclude.has(host.id)) for (const n of NAMES) keptPaths.add(join(repo, hostRelPath(host, n)));
   }
   for (const t of mcpTargets(repo, [...exclude], { home })) keptPaths.add(t.path);
   if (exclude.has('claude')) {
-    for (const t of claudeTargets(repo)) keptPaths.add(t.path);
+    for (const n of NAMES) for (const t of [...claudeTargetsFor(repo, n, home), ...legacyClaudeTargets(repo, n)]) keptPaths.add(t.path);
     for (const t of claudeGlobalTargets(home)) keptPaths.add(t.path);
   }
   if (exclude.has('agents')) for (const t of hookTargets(home)) keptPaths.add(t.path);
-  if (exclude.has('antigravity')) for (const t of antigravitySkillTargets(home)) keptPaths.add(t.path);
+  if (exclude.has('cursor')) for (const n of NAMES) for (const t of cursorHookTargets(repo, n)) keptPaths.add(t.path);
+  if (exclude.has('antigravity')) for (const n of NAMES) for (const t of antigravitySkillTargets(home, n)) keptPaths.add(t.path);
 
   /** Queue a target unless a kept host owns that path, or it's already queued. */
   const seen = new Set<string>();
@@ -388,16 +405,18 @@ function targets(repo: string, opts: RetractOpts): Target[] {
     out.push(t);
   };
 
-  // 1. Instruction files, one per host. Owned files go wholesale; shared files
-  //    lose only their fenced block.
+  // 1. Instruction files, one per host and name. Owned files go wholesale;
+  //    shared files lose only their fenced block (either name's).
   for (const host of HOSTS) {
     if (exclude.has(host.id)) continue;
-    const path = join(repo, host.relPath);
-    add(
-      host.kind === 'owned'
-        ? { hostId: host.id, path, what: 'graft-owned instruction file', scope: 'repo', run: (a) => removeFile(path, a) }
-        : { hostId: host.id, path, what: 'fenced graft section', scope: 'repo', run: (a) => stripSection(path, a) },
-    );
+    for (const n of NAMES) {
+      const path = join(repo, hostRelPath(host, n));
+      add(
+        host.kind === 'owned'
+          ? { hostId: host.id, path, what: `${n}-owned instruction file`, scope: 'repo', run: (a) => removeFile(path, a) }
+          : { hostId: host.id, path, what: 'fenced graft section', scope: 'repo', run: (a) => stripSection(path, a) },
+      );
+    }
   }
 
   // 1b. Instruction files from hosts that no longer exist in the registry.
@@ -422,14 +441,37 @@ function targets(repo: string, opts: RetractOpts): Target[] {
 
   // 3. Claude Code: settings fragments, both shims, the skill, and the .mcp.json key.
   if (!exclude.has('claude')) {
-    const [settings, statusline, hooks, skill, mcp] = claudeTargets(repo).map((t) => t.path);
+    const [settings, , , , mcp] = legacyClaudeTargets(repo, 'graft').map((t) => t.path);
+    const local = join(repo, '.claude', 'settings.local.json');
+    const trailHook = join(repo, TRAIL_HOOK);
+    const trailSl = join(repo, TRAIL_STATUSLINE);
+    // The shims and skill under both names: a repo that moved to trail's names
+    // still comes out clean, and so does one a teammate on graft re-wired.
+    const named = (['graft', 'trail'] as const).flatMap((n) => {
+      const [, statusline, hooks, skill] = legacyClaudeTargets(repo, n).map((t) => t.path);
+      return [
+        { hostId: 'claude', path: statusline, what: 'statusline shim', scope: 'repo', run: (a: boolean) => removeFile(statusline, a) },
+        { hostId: 'claude', path: hooks, what: 'hooks shim', scope: 'repo', run: (a: boolean) => removeFile(hooks, a) },
+        { hostId: 'claude', path: skill, what: `${n} skill`, scope: 'repo', run: (a: boolean) => removeFile(skill, a) },
+      ];
+    });
     for (const t of [
       { hostId: 'claude', path: settings, what: 'statusline + hooks + allowlist + footer regex', scope: 'repo', run: (a) => stripClaudeSettings(settings, a) },
-      { hostId: 'claude', path: statusline, what: 'statusline shim', scope: 'repo', run: (a) => removeFile(statusline, a) },
-      { hostId: 'claude', path: hooks, what: 'hooks shim', scope: 'repo', run: (a) => removeFile(hooks, a) },
-      { hostId: 'claude', path: skill, what: 'graft skill', scope: 'repo', run: (a) => removeFile(skill, a) },
-      { hostId: 'claude', path: mcp, what: 'mcpServers.graft', scope: 'repo', run: (a) => removeJsonKey(mcp, 'mcpServers', a) },
+      { hostId: 'claude', path: local, what: 'trail statusline + allowlist', scope: 'repo', run: (a) => stripClaudeSettings(local, a) },
+      { hostId: 'claude', path: trailHook, what: 'hooks shim', scope: 'repo', run: (a) => removeFile(trailHook, a) },
+      { hostId: 'claude', path: trailSl, what: 'statusline shim', scope: 'repo', run: (a) => removeFile(trailSl, a) },
+      ...named,
+      { hostId: 'claude', path: mcp, what: 'mcpServers entry', scope: 'repo', run: (a) => removeJsonKey(mcp, 'mcpServers', a) },
     ] as Target[]) add(t);
+  }
+
+  // 3b. Cursor's repo-local hooks: the shim under either name, and the entries.
+  if (!exclude.has('cursor')) {
+    for (const n of NAMES) {
+      const [shim, config] = cursorHookTargets(repo, n);
+      add({ hostId: 'cursor', path: shim.path, what: shim.what, scope: 'repo', run: (a) => removeFile(shim.path, a) });
+      add({ hostId: 'cursor', path: config.path, what: config.what, scope: 'repo', run: (a) => stripHookEntries(config.path, a, ['version']) });
+    }
   }
 
   // 4. Global: Claude Code's user-level copy, Codex's hook shim + entries, and
@@ -441,18 +483,19 @@ function targets(repo: string, opts: RetractOpts): Target[] {
         { hostId: 'claude', path: shim.path, what: shim.what, scope: 'global', run: (a) => removeFile(shim.path, a) },
         { hostId: 'claude', path: settings.path, what: settings.what, scope: 'global', run: (a) => stripClaudeSettings(settings.path, a) },
         { hostId: 'claude', path: mcp.path, what: mcp.what, scope: 'global', run: (a) => removeJsonKey(mcp.path, 'mcpServers', a) },
+        { hostId: 'claude', path: trailSkillPath(home), what: 'trail skill', scope: 'global', run: (a) => removeFile(trailSkillPath(home), a) },
       ] as Target[]) add(t);
     }
     if (!exclude.has('agents')) {
       for (const t of hookTargets(home)) {
         add({
           hostId: t.hostId, path: t.path, what: t.what, scope: 'global',
-          run: (a) => (t.path.endsWith('.json') ? stripCodexHooks(t.path, a) : removeFile(t.path, a)),
+          run: (a) => (t.path.endsWith('.json') ? stripHookEntries(t.path, a) : removeFile(t.path, a)),
         });
       }
     }
     if (!exclude.has('antigravity')) {
-      for (const t of antigravitySkillTargets(home)) {
+      for (const t of NAMES.flatMap((n) => antigravitySkillTargets(home, n))) {
         add({ hostId: t.hostId, path: t.path, what: t.what, scope: 'global', run: (a) => removeFile(t.path, a) });
       }
     }
@@ -462,10 +505,12 @@ function targets(repo: string, opts: RetractOpts): Target[] {
   //    here can't strand the wiring half-retracted.
   if (opts.cache !== false) {
     const cache = join(repo, 'graft');
+    const trailCache = join(repo, '.trail', 'cache');
     const gitignore = join(repo, '.gitignore');
     const ignore = join(repo, '.ignore');
     for (const t of [
       { hostId: 'graph', path: cache, what: 'local graph cache', scope: 'repo', run: (a) => removeDir(cache, a) },
+      { hostId: 'graph', path: trailCache, what: 'local graph cache', scope: 'repo', run: (a) => removeDir(trailCache, a) },
       { hostId: 'graph', path: gitignore, what: 'graft/ ignore entry', scope: 'repo', run: (a) => stripIgnoreEntries(gitignore, [/^\/?graft\/?$/], a) },
       { hostId: 'graph', path: ignore, what: 'graft/ search re-admit entries', scope: 'repo', run: (a) => stripIgnoreEntries(ignore, [/^!?graft\/?$/, /^graft\/\.(cache|graph)\/?$/], a) },
     ] as Target[]) add(t);

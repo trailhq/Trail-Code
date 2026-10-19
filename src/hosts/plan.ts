@@ -10,12 +10,13 @@
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { statSync } from 'node:fs';
-import { HOSTS, detectHosts, type DetectProbe, type HostTarget } from './registry.js';
+import { HOSTS, detectHosts, hostRelPath, hostWiringName, type DetectProbe, type HostTarget } from './registry.js';
 import { mcpTargets } from './mcp-config.js';
 import { hookTargets } from './codex-hooks.js';
 import { cursorHookTargets } from './cursor-hooks.js';
 import { antigravitySkillTargets } from './antigravity.js';
 import { claudeTargets } from '../claude/init.js';
+import { brand, type Brand } from '../brand.js';
 import { claudeGlobalTargets } from './claude-global.js';
 
 /** Where a write lands. 'global' = outside the repo, affects every project. */
@@ -49,14 +50,14 @@ function probeFor(home: string, repo: string): DetectProbe {
 }
 
 /** The instruction-file write for one host, derived from its registry entry. */
-function instructionTarget(repo: string, host: HostTarget): PlannedWrite {
+function instructionTarget(repo: string, host: HostTarget, name: Brand): PlannedWrite {
   return {
     hostId: host.id,
     id: host.id,
-    path: join(repo, host.relPath),
+    path: join(repo, hostRelPath(host, name)),
     scope: 'repo',
     kind: 'instruction',
-    what: host.kind === 'owned' ? 'graft-owned file' : 'fenced graft section',
+    what: host.kind === 'owned' ? `${name}-owned file` : `fenced ${name} section`,
   };
 }
 
@@ -69,22 +70,23 @@ export function planInit(repo: string, opts: { home?: string; ids?: string[] } =
   const home = opts.home ?? homedir();
   const probe = probeFor(home, repo);
   const detected = new Set(detectHosts(probe).map((h) => h.id));
+  const name = hostWiringName(repo, brand());
 
   const plans: HostPlan[] = [
     // Repo writes plus the user-level copy under `~/.claude` — the picker and
     // `--dry-run` render 'global' writes in their own section, so a user sees
     // what lands outside the repo before agreeing to it.
-    { id: 'claude', name: 'Claude Code', detected: true, writes: [...claudeTargets(repo), ...claudeGlobalTargets(home)] },
+    { id: 'claude', name: 'Claude Code', detected: true, writes: [...claudeTargets(repo, brand()), ...claudeGlobalTargets(home, brand())] },
     ...HOSTS.map((host) => ({
       id: host.id,
       name: host.name,
       detected: detected.has(host.id),
       writes: [
-        instructionTarget(repo, host),
-        ...mcpTargets(repo, [host.id], { home }),
+        instructionTarget(repo, host, name),
+        ...mcpTargets(repo, [host.id], { home, name }),
         ...(host.id === 'agents' ? hookTargets(home) : []),
-        ...(host.id === 'cursor' ? cursorHookTargets(repo) : []),
-        ...(host.id === 'antigravity' ? antigravitySkillTargets(home) : []),
+        ...(host.id === 'cursor' ? cursorHookTargets(repo, name) : []),
+        ...(host.id === 'antigravity' ? antigravitySkillTargets(home, name) : []),
       ],
     })),
   ];

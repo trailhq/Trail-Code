@@ -28,3 +28,6 @@ transcripts/
 
 # graft's local repository settings — not committed.
 /.graft/
+
+# The @trailhq/trail package, laid out by scripts/pack-trail.mjs.
+/build/

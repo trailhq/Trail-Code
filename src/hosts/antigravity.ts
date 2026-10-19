@@ -10,32 +10,47 @@
  * `antigravitySkillTargets()` is the pure "which files would this touch" half (for
  * `graft init --dry-run` / the picker); `installAntigravitySkill()` does the write.
  */
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, rmdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { skillTemplate } from '../claude/skill-template.js';
 import type { PlannedWrite } from './plan.js';
 import type { ConfigWrite } from './config-write.js';
+import type { Brand } from '../brand.js';
 
 /** The skill file path, under the user's global Antigravity skills dir. */
-function skillPath(home: string): string {
-  return join(home, '.gemini', 'skills', 'graft', 'SKILL.md');
+function skillPath(home: string, name: Brand = 'graft'): string {
+  return join(home, '.gemini', 'skills', name, 'SKILL.md');
 }
 
 /** The files installing Antigravity's global skill would touch — pure, no writes. */
-export function antigravitySkillTargets(home: string): PlannedWrite[] {
+export function antigravitySkillTargets(home: string, name: Brand = 'graft'): PlannedWrite[] {
   return [
     {
       hostId: 'antigravity', id: 'antigravity-skill',
-      path: skillPath(home),
-      scope: 'global', kind: 'skill', what: 'graft skill (shared)',
+      path: skillPath(home, name),
+      scope: 'global', kind: 'skill', what: `${name} skill (shared)`,
     },
   ];
 }
 
-/** Write graft's skill into `~/.gemini/skills/graft/SKILL.md`, idempotently. */
-export function installAntigravitySkill(home: string): ConfigWrite[] {
-  const path = skillPath(home);
-  const content = skillTemplate();
+/**
+ * Write the skill into `~/.gemini/skills/graft/SKILL.md`, idempotently; under
+ * trail into `skills/trail/`, in trail's text, and graft's copy goes so the
+ * agent doesn't load two. Every workspace reads this one, so once trail's is
+ * there a repo still on graft leaves it, rather than add graft's back beside
+ * it; trail's text says what to run when only graft is installed.
+ */
+export function installAntigravitySkill(home: string, name: Brand = 'graft'): ConfigWrite[] {
+  if (name === 'graft' && existsSync(skillPath(home, 'trail'))) {
+    return [{ id: 'antigravity-skill', path: skillPath(home, 'trail'), action: 'unchanged' }];
+  }
+  if (name === 'trail') {
+    const old = skillPath(home, 'graft');
+    rmSync(old, { force: true });
+    try { rmdirSync(dirname(old)); } catch { /* not empty, or not there */ }
+  }
+  const path = skillPath(home, name);
+  const content = skillTemplate(name);
   const existed = existsSync(path);
   if (existed && readFileSync(path, 'utf8') === content) {
     return [{ id: 'antigravity-skill', path, action: 'unchanged' }];

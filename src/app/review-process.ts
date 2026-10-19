@@ -26,11 +26,12 @@
  *
  * A child process rather than a `worker_threads` worker, deliberately:
  *
- *  - **The native grammars keep loading the way they already do.** `graph/extract.ts`
- *    imports nine tree-sitter addons at module scope and constructs a `Parser` there
- *    too, and `graph/generic.ts` loads more through `createRequire`. In a worker all
- *    of that is re-instantiated per thread, which puts the N-API-in-worker behaviour
- *    of nine third-party native modules between the App and every review. A fork runs
+ *  - **The native grammars keep loading the way they already do.** `graph/native.ts`
+ *    requires up to nine tree-sitter addons and constructs a `Parser` the first time
+ *    a build needs them, and `graph/generic.ts` loads more through `createRequire`.
+ *    In a worker all of that is re-instantiated per thread, which puts the
+ *    N-API-in-worker behaviour of nine third-party native modules between the App
+ *    and every review. A fork runs
  *    byte-identical code to what production runs today.
  *  - **A review can be killed.** A wedged parse or a 10-minute clone is a process
  *    to SIGKILL, not a thread with no safe way to stop it.

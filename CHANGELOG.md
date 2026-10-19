@@ -1,5 +1,76 @@
 # Changelog
 
+## 0.23.0
+
+### Changed
+
+- **One shared folder** (#619): `trail init` now shares `.trail/hook.cjs` and
+  one SessionStart line in `.claude/settings.json`. Everything else is
+  personal: `.claude/settings.local.json`, and the skill in `~/.claude`. Repos
+  set up the old way move over by themselves at the next session; commit
+  `.trail/` and `.claude/settings.json` once after that.
+- **The code map lives in `.trail/cache/`** in a repo on trail, kept out of git
+  by `.trail/.gitignore`. An existing `graft/` map is moved there, not rebuilt.
+- **No MCP server for Claude Code.** init stops adding it and removes the one
+  an older init added. Cursor keeps its server.
+- **Overlap shows up after an edit, per function** (#617): a teammate's open
+  branch is mentioned only when you both change the same function, and merged
+  or closed branches no longer count.
+- **A learning's cost counts from where its work began** (#620), not from the
+  start of a long session.
+
+### Fixed
+
+- A fresh `trail init` no longer leaves an untracked `graft/` folder behind.
+
+## 0.22.1
+
+### Added
+
+- **Teammates without trail still get the learnings** (#611): in a repo with
+  committed `.trail/`, Claude reads the newest learnings, credits the one it
+  used, and then offers once to install trail.
+- **`trail init` lets you tick which learnings to keep**, and says how many
+  sessions each one came from.
+- **`trail init` learns from PR review comments**: things reviewers flagged on
+  2 or more of the last 50 merged PRs become team learnings.
+- **`trail check` flags edits to a teammate's learning.**
+
+### Fixed
+
+- **`trail init` finds Claude Code installed only as a VS Code or Cursor
+  extension**, so it no longer skips past sessions without a word. Run
+  `trail init` again to get the learnings it missed.
+
+### Removed
+
+- The GitHub App's brain build (#613).
+
+## 0.22.0
+
+graft is now **Trail-code**. The same build ships as two packages:
+`@trailhq/trail-code` (the `trail` command) and `@nanonets/graft` (the `graft`
+command, unchanged). Both keep getting every release.
+
+### Added
+
+- **`npm install -g @trailhq/trail-code`** gives you the `trail` command: the
+  code map plus learnings your team shares in `.trail/`.
+- **`graft upgrade` adds `trail` alongside graft**, and the next Claude Code
+  session in a graft-wired repo moves it to trail by itself.
+- **The agent passes the news on**: on a machine with graft and no trail,
+  Claude Code is told once a week to mention that `graft upgrade` adds trail.
+
+### Fixed
+
+- **Each Claude Code hook answers once**, not from both the repo's and
+  `~/.claude`'s copies, so learnings no longer arrive twice per prompt.
+- **Hook shims find `@trailhq/trail-code`**, and `trail` warns in a repo whose
+  older graft hooks can't reach it.
+- **No crash on npm 12**, which skips the grammars' install scripts: grammars
+  load per language and fall back to WASM.
+- The package points at `github.com/trailhq/Trail-Code`.
+
 ## 0.19.0
 
 ### Added

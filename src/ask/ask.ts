@@ -15,7 +15,7 @@
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import matter from "gray-matter";
+import { matter } from "../util/front-matter.js";
 import { contextDirFor } from "../context/node-file.js";
 import { withSavings, savingsFor, savingsTurnNudge, type Savings } from "../context/savings.js";
 import { loadGraphCached, loadAskIndexCached } from "../graph/load.js";
@@ -48,8 +48,8 @@ import {
 } from "./graphrank.js";
 import { readSourceFile } from "../util/source.js";
 import { counts, tokenize, type AskIndex, type AskIndexDoc } from "./index-file.js";
-import { rulesForPointers, formatRules, type AppliedRule } from "../brain/attach.js";
-import { readLink, readRulesCache } from "../brain/link.js";
+import { cmd, tag } from "../brand.js";
+import { formatNoteHits, learningSavingsLine, type NoteHit } from "../notes/notes.js";
 
 export interface AskHit {
   kind: "concept" | "symbol" | "caller" | "callee";
@@ -108,6 +108,14 @@ export interface AskResult {
    * callers must not re-sort this list by `score`. */
   hits: AskHit[];
   note?: string;
+  /** Past sessions' notes (notes/home.ts) that bear on this query, best first.
+   *  Set by `attachNotes` (notes/ask-notes.ts), never by the ranker. */
+  notes?: NoteHit[];
+  /** The repo keeps notes on this machine, so an empty `notes` means "none
+   *  about this yet" rather than "this repo keeps no notes". */
+  notesChecked?: boolean;
+  /** One line about the notes, e.g. that this many would search better ranked. */
+  notesHint?: string;
   /** Token-saving estimate, set only in `--source` (retriever) mode: the whole
    * size of the distinct files these hits point into, i.e. the baseline cost of
    * reading them instead of this pack. Computed from file sizes stored at build. */
@@ -133,11 +141,6 @@ export interface AskResult {
   scopes?: { federated: string[]; alsoMatched: { scope: string; bestId: string }[] };
   /** @internal Opt-in latent file groups plus the exact pre-file-ranking list. */
   ranking?: AskRankingMetadata;
-  /** Rules from the attached Trail brain that govern the symbols in `hits`.
-   * Absent when the repo has no brain linked, or when none of its rules touch
-   * this answer. Populated in `--source` mode only, alongside `saved`: a pack
-   * the agent does not read the code from has nothing for a rule to sit beside. */
-  rules?: AppliedRule[];
 }
 
 /** First real prose line of a node body (skips headings, markers, blanks). */
@@ -349,7 +352,7 @@ type StructuralOutcome = { result: AskResult } | { fallthroughNote: string } | n
 function fallthroughNoteFor(subject: string): string {
   return (
     `structural index: no entries for '${subject}' — showing lexical matches; ` +
-    `for precise edges try graft callers '${subject}', or graft grep '${subject}' for every reference (loosen the pattern if it returns nothing)`
+    `for precise edges try ${cmd("graft callers")} '${subject}', or ${cmd("graft grep")} '${subject}' for every reference (loosen the pattern if it returns nothing)`
   );
 }
 
@@ -1198,7 +1201,7 @@ function lexical(
     // so a query that missed everywhere still tells the caller where to look.
     note: scored.length
       ? undefined
-      : `no matching nodes — try different words, or \`graft build\` if graft/ is empty${scopesHereClause(scopes ?? [])}`,
+      : `no matching nodes — try different words, or \`${cmd("graft build")}\` if the code map is empty${scopesHereClause(scopes ?? [])}`,
   };
 }
 
@@ -1390,27 +1393,8 @@ export function ask(dir: string, query: string, opts: AskOptions = {}): AskResul
     // The pack is truly substitutive only in retriever mode (spans inlined), so
     // the "vs reading whole files" estimate is only honest here.
     result.saved = baselineFor(result.hits, corpus.graph);
-    // What the team decided about the code this pack just inlined. Read from the
-    // local cache only — `ask` is on the agent's hot path and must never wait on
-    // the network; `graft trail pull` and `init` are what refresh it.
-    const applied = attachBrainRules(root, result.hits, corpus.graph);
-    if (applied.length) result.rules = applied;
   }
   return result;
-}
-
-/** Rules for this answer's symbols, or [] when the repo has no brain linked,
- * the cache is missing, or nothing overlaps. Never throws: a broken link must
- * degrade to the code-only answer graft gave before a brain existed. */
-function attachBrainRules(root: string, hits: AskHit[], graph: GraphV1 | null): AppliedRule[] {
-  try {
-    if (!readLink(root)) return [];
-    const cache = readRulesCache(root);
-    if (!cache?.rules?.length) return [];
-    return rulesForPointers(hits.map((h) => h.pointer), cache.rules, graph);
-  } catch {
-    return [];
-  }
 }
 
 // ── Skeleton view ────────────────────────────────────────────────────────────
@@ -1438,7 +1422,7 @@ export interface SkeletonResult {
 export function skeleton(dir: string, file: string, opts: { contextDir?: string } = {}): SkeletonResult {
   const outDir = contextDirFor(resolve(dir), opts.contextDir);
   const graph = loadGraphCached(outDir);
-  if (!graph) return { file, entries: [], note: "no wiring graph — run `graft build` first" };
+  if (!graph) return { file, entries: [], note: `no wiring graph — run \`${cmd("graft build")}\` first` };
 
   let defs = graph.nodes.filter((n) => n.kind !== "file" && n.path === file);
   if (!defs.length) {
@@ -1469,7 +1453,7 @@ export function skeleton(dir: string, file: string, opts: { contextDir?: string 
 
 /** Render a {@link SkeletonResult} as compact markdown. */
 export function formatSkeleton(r: SkeletonResult): string {
-  const head = `graft skeleton — ${r.file}`;
+  const head = `${cmd("graft skeleton")} — ${r.file}`;
   if (!r.entries.length) return `${head}\n\n${r.note ?? "no definitions."}\n`;
   const lines = r.entries.map((e) => {
     const sig = e.signature ? `  ${e.signature}` : "";
@@ -1487,7 +1471,7 @@ function toTokens(chars: number): number {
 
 /** Render an {@link AskResult} as a compact markdown context pack. */
 export function formatAsk(r: AskResult): string {
-  const head = `graft ask — "${r.query}"  (${r.mode})`;
+  const head = `${cmd("graft ask")} — "${r.query}"  (${r.mode})`;
   // The note prints as its own prominent line(s) right under the header —
   // above every hit — so a loud structural-fallthrough note (or the
   // no-structural-edges / no-lexical-match note) can never be missed by only
@@ -1502,10 +1486,21 @@ export function formatAsk(r: AskResult): string {
         .map((l) => (l.startsWith("structural index:") ? `⚠ ${l}` : l))
         .join("\n")
     : "";
+  // Notes go first: a decision a past session already made, or an approach it
+  // already ruled out, changes how the code below should be read.
+  const teamNotes = r.notes?.length
+    ? formatNoteHits(r.notes)
+    : r.notesChecked
+      ? ["· no learnings about this yet", ""]
+      : [];
+  const learned = r.notes?.length ? learningSavingsLine(r.notes) : null;
+  if (learned) teamNotes.push(learned, "");
+  if (r.notesHint) teamNotes.push(r.notesHint, "");
   if (r.hits.length === 0) {
+    if (r.notes?.length) return `${head}\n\n${teamNotes.join("\n").trimEnd()}\n\n${noteBlock || "no code matches."}${escalationNudge(r)}\n`;
     return `${head}\n\n${noteBlock || "no matches."}${escalationNudge(r)}\n`;
   }
-  const lines = noteBlock ? [head, "", noteBlock, ""] : [head, ""];
+  const lines = noteBlock ? [head, "", noteBlock, "", ...teamNotes] : [head, "", ...teamNotes];
   if (r.mode === "structural") {
     for (const h of r.hits) {
       const tail = h.snippet ? ` — ${h.snippet}` : "";
@@ -1526,9 +1521,6 @@ export function formatAsk(r: AskResult): string {
     });
     lines.push(...scopeFooterLines(r));
   }
-  // Before `body` is joined, so the rules text is counted in the savings line
-  // below rather than claimed as free.
-  if (r.rules?.length) lines.push(...formatRules(r.rules));
   const body = lines.join("\n").trimEnd();
   const savings = askSavingsLine(r, body);
   return (savings ? `${savings}\n\n${body}` : body) + escalationNudge(r) + "\n";
@@ -1543,8 +1535,8 @@ function escalationNudge(r: AskResult): string {
   if ((r.mode !== "lexical" && r.mode !== "empty") || r.hits.length > 3) return "";
   const n = r.hits.length;
   return (
-    `\n\n[graft] ${n === 0 ? "no hits" : `only ${n} hit${n === 1 ? "" : "s"}`} — don't re-ask with new wording; switch tool: ` +
-    "`graft grep \"<literal>\"` for every occurrence · `graft skeleton <file>` for a file's full API · `graft callers <symbol>` for who-uses."
+    `\n\n${tag()} ${n === 0 ? "no hits" : `only ${n} hit${n === 1 ? "" : "s"}`} — don't re-ask with new wording; switch tool: ` +
+    `\`${cmd("graft grep")} "<literal>"\` for every occurrence · \`${cmd("graft skeleton")} <file>\` for a file's full API · \`${cmd("graft callers")} <symbol>\` for who-uses.`
   );
 }
 
@@ -1561,7 +1553,7 @@ function askSavingsLine(r: AskResult, body: string): string {
   const saved = base - pack;
   const pct = Math.round((saved / base) * 100);
   return (
-    `[graft] tokens saved ≈ ${saved.toLocaleString()} (${pct}%) — this pack ≈ ` +
+    `${tag()} tokens saved ≈ ${saved.toLocaleString()} (${pct}%) — this pack ≈ ` +
     `${pack.toLocaleString()} tok vs reading the ${r.saved.files} source file(s) whole ≈ ` +
     `${base.toLocaleString()} tok. Estimate (baseline = those files read in full).` +
     savingsTurnNudge(saved)

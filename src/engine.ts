@@ -21,6 +21,7 @@ import { checkContext, type CheckResult } from "./context/check.js";
 import { buildGraph, type GraphBuildOptions, type GraphBuildResult } from "./graph/build.js";
 import { checkGraph, type GraphCheckResult } from "./graph/check.js";
 import { ask, type AskResult } from "./ask/ask.js";
+import { attachNotes } from "./notes/ask-notes.js";
 
 export { CODE_EXTENSIONS };
 export type { BuildResult, BuildProgress, CheckResult, GraphBuildResult, GraphCheckResult, AskResult };
@@ -106,7 +107,7 @@ export class Graft {
    * edges and everything else to a lexical rank over concepts + symbols.
    */
   ask(dir: string, query: string, opts: { limit?: number; source?: boolean; full?: boolean; in?: string; graphRank?: boolean } = {}): AskResult {
-    return ask(dir, query, {
+    const r = ask(dir, query, {
       contextDir: this.cfg.contextDir,
       limit: opts.limit,
       source: opts.source,
@@ -114,6 +115,7 @@ export class Graft {
       in: opts.in,
       graphRank: opts.graphRank,
     });
+    return attachNotes(r, dir);
   }
 
   private _chatModel?: ChatModel;

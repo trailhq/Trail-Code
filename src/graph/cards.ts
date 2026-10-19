@@ -17,10 +17,11 @@
 import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { relPosix } from "../util/paths.js";
-import matter from "gray-matter";
+import { matter } from "../util/front-matter.js";
 import type { GraphV1, NodeV1 } from "./types.js";
 import { CACHE_DIR, readNodes } from "../context/node-file.js";
 import { GRAPH_DIR } from "./write.js";
+import { inBrand } from "../brand.js";
 
 const INDEX_FILE = "INDEX.md";
 /** Where a root-level file card goes when `graft/<stem>.md` is already a concept
@@ -208,6 +209,7 @@ export function writeCards(graph: GraphV1, outDir: string): CardStats {
  * nodes on disk and the per-file cards. Deterministic order; no timestamps.
  */
 export function writeIndex(outDir: string, files: CardFileInfo[]): void {
+  // Spelled by the name that built it: a trail-only machine has no `graft` to run.
   const lines: string[] = [
     "# graft — repo map",
     "",
@@ -223,7 +225,7 @@ export function writeIndex(outDir: string, files: CardFileInfo[]): void {
     "as the `graft` CLI everywhere else. Edges — who calls what — live only in the",
     "graph, not in these files: `graft callers <symbol>` is the only way to read them.",
     "",
-  ];
+  ].map((l) => inBrand(l));
 
   const concepts = readNodes(outDir).sort((a, b) => a.slug.localeCompare(b.slug));
   if (concepts.length) {

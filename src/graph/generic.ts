@@ -23,7 +23,7 @@ import { dirname, join } from "node:path";
 import { createRequire } from "node:module";
 import { contentHash } from "../util/id.js";
 import type { Kind, NodeV1 } from "./types.js";
-import type { ExtractResult, RawEdge } from "./extract.js";
+import type { ExtractResult, Language, RawEdge } from "./extract.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -36,6 +36,9 @@ export interface GenericLang {
   name: string;
   exts: string[];
   wasm: string;
+  /** Bundle dirs whose `tags.scm` to use, concatenated, when there is no vendored
+   * queries/<name>.scm. Only the depth-tier stand-ins below set it. */
+  bundledTags?: string[];
 }
 
 /** The breadth registry. Add a row + a queries/<name>.scm to support a language.
@@ -60,6 +63,36 @@ export const GENERIC_LANGS: readonly GenericLang[] = [
   { name: "lua", exts: [".lua"], wasm: "lua" },
   { name: "gleam", exts: [".gleam"], wasm: "gleam" },
 ];
+
+/**
+ * WASM stand-ins for the depth tier, used only for a language whose native grammar
+ * did not load (native.ts): npm 12 skips the install script that builds
+ * `tree-sitter-kotlin`, for one. They claim no extension, so `genericLangOf` never
+ * returns them; the build picks one by asking {@link fallbackLangOf}. Output is the
+ * breadth tier's: symbols and bare-name calls, no receiver types or bindings.
+ * Kotlin, Swift and PHP use their vendored queries/<name>.scm; the rest use the
+ * bundle's own tags.scm (typescript's builds on javascript's, as upstream does).
+ */
+const FALLBACK_LANGS: Record<Exclude<Language, "java">, GenericLang> = {
+  typescript: { name: "typescript", exts: [], wasm: "typescript", bundledTags: ["javascript", "typescript"] },
+  tsx: { name: "tsx", exts: [], wasm: "tsx", bundledTags: ["javascript", "tsx"] },
+  python: { name: "python", exts: [], wasm: "python", bundledTags: ["python"] },
+  go: { name: "go", exts: [], wasm: "go", bundledTags: ["go"] },
+  r: { name: "r", exts: [], wasm: "r", bundledTags: ["r"] },
+  kotlin: { name: "kotlin", exts: [], wasm: "kotlin" },
+  swift: { name: "swift", exts: [], wasm: "swift" },
+  php: { name: "php", exts: [], wasm: "php" },
+};
+
+/** The breadth-tier grammar that stands in for a depth-tier language whose native
+ * grammar can't load. Java already has a breadth row, so it is its own stand-in. */
+export function fallbackLangOf(lang: Language): GenericLang {
+  return lang === "java" ? GENERIC_LANGS.find((l) => l.name === "java")! : FALLBACK_LANGS[lang];
+}
+
+function rowNamed(name: string): GenericLang | undefined {
+  return GENERIC_LANGS.find((l) => l.name === name) ?? Object.values(FALLBACK_LANGS).find((l) => l.name === name);
+}
 
 const byExt = new Map<string, GenericLang>();
 for (const l of GENERIC_LANGS) for (const e of l.exts) byExt.set(e, l);
@@ -102,20 +135,29 @@ function requireWasm(wasm: string): Buffer | null {
   }
 }
 
-function loadQuery(name: string): string | null {
+// Sanitize editor-specific query predicates the tree-sitter Query compiler rejects.
+function sanitizeQuery(raw: string): string {
+  return raw.replace(/\(#(?:strip!|set!|set-adjacent!|select-adjacent!|make-range!|offset!|gsub!)[^()]*\)/g, "");
+}
+
+function loadQuery(row: GenericLang): string | null {
   for (const dir of QUERY_DIRS) {
     try {
-      const raw = readFileSync(join(dir, `${name}.scm`), "utf8");
-      // Sanitize editor-specific query predicates the tree-sitter Query compiler rejects.
-      return raw.replace(
-        /\(#(?:strip!|set!|set-adjacent!|select-adjacent!|make-range!|offset!|gsub!)[^()]*\)/g,
-        "",
-      );
+      return sanitizeQuery(readFileSync(join(dir, `${row.name}.scm`), "utf8"));
     } catch {
       /* try next dir */
     }
   }
-  return null;
+  if (!row.bundledTags) return null;
+  const parts: string[] = [];
+  for (const dir of row.bundledTags) {
+    try {
+      parts.push(readFileSync(require.resolve(`tree-sitter-wasm/${dir}/tags.scm`), "utf8"));
+    } catch {
+      /* no tags.scm for this one */
+    }
+  }
+  return parts.length > 0 ? sanitizeQuery(parts.join("\n")) : null;
 }
 
 /** Warm the WASM grammars for the given graft lang names. Idempotent; must be
@@ -123,7 +165,7 @@ function loadQuery(name: string): string | null {
  * grammars are silently skipped (their files then extract as file-only). */
 export async function warmGenericGrammars(langNames: Iterable<string>): Promise<void> {
   const want = new Set(langNames);
-  const need = [...want].filter((n) => !loaded.has(n) && GENERIC_LANGS.some((l) => l.name === n));
+  const need = [...want].filter((n) => !loaded.has(n) && rowNamed(n) !== undefined);
   if (need.length === 0) return;
   if (!tsMod) {
     tsMod = await import("web-tree-sitter");
@@ -132,12 +174,12 @@ export async function warmGenericGrammars(langNames: Iterable<string>): Promise<
   await initPromise;
   const { Language, Query } = tsMod;
   for (const name of need) {
-    const row = GENERIC_LANGS.find((l) => l.name === name)!;
+    const row = rowNamed(name)!;
     const bytes = requireWasm(row.wasm);
     if (!bytes) continue;
     try {
       const language = await Language.load(bytes);
-      const scm = loadQuery(name);
+      const scm = loadQuery(row);
       let query: unknown | null = null;
       if (scm) {
         try { query = new Query(language, scm); } catch { query = null; }

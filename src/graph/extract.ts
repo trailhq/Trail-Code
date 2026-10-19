@@ -6,18 +6,13 @@
  * arrow-function consts) plus unresolved edge intents. Edge *targets* are
  * resolved against the whole-repo node index later, in build.ts.
  */
-import Parser from "tree-sitter";
-import TypeScript from "tree-sitter-typescript";
-import Python from "tree-sitter-python";
-import Go from "tree-sitter-go";
-import R from "tree-sitter-r";
-import Java from "tree-sitter-java";
-import Kotlin from "tree-sitter-kotlin";
-import Swift from "tree-sitter-swift";
-import PHP from "tree-sitter-php";
+// Types only: the native grammars themselves load on first use, in native.ts, so
+// a missing binary costs its own language instead of every command.
+import type Parser from "tree-sitter";
 import { basename } from "node:path";
 import { contentHash } from "../util/id.js";
 import { collectBindings, goReceiverVarOf, resolveRecvType, type FileBindings } from "./bindings.js";
+import { nativeParser } from "./native.js";
 import type { Kind, NodeV1, Relation } from "./types.js";
 
 export type Language = "typescript" | "tsx" | "python" | "go" | "java" | "kotlin" | "swift" | "php" | "r";
@@ -310,19 +305,6 @@ const FUNCTION_VALUE_TYPES = new Set([
 
 const EMPTY_SET: ReadonlySet<string> = new Set();
 
-const parser = new Parser();
-const GRAMMARS: Record<Language, unknown> = {
-  typescript: TypeScript.typescript,
-  tsx: TypeScript.tsx,
-  python: Python,
-  go: Go,
-  r: R,
-  java: Java,
-  kotlin: Kotlin,
-  swift: Swift,
-  php: PHP.php,
-};
-
 export interface WalkCtx {
   rel: string;
   source: string;
@@ -380,13 +362,14 @@ interface DefDescriptor {
  * no such limit as long as each returned chunk is under 32 KB, so we always feed
  * the source in <32 KB slices. Code-unit indexing matches `String.slice`. */
 const PARSE_CHUNK = 16384;
-function parseSource(source: string): Parser.SyntaxNode {
+function parseSource(parser: Parser, source: string): Parser.SyntaxNode {
   return parser.parse((index: number) => source.slice(index, index + PARSE_CHUNK)).rootNode;
 }
 
+/** Throws when `lang`'s native grammar is unavailable: callers check `nativeReady`
+ * (native.ts) first and hand such a file to its breadth-tier stand-in instead. */
 export function extractFile(rel: string, source: string, lang: Language): ExtractResult {
-  parser.setLanguage(GRAMMARS[lang] as never);
-  const root = parseSource(source);
+  const root = parseSource(nativeParser(lang), source);
   const bindings = collectBindings(root, lang);
   const importedSymbols = collectImportedSymbols(root, lang);
   const rGenerics = lang === "r" ? collectRGenerics(root) : EMPTY_SET;

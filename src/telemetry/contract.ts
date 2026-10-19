@@ -50,30 +50,47 @@ export const EVENTS: Record<string, ReadonlySet<string>> = {
   /** A build threw. `stage`/`code` are enums; the message never travels. */
   build_failed: new Set<string>(['stage', 'code']),
   /** One query, from any surface. The DAU backbone and the dead-command detector. */
-  query: new Set<string>(['command', 'surface', 'hit']),
-  /** `graft trail push` in a repo with no brain, sending the user to Trail to
-   *  make one. Queued the moment the link is printed, so a signup somebody
-   *  walked away from is still counted — the settle below never fires for those,
-   *  and abandonment is exactly the thing a terminal handoff loses silently. */
-  brain_signup_opened: new Set<string>(['mode']),
+  query: new Set<string>(['command', 'surface', 'hit', 'notes']),
+  /** A trail command handing the agent a sign-in link to pass on. Queued the
+   *  moment the link is printed, so a sign-in somebody walked away from is still
+   *  counted — the settle below never fires for those. */
+  brain_signup_opened: new Set<string>(['mode', 'command', 'wording']),
   /** That handoff reaching an end. `outcome` is a closed set, so the reason a
    *  signup failed travels as a category and never as the error's own words. */
   brain_signup_settled: new Set<string>(['outcome', 'mode', 'duration_bucket']),
-  /** `graft trail pull` reaching an end: whether accepted Trail suggestions
-   *  made it into this checkout. `kinds` is which kinds of context file were
-   *  written (a fixed set, sorted); every count is a bucket. Paths, headings and
-   *  the changes' text never travel. The adoption number for Trail's context
-   *  files: how many people actually take a suggestion home. */
-  trail_pulled: new Set<string>(['outcome', 'kinds', 'files_bucket', 'changes_bucket', 'skipped_bucket', 'suggested_bucket']),
-  /** `graft trail watch` ending. `reason` is a closed set (TRAIL_WATCH_REASONS);
-   *  the counts it ended on and how long it waited are buckets. Whether the
-   *  watcher that replaced the agent-written polling loop actually ends on
-   *  something worth relaying, or mostly times out. */
-  trail_watch_exit: new Set<string>(['reason', 'suggested_bucket', 'accepted_bucket', 'duration_bucket']),
-  /** The session-start hook's background `graft trail push`: `started`, or
-   *  `skipped` with a `reason` from a closed set (TRAIL_AUTOPUSH_SKIPS). Only for
-   *  a repo with a trail attached — every other repo sends nothing. */
-  trail_autopush: new Set<string>(['outcome', 'reason']),
+  /** `trail note` saved a session note (into `~/.trail/`). Whether it carries
+   *  a cost, and how many files it is about, as a bucket. The title, the text
+   *  and the paths never travel. The supply side of the notes loop; the
+   *  `notes` property on `query` is the demand side. */
+  note_saved: new Set<string>(['has_cost', 'touches_bucket', 'scope']),
+  /** `ask` showed learnings from earlier sessions: whether any was a
+   *  teammate's, and what they took to work out less reading them, as a
+   *  bucket. The reuse half of the learnings loop; `note_saved` is supply. */
+  learning_reused: new Set<string>(['teammate', 'saved_tokens_bucket']),
+  /** Once a day per repo, from the session-start hook, for a repo trail runs
+   *  in: whether `.trail/` is committed there, how many learnings it holds,
+   *  as a bucket, and whether this machine shares it with a workspace. With
+   *  `repo_id` and the install id this counts devs and repos touched, and
+   *  repos with Trail committed. Paths and names never travel. */
+  repo_seen: new Set<string>(['trail_committed', 'learnings_bucket', 'workspace']),
+  /** At session start, when the learnings committed on HEAD went up since the
+   *  last session in that clone: how many came in and how many there are, as
+   *  buckets, and whether it's the clone's first look. Committed learnings
+   *  are trail's activation. Paths and titles never travel. */
+  learnings_committed: new Set<string>(['added_bucket', 'total_bucket', 'first_look']),
+  /** `trail init` read the repo's past Claude sessions, or the review comments
+   *  on its merged PRs (`source`), for learnings: how it went, how many
+   *  sessions or reviewed PRs there were, findings Claude offered and trail
+   *  saved, as buckets, how long it took, and the model. The messages, the
+   *  comments and the findings never travel. */
+  cold_start: new Set<string>(['source', 'outcome', 'sessions_bucket', 'reviews_bucket', 'offered_bucket', 'picked_bucket', 'duration_bucket', 'model']),
+  /** `trail learn` saved a correction as a takeaway on a skill (into
+   *  `~/.trail/`). `new_skill` says whether it started a skill. The text never
+   *  travels. */
+  takeaway_saved: new Set<string>(['new_skill']),
+  /** `trail skills fold` wrote waiting takeaways into a skill's SKILL.md;
+   *  how many, as a bucket. Whether corrections become the skill. */
+  skills_folded: new Set<string>(['takeaways_bucket']),
   /** One closed agent session, summarised. `graft_reads` vs `source_reads` is
    *  the single number that says whether an agent prefers graft to grep; the two
    *  `*_turns` buckets are the follow-up question — of the turns that used graft,
@@ -92,6 +109,7 @@ export const COMMON_KEYS = [
   'node_major',
   'ci',
   'agent_host',
+  'cli_name',
   'repo_id',
 ] as const;
 
@@ -122,7 +140,7 @@ export function isTrackedCommand(name: string): name is TrackedCommand {
 }
 
 /**
- * How a `graft trail push` signup ended.
+ * How a sign-in handoff ended.
  *
  * Five categories and nothing else, because the alternative — the error string
  * the CLI already prints — carries a repo slug and a URL. `timed_out` and
@@ -134,26 +152,6 @@ export function isTrackedCommand(name: string): name is TrackedCommand {
  */
 export const BRAIN_SIGNUP_OUTCOMES = ['linked', 'timed_out', 'no_tty', 'bad_callback', 'stopped'] as const;
 export type BrainSignupOutcome = (typeof BRAIN_SIGNUP_OUTCOMES)[number];
-
-/**
- * How a `graft trail pull` ended. `written`: at least one file changed.
- * `already_present`: everything accepted was already in the files.
- * `nothing_accepted`: Trail had nothing accepted for this repo's agents.
- * `skipped`: accepted changes existed but none could be applied (the local
- * file moved on). `error`: Trail could not be read or a file not written.
- * `dry_run`: `--dry-run`, nothing written.
- */
-export const TRAIL_PULL_OUTCOMES = ['written', 'already_present', 'nothing_accepted', 'skipped', 'error', 'dry_run'] as const;
-export type TrailPullOutcome = (typeof TRAIL_PULL_OUTCOMES)[number];
-
-/** How `graft trail watch` ended — see WatchExitReason in brain/watch-trail.ts. */
-export const TRAIL_WATCH_REASONS = ['suggestions', 'accepted', 'timeout', 'refused', 'no_trail'] as const;
-
-/** Why a background push did not start. `no_trail` is never sent. */
-export const TRAIL_AUTOPUSH_SKIPS = ['disabled', 'no_head', 'head_unchanged', 'throttled', 'spawn_failed'] as const;
-
-/** The context-file kinds `trail_pulled.kinds` may name; anything else is dropped. */
-export const CONTEXT_FILE_KINDS = ['claude_md', 'folder_claude_md', 'agents_md', 'cursor_rule', 'skill'] as const;
 
 /** Where a failing build died. Coarse on purpose: enough to route a bug, not
  *  enough to describe anyone's repo. */

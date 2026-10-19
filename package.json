@@ -1,6 +1,6 @@
 {
   "name": "@nanonets/graft",
-  "version": "0.21.1",
+  "version": "0.23.0",
   "description": "Build a repo's context graph as a folder of linked markdown files: a local, regenerable cache that every query keeps in sync with your code.",
   "keywords": [
     "ai",
@@ -14,11 +14,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/trailhq/Graft.git"
+    "url": "git+https://github.com/trailhq/Trail-Code.git"
   },
-  "homepage": "https://github.com/trailhq/Graft#readme",
+  "homepage": "https://github.com/trailhq/Trail-Code#readme",
   "bugs": {
-    "url": "https://github.com/trailhq/Graft/issues"
+    "url": "https://github.com/trailhq/Trail-Code/issues"
   },
   "publishConfig": {
     "access": "public"
@@ -34,7 +34,7 @@
     "./package.json": "./package.json"
   },
   "bin": {
-    "graft": "dist/cli.js"
+    "graft": "dist/bin/graft.js"
   },
   "files": [
     "dist",

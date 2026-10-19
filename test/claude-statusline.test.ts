@@ -69,3 +69,12 @@ test('a 0-node cache without wiring.json is still not built', () => {
   assert.match(line, /not built/);
   assert.match(line, /graft build/);
 });
+
+test('the statusline counts learnings, not notes', () => {
+  const d = repo();
+  writeWiring(d, { meta: { nodeCount: 1, edgeCount: 0, languages: [] }, nodes: [], edges: [] });
+  const s = resolveStats(d)!;
+  assert.match(strip(renderStatusline(s, null, { ctxPct: null, notes: 1 })[0]), /· 1 learning(?!s)/);
+  assert.match(strip(renderStatusline(s, null, { ctxPct: null, notes: 2 })[0]), /· 2 learnings/);
+  assert.doesNotMatch(strip(renderStatusline(s, null, { ctxPct: null, notes: 2 })[0]), /note/);
+});

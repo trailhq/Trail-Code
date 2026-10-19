@@ -26,6 +26,7 @@ import {
 } from '../graph/workspace.js';
 import type { NodeV1 } from '../graph/types.js';
 import { canonicalToolName } from './tool-names.js';
+import { cmd } from '../brand.js';
 
 export interface ToolDef {
   name: string;
@@ -33,10 +34,10 @@ export interface ToolDef {
   inputSchema: object;
 }
 
-const NO_GRAPH = 'no graph found — run `graft build` first';
+const noGraph = (): string => `no graph found — run \`${cmd('graft build')}\` first`;
 
 function unknownSymbolText(query: string): string {
-  return `no symbol "${query}" in the graph — check spelling or run \`graft build\``;
+  return `no symbol "${query}" in the graph — check spelling or run \`${cmd('graft build')}\``;
 }
 
 export const TOOLS: ToolDef[] = [
@@ -284,7 +285,7 @@ async function callSingleTool(
         const symbol = String(args.symbol ?? args.file ?? '');
         if (!symbol) return { text: 'graft_trace_calls requires a symbol', isError: true };
         const w = loadGraphCached(contextDirFor(root, dirOverride));
-        if (!w) return { text: NO_GRAPH, isError: true };
+        if (!w) return { text: noGraph(), isError: true };
         const inOpt = typeof args.in === 'string' && args.in ? { in: args.in } : {};
         const matches = resolveSymbol(w, symbol, inOpt);
         if (matches.length === 0) return { text: unknownSymbolText(symbol), isError: true };
@@ -307,7 +308,7 @@ async function callSingleTool(
         const pattern = String(args.pattern ?? '');
         if (!pattern) return { text: 'graft_find_all requires a pattern', isError: true };
         const w = loadGraphCached(contextDirFor(root, dirOverride));
-        if (!w) return { text: NO_GRAPH, isError: true };
+        if (!w) return { text: noGraph(), isError: true };
         const result = grepGraph(w, root, pattern, {
           ignoreCase: typeof args.ignore_case === 'boolean' ? args.ignore_case : undefined,
           fixed: typeof args.fixed === 'boolean' ? args.fixed : undefined,
@@ -318,7 +319,7 @@ async function callSingleTool(
       }
       case 'graft_repo_map': {
         const w = loadGraphCached(contextDirFor(root, dirOverride));
-        if (!w) return { text: NO_GRAPH, isError: true };
+        if (!w) return { text: noGraph(), isError: true };
         const maxDirs = typeof args.max_dirs === 'number' && Number.isFinite(args.max_dirs) && args.max_dirs > 0 ? args.max_dirs : undefined;
         const map = buildRepoMap(w, { maxDirs });
         return { text: formatRepoMap(map), isError: false };

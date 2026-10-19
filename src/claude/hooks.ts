@@ -1,22 +1,34 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { execFileSync, spawn } from 'node:child_process';
-import { join, basename, isAbsolute } from 'node:path';
+import { join, basename, isAbsolute, relative, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { readWiring } from './stats.js';
-import { formatBlastRadius, relevantRetrieval, formatOrientation } from './format.js';
+import { formatBlastRadius, relevantRetrieval, formatOrientation, notesForPrompt, standingDirective } from './format.js';
+import { commitLines, setupCommitLine, standingLearnings } from '../notes/notes.js';
+import { noteAuthor, teammatesOn } from '../notes/git-facts.js';
 import { indexFreshness, staleBanner } from '../context/check.js';
 import { patchStats, readStats, acquireLock, readSession, writeSession, resolveContextDir } from './state.js';
 import { graftCliPath, claudeScriptPath } from './paths.js';
 import { runUpkeep } from '../upkeep-run.js';
-import { runningVersion } from '../upkeep.js';
+import { runningVersion, wiredHostIds } from '../upkeep.js';
+import { hostsWiredForTrail } from '../hosts/registry.js';
 import { flushClosedSessions, summarizeSession } from '../telemetry/sessions.js';
+import { maybeFlushInBackground } from '../telemetry/flush.js';
 import { hasSavingsTally, lastAssistantTurn, lastTurnBilling } from './tally.js';
 import { scopeOf, scopesOfGraph } from '../graph/scopes.js';
 import { classifyToolUse, isMcpToolName, isGraftMcpTool, parseSavings, recordToolUse, type ToolKind } from './session-metrics.js';
-import { readLink } from '../brain/link.js';
-import { pickedAgents } from '../brain/push.js';
-import { readTrailSnapshot, trailContextLine } from '../brain/watch-trail.js';
-import { maybeAutopush, readTrailPushState, recordSeenSuggestions, type AutopushDeps } from '../brain/autopush.js';
+import { adoptRepoBrand, brand, cmd, commandOnPath, repoWiredForTrail, tag, trailHandoverLine, trailOnPath } from '../brand.js';
+import { fitTrailServerToMachine } from '../hosts/claude-global.js';
+import { globalCopyCovers } from './hook-layers.js';
+import { NOTE_CALL } from '../notes/session-cost.js';
+import { keepsNotes, noteCount, repoPlace } from '../notes/home.js';
+import { branchesStale, overlapMark, readBranchCache, refreshBranches, SESSION_REFRESH_MS } from '../notes/branches.js';
+import { learningFiles } from '../notes/repo-trail.js';
+import { inWorkspace, maybeSyncInBackground } from '../cloud/workspace-sync.js';
+import { cacheDir, readJson, writeJsonAtomic } from '../util/state.js';
+import { countBucket } from '../telemetry/contract.js';
+import { track } from '../telemetry/track.js';
+import { skillsDirective } from '../skills/skills.js';
 
 /** Prompts shorter than this never trigger retrieval — they are almost always
  * conversational ("yes go ahead", "thanks") and the coverage gate can't judge
@@ -35,7 +47,8 @@ function projectDir(input: any): string {
 }
 export function underGraft(dir: string, file: string): boolean {
   const rel = file.startsWith(dir) ? file.slice(dir.length) : file;
-  return rel.replace(/^[/\\]+/, '').replace(/\\/g, '/').startsWith('graft/');
+  const posix = rel.replace(/^[/\\]+/, '').replace(/\\/g, '/');
+  return posix.startsWith('graft/') || posix.startsWith('.trail/cache/');
 }
 /** Default budget for a graft child process invoked from a hook, matching the 8s
  * the installed hook entries carry. */
@@ -90,7 +103,7 @@ function hookTimeoutIn(file: string, event: string): number | null {
     if (!Array.isArray(blocks)) return null;
     for (const block of blocks) {
       for (const h of block?.hooks ?? []) {
-        if (typeof h?.command === 'string' && h.command.includes('graft-hooks.cjs') && typeof h.timeout === 'number') {
+        if (typeof h?.command === 'string' && /(graft|trail)-hooks\.cjs/.test(h.command) && typeof h.timeout === 'number') {
           return h.timeout;
         }
       }
@@ -189,8 +202,44 @@ async function handlePostEdit(input: any, dir: string): Promise<void> {
   const file = editedFilePath(input, dir);
   if (!file || underGraft(dir, file)) return;
   patchStats(dir, { dirty: true, staleCount: checkStaleCount(dir), lastFile: basename(file) });
+  const out: string[] = [];
   const w = readWiring(dir);
-  if (w) { const br = formatBlastRadius(w, file); if (br) emit('PostToolUse', br); }
+  if (w) { const br = formatBlastRadius(w, file); if (br) out.push(br); }
+  const overlap = await editOverlap(input, dir, file);
+  if (overlap) out.push(overlap);
+  // One hook, one answer: two JSON objects on stdout would be read as neither.
+  if (out.length) emit('PostToolUse', out.join('\n\n'));
+}
+
+/** Branch-and-function pairs remembered per session, so each is said once. */
+const INJECTED_OVERLAPS_CAP = 40;
+
+/**
+ * Under trail, a teammate's open branch that changes the function this edit
+ * just changed, for the agent to read and tell the person about, each branch
+ * and function once a session. Parsing loads grammars, so it's imported only
+ * when the edited file is one some branch changes. Never throws.
+ */
+async function editOverlap(input: any, dir: string, file: string): Promise<string | null> {
+  if (brand() !== 'trail' || !keepsNotes(dir)) return null;
+  try {
+    const top = repoPlace(dir);
+    if (!top.git) return null;
+    const { functionOverlaps, editOverlapDirective } = await import('../notes/edit-overlap.js');
+    const found = await functionOverlaps(top.checkout, resolve(dir, file), input?.tool_input, noteAuthor(top.checkout));
+    if (!found.length) return null;
+    const id = input?.session_id || 'default';
+    const s = readSession(dir, id);
+    const seen = new Set(s.injectedOverlaps ?? []);
+    const fresh = found.filter((o) => o.symbols.some((x) => !seen.has(`${o.ref} ${x.id}`)));
+    if (!fresh.length) return null;
+    s.injectedOverlaps = [...seen, ...fresh.flatMap((o) => o.symbols.map((x) => `${o.ref} ${x.id}`))].slice(-INJECTED_OVERLAPS_CAP);
+    writeSession(dir, id, s);
+    const base = readBranchCache(top.checkout)?.base ?? 'origin/main';
+    return fresh.slice(0, 2).map((o) => editOverlapDirective(o, base, tag(), overlapMark())).join('\n\n');
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -219,18 +268,18 @@ export function lastFileScopeHint(dir: string, lastFile: string | null | undefin
       (n) => n.kind === 'file' && (n.path === lastFile || n.path.endsWith(`/${lastFile}`)),
     );
     if (matches.length === 0) {
-      console.error(`[graft] prompt hook: lastFile "${lastFile}" not found in the graph — skipping scope hint`);
+      console.error(`${tag()} prompt hook: lastFile "${lastFile}" not found in the graph — skipping scope hint`);
       return null;
     }
     const prefixes = new Set(matches.map((n) => scopeOf(n.path, scopes).prefix));
     if (prefixes.size > 1) {
-      console.error(`[graft] prompt hook: lastFile "${lastFile}" matches more than one scope — skipping scope hint`);
+      console.error(`${tag()} prompt hook: lastFile "${lastFile}" matches more than one scope — skipping scope hint`);
       return null;
     }
     const [prefix] = prefixes;
     return prefix === '' ? null : prefix; // root scope: nothing to narrow
   } catch (e: any) {
-    console.error(`[graft] prompt hook: scope hint lookup failed (${e?.message ?? e}) — skipping`);
+    console.error(`${tag()} prompt hook: scope hint lookup failed (${e?.message ?? e}) — skipping`);
     return null;
   }
 }
@@ -377,6 +426,65 @@ function countTallyTurn(input: any, dir: string): void {
   }
 }
 
+/** Tool calls in one turn before it counts as digging worth a note. */
+export const NOTE_WORTHY_CALLS = 3;
+
+/** What the agent is told when a turn took real digging and left no note. */
+export const NOTE_ASK =
+  '[trail] This took real digging and the session has saved no learning. Before you finish, save one for the next session: ' +
+  '`trail note --title "<what it was about>"` with the text on stdin, under ## Decided, ## Tried and ruled out and ## Watch out. ' +
+  "A summary, never a transcript, and nothing secret. If you've committed this work, commit the learning too. Then finish as trail's output asks, if it asks anything.";
+
+/**
+ * Whether the turn that just ended deserves a note: it made at least
+ * NOTE_WORTHY_CALLS tool calls since the person's last message, and nothing in
+ * the session has run `trail note` yet. Pure, for tests: `text` is the
+ * transcript's JSONL.
+ */
+export function turnWantsNote(text: string): boolean {
+  let calls = 0;
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    let e: any;
+    try {
+      e = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const content = e?.message?.content;
+    const blocks: any[] = Array.isArray(content) ? content : [];
+    // A message the person typed starts a new turn; a tool result does not.
+    if (e?.type === 'user' && (typeof content === 'string' || blocks.some((b) => b?.type === 'text'))) calls = 0;
+    for (const b of blocks) {
+      if (b?.type !== 'tool_use') continue;
+      if (typeof b.input?.command === 'string' && NOTE_CALL.test(b.input.command)) return false;
+      calls++;
+    }
+  }
+  return calls >= NOTE_WORTHY_CALLS;
+}
+
+/**
+ * Under trail, a turn that took real digging and left no note is asked once
+ * per session to leave one, by blocking the stop with the reason. The agent
+ * then saves the note, and trail's output carries on from there (the sign-in
+ * link, when one is due). Never blocks twice in a row: Claude Code sets
+ * `stop_hook_active` on the stop that follows a block.
+ */
+function askForNote(input: any, dir: string): void {
+  try {
+    if (brand() !== 'trail' || input?.stop_hook_active || !input?.transcript_path || !keepsNotes(dir)) return;
+    const id = input?.session_id || 'default';
+    const s = readSession(dir, id);
+    if (s.noteAsked) return;
+    if (!turnWantsNote(readFileSync(input.transcript_path, 'utf8'))) return;
+    writeSession(dir, id, { ...s, noteAsked: true });
+    process.stdout.write(JSON.stringify({ decision: 'block', reason: NOTE_ASK }));
+  } catch {
+    // A missed reminder costs one note; a broken Stop hook costs the session.
+  }
+}
+
 function handleStop(input: any, dir: string): void {
   sampleTurnCost(input, dir);
   countTallyTurn(input, dir);
@@ -395,92 +503,183 @@ function handleStop(input: any, dir: string): void {
   }
 }
 
-/** The most the session-start hook waits on Trail. */
-export const TRAIL_CHECK_CAP_MS = 3000;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
- * What the attached trail has waiting, as one line for the session's opening
- * context — and, on the way, the once-a-day background push that keeps it
- * current (brain/autopush.ts). Null when there is no trail, nothing waiting, or
- * no answer in time.
- *
- * The one place a hook goes to the network, and it is fenced accordingly. Only a
- * repo with a trail attached asks at all, so every other repo pays nothing. The
- * requests are aborted at {@link TRAIL_CHECK_CAP_MS} — or sooner when the
- * installed hook budget is tighter — and raced against a timer besides, so a
- * Trail that never answers costs the session three seconds, once, and never the
- * hook: the orientation below is emitted either way, and the hook is not
- * killed. Anything that goes wrong is a missing line, never a thrown error.
- *
- * Worth the three seconds because nothing else tells anyone. Changes accepted in
- * Trail sit there until someone remembers `graft trail pull`, and suggestions
- * nobody has looked at sit there longer; the start of a session is when an
- * agent can ask the person about them. Suggestions are mentioned only when
- * there are new ones since the last session (see trailContextLine), so the
- * line never becomes a fixture of every session.
+ * Once a day per repo, the `repo_seen` event: whether `.trail/` is committed
+ * here, how many learnings it holds, and whether this machine shares the repo
+ * with a workspace. Queued only, like every hook's telemetry.
  */
-export async function trailAtSessionStart(
-  dir: string,
-  deps: { fetchImpl?: typeof fetch; capMs?: number; autopush?: AutopushDeps } = {},
-): Promise<string | null> {
-  let timer: NodeJS.Timeout | undefined;
+export function trackRepoSeen(dir: string, now = Date.now()): void {
   try {
-    const link = readLink(dir);
-    if (!link) return null;
-    const installed = installedHookTimeout(dir, 'SessionStart');
-    const cap = deps.capMs ?? Math.min(TRAIL_CHECK_CAP_MS, Math.max(1000, (installed ?? CHILD_TIMEOUT_MS) - HOOK_OVERHEAD_MS));
-    const ctl = new AbortController();
-    const f = deps.fetchImpl ?? fetch;
-    // Our signal replaces the per-request ones (5 and 15 s), which are all
-    // longer than the cap and would otherwise keep the process alive past it.
-    const capped = ((input: Parameters<typeof fetch>[0], init?: RequestInit) => f(input, { ...init, signal: ctl.signal })) as typeof fetch;
-    const snapshot = readTrailSnapshot(dir, link, pickedAgents(dir), capped);
-    // Started while the requests are in flight; it only spawns and returns.
-    maybeAutopush(dir, deps.autopush);
-    const late = new Promise<null>((r) => {
-      timer = setTimeout(() => {
-        ctl.abort();
-        r(null);
-      }, cap);
-    });
-    const r = await Promise.race([snapshot, late]);
-    if (!r || !r.ok) return null;
-    // Read before the new count is written: the line says what grew since the
-    // last session, and every successful check moves that mark — including one
-    // whose line was about accepted changes instead.
-    const lastSeen = readTrailPushState(dir).seenSuggested;
-    if (r.snapshot.suggested !== null) recordSeenSuggestions(dir, r.snapshot.suggested);
-    return trailContextLine(r.snapshot, lastSeen);
+    const place = repoPlace(dir);
+    if (!place.git) return;
+    const mark = join(cacheDir(place.checkout), 'trail-repo-seen.json');
+    if (now - (readJson<{ at?: number }>(mark)?.at ?? 0) < DAY_MS) return;
+    writeJsonAtomic(mark, { at: now }, true);
+    const tracked = execFileSync('git', ['ls-files', '--', '.trail'], { cwd: place.checkout, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 });
+    track(
+      'repo_seen',
+      { trail_committed: String(tracked.trim().length > 0), learnings_bucket: countBucket(learningFiles(place.checkout).length), workspace: String(inWorkspace(place.checkout)) },
+      { repo: place.checkout },
+    );
   } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
+    // A missed sighting undercounts one repo for one day.
+  }
+}
+
+/**
+ * When the learnings committed on this checkout's HEAD went up since the last
+ * session here: how many came in and how many there are, as buckets. A repo
+ * with committed learnings is where trail starts paying off, so this is the
+ * activation count. `first_look` marks the first time this clone is seen, so
+ * a clone of a repo that already had them isn't counted as new ones.
+ */
+export function trackLearningsCommitted(dir: string): void {
+  try {
+    const place = repoPlace(dir);
+    if (!place.git) return;
+    const listed = execFileSync('git', ['ls-tree', '-r', '--name-only', 'HEAD', '--', '.trail/learnings'], {
+      cwd: place.checkout, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000,
+    });
+    const count = listed.split('\n').filter((f) => f.endsWith('.md')).length;
+    const mark = join(cacheDir(place.checkout), 'trail-learnings-committed.json');
+    const before = readJson<{ count?: number }>(mark)?.count;
+    if (before === count) return;
+    writeJsonAtomic(mark, { count }, true);
+    if (count <= (before ?? 0)) return;
+    track(
+      'learnings_committed',
+      { added_bucket: countBucket(count - (before ?? 0)), total_bucket: countBucket(count), first_look: String(before === undefined) },
+      { repo: place.checkout },
+    );
+  } catch {
+    // Not a repo with a HEAD yet, or git is slow: counted next session.
+  }
+}
+
+/**
+ * Team learnings sitting uncommitted in `.trail/learnings/` (from trail init's
+ * read of past sessions, or a session that ended before committing) reach no
+ * teammate. Once a day per repo, the first reply says so, with the line that
+ * makes the case for committing them. Empty when everything is committed.
+ */
+export function uncommittedDirective(dir: string, now = Date.now()): string {
+  try {
+    const place = repoPlace(dir);
+    if (!place.git) return '';
+    const status = execFileSync('git', ['status', '--porcelain', '--untracked-files=all', '--', '.trail/learnings'], {
+      cwd: place.checkout, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000,
+    });
+    const n = status.split('\n').filter((l) => l.trimEnd().endsWith('.md')).length;
+    const setup = setupUncommitted(place.checkout);
+    if (!n && !setup) return '';
+    const mark = join(cacheDir(place.checkout), 'trail-uncommitted-said.json');
+    if (now - (readJson<{ at?: number }>(mark)?.at ?? 0) < DAY_MS) return '';
+    writeJsonAtomic(mark, { at: now }, true);
+    if (setup) {
+      const line = setupCommitLine(teammatesOn(place.checkout));
+      return `${tag()} trail's shared setup here (.trail/ and .claude/settings.json) isn't committed yet, so teammates' Claude can't read the learnings. Say so once, at the end of your first reply, with this line, word for word: ${line}\n`;
+    }
+    const line = commitLines({}, teammatesOn(place.checkout), 'repo').uncommitted;
+    const them = n === 1 ? "learning in .trail/learnings/ isn't committed yet, so no teammate's agent has it" : `learnings in .trail/learnings/ aren't committed yet, so no teammate's agent has them`;
+    return `${tag()} ${n} team ${them}. Say so once, at the end of your first reply, with this line, word for word: ${line}\n`;
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * trail's shared setup isn't in the last commit: `.trail/hook.cjs` isn't
+ * tracked, or HEAD's `.claude/settings.json` doesn't run it. Only checked
+ * where the hook is on disk, so a repo still set up the old way says nothing.
+ */
+export function setupUncommitted(checkout: string): boolean {
+  if (!existsSync(join(checkout, '.trail', 'hook.cjs'))) return false;
+  const git = (args: string[]) => execFileSync('git', args, { cwd: checkout, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 });
+  try {
+    git(['ls-files', '--error-unmatch', '--', '.trail/hook.cjs']);
+  } catch {
+    return true;
+  }
+  try {
+    return !git(['show', 'HEAD:.claude/settings.json']).includes('/.trail/hook.cjs');
+  } catch {
+    return true;
+  }
+}
+
+/** The most the session-start hook waits on `git fetch` for teammates' branches. */
+export const BRANCH_FETCH_CAP_MS = 3000;
+
+/**
+ * At session start, under trail: read what teammates have pushed, so the
+ * session's first prompt already knows their learnings and where their work
+ * overlaps; send any learnings and uses the workspace hasn't seen; and count
+ * the repo once a day. The fetch is the one wait, capped at
+ * BRANCH_FETCH_CAP_MS and skipped when the branches were read in the last
+ * minute; a fetch that runs out of time still reads the branches already here.
+ * The sync only spawns a detached child.
+ */
+function trailAtStart(dir: string): void {
+  if (brand() !== 'trail' || !keepsNotes(dir)) return;
+  try {
+    const top = repoPlace(dir);
+    if (top.git && branchesStale(top.checkout, Date.now(), SESSION_REFRESH_MS)) refreshBranches(top.checkout, { fetchTimeoutMs: BRANCH_FETCH_CAP_MS });
+  } catch {
+    // Without it, the first prompt sees what the last refresh saw.
+  }
+  maybeSyncInBackground(dir);
+  trackRepoSeen(dir);
+  trackLearningsCommitted(dir);
+}
+
+/** The repo's committed `.mcp.json` still registers trail's server (set up before 0.23). */
+function repoNamesTrailServer(dir: string): boolean {
+  try {
+    return Boolean(JSON.parse(readFileSync(join(dir, '.mcp.json'), 'utf8'))?.mcpServers?.trail);
+  } catch {
+    return false;
   }
 }
 
 export async function main(event: string): Promise<void> {
+  // trail's own headless Claude calls (the first-run read of past sessions) run with this set.
+  if (process.env.TRAIL_NO_HOOKS === '1') return;
+  // Registered in the repo and in ~/.claude, Claude Code runs both: one answers.
+  if (globalCopyCovers(event, process.argv[1])) return;
   const input = readStdin();
   const dir = projectDir(input);
+  adoptRepoBrand(dir, process.env, hostsWiredForTrail);
 
   if (event === 'session-start') {
-    // The trail's quick look goes first, so its requests are in flight while the
-    // rest of this runs. It is the hook's one network call, capped and only for
-    // a repo with a trail — see trailAtSessionStart.
-    const trail = trailAtSessionStart(dir);
     // Before anything is emitted: refresh this repo's wiring if it was written by
     // an older graft, and pick up any cached "newer version on npm" answer.
     // background:false — the registry check stays off the network here; the CLI
     // and the MCP server fill that cache, this only reads it.
     const upkeep = runUpkeep(dir, runningVersion(), { background: false }).lines;
-    // Roll up any session that ended since we were last here. Queue-only — the
-    // hook still sends nothing; the CLI or the MCP server sends it later.
+    // On graft without trail, in a repo graft set up: once a week, the agent
+    // tells the person how to get it.
+    const handover = wiredHostIds(dir).includes('claude') ? trailHandoverLine() : null;
+    if (handover) upkeep.push(handover);
+    // Roll up any session that ended since we were last here, then send the
+    // queue from a detached child: what session end didn't get to (a killed
+    // terminal never fires it) goes now. Once a day at most, never waited on.
     flushClosedSessions(dir);
-    const trailLine = await trail;
-    if (trailLine) upkeep.push(trailLine);
+    maybeFlushInBackground();
+    trailAtStart(dir);
+    // A repo on trail, opened on a machine that has graft but not the trail command.
+    // Only while its .mcp.json still names a trail server: once it doesn't, trail: true takes back the stand-in.
+    if (repoWiredForTrail(dir)) fitTrailServerToMachine(homedir(), resolve(dir), { trail: trailOnPath() || !repoNamesTrailServer(dir), graft: commandOnPath('graft') });
     try {
       const idx = readFileSync(join(resolveContextDir(dir), 'INDEX.md'), 'utf8');
       const banner = staleBanner(indexFreshness(dir)) ?? undefined;
-      const orientation = formatOrientation(idx, undefined, banner);
+      const kept = keepsNotes(dir);
+      const skills = kept ? skillsDirective(dir, cmd('graft skills show')) : '';
+      const underTrail = kept && brand() === 'trail';
+      const standing = underTrail ? standingDirective(standingLearnings(dir)) + uncommittedDirective(dir) : '';
+      const mapDir = relative(dir, resolveContextDir(dir)).split('\\').join('/') || 'graft';
+      const orientation = formatOrientation(idx, undefined, banner, noteCount(dir), kept, skills + standing, mapDir);
       emit('SessionStart', upkeep.length ? `${upkeep.join('\n')}\n\n${orientation}` : orientation);
     } catch {
       // No INDEX.md (never built here). An upgrade nudge is still worth saying.
@@ -488,6 +687,9 @@ export async function main(event: string): Promise<void> {
     }
     return;
   }
+
+  // Claude closing: send the queue from a detached child, so quitting isn't slowed.
+  if (event === 'session-end') { maybeFlushInBackground(); return; }
 
   if (event === 'post-edit') { await handlePostEdit(input, dir); return; }
 
@@ -503,7 +705,7 @@ export async function main(event: string): Promise<void> {
   // session-start, whose Stop fires per turn and so has no real end signal.
   if (event === 'cursor-session-end') { summarizeSession(dir, cursorSessionId(input), { host: 'cursor' }); return; }
 
-  if (event === 'stop') { handleStop(input, dir); return; }
+  if (event === 'stop') { handleStop(input, dir); askForNote(input, dir); return; }
 
   if (event === 'post-edit-sync') { await handlePostEdit(input, dir); handleStop(input, dir); return; }
 
@@ -528,7 +730,9 @@ export async function main(event: string): Promise<void> {
     s.lastQuery = prompt;
     const agent = input?.agent?.name;
     if (agent) s.perAgentQuery[agent] = prompt;
-    const txt = relevantRetrieval(ask, s);
+    // Learnings first: what an earlier session worked out matters more than where code is.
+    const notes = brand() === 'trail' ? notesForPrompt(ask, s) : null;
+    const txt = [notes, relevantRetrieval(ask, s)].filter(Boolean).join('\n\n');
     if (txt) emit('UserPromptSubmit', txt);
     writeSession(dir, id, s);
   }

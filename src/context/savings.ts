@@ -14,6 +14,7 @@
  */
 import type { GraphV1 } from '../graph/types.js';
 import { formatDollars } from './price.js';
+import { brand, tag } from "../brand.js";
 
 export interface Savings {
   /** How many source files the baseline covers. */
@@ -89,19 +90,20 @@ export function setInputRate(usdPerMtok: number | null): void {
  * `hasSavingsTally` (claude/tally.ts) recognises, so adding money here does not
  * quietly zero the reported-turns metric. */
 export function savingsTurnNudge(savedTokens: number): string {
-  const sum = ' — sum each such line across your graft calls — e.g. ';
+  const b = brand();
+  const sum = ` — sum each such line across your ${b} calls — e.g. `;
   if (inputRateUsdPerMtok === null || savedTokens <= 0) {
     return (
-      ' At the end of your reply, tell the user the total graft tokens saved ' +
-      `this turn${sum}"🌱 graft saved ~N tokens this turn".`
+      ` At the end of your reply, tell the user the total ${b} tokens saved ` +
+      `this turn${sum}"🌱 ${b} saved ~N tokens this turn".`
     );
   }
   const usd = (savedTokens * inputRateUsdPerMtok) / 1_000_000;
   return (
     ` This call is worth ${formatDollars(usd)} at the rate this session is ` +
     'actually paying for input tokens. At the end of your reply, tell the user ' +
-    `the total graft tokens saved this turn and what they were worth${sum}` +
-    '"🌱 graft saved ~N tokens (~$X) this turn".'
+    `the total ${brand()} tokens saved this turn and what they were worth${sum}` +
+    `"🌱 ${brand()} saved ~N tokens (~$X) this turn".`
   );
 }
 
@@ -118,7 +120,7 @@ export function savingsLine(body: string, saved: Savings | undefined): string {
   const delta = base - pack;
   const pct = Math.round((delta / base) * 100);
   return (
-    `[graft] tokens saved ≈ ${delta.toLocaleString()} (${pct}%) — this output ≈ ` +
+    `${tag()} tokens saved ≈ ${delta.toLocaleString()} (${pct}%) — this output ≈ ` +
     `${pack.toLocaleString()} tok vs reading the ${saved.files} file(s) it covers whole ≈ ` +
     `${base.toLocaleString()} tok (estimate).` +
     savingsTurnNudge(delta)
@@ -134,7 +136,8 @@ export function savingsLine(body: string, saved: Savings | undefined): string {
  */
 export function sumSavingsFooters(text: string): number {
   let total = 0;
-  for (const m of text.matchAll(/\[graft\] tokens saved ≈ ([\d,]+)/g)) {
+  // The code a query saved reading, and the digging a reused learning saved.
+  for (const m of text.matchAll(/\[(?:graft|trail)\] (?:tokens|learnings) saved ≈ ([\d,]+)/g)) {
     total += Number(m[1].replace(/,/g, '')) || 0;
   }
   return total;

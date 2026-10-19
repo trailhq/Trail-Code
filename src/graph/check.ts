@@ -20,13 +20,14 @@
 import { resolve } from "node:path";
 import { relPosix } from "../util/paths.js";
 import { contextDirFor } from "../context/node-file.js";
-import { extractFile, languageOf } from "./extract.js";
-import { extractGeneric, genericLangOf, warmGenericGrammars } from "./generic.js";
-import { containerLangOf, extractContainer, warmContainerGrammars } from "./container.js";
-import { listSourceFiles } from "./build.js";
+import { extractFile } from "./extract.js";
+import { extractGeneric } from "./generic.js";
+import { extractContainer } from "./container.js";
+import { listSourceFiles, tierOf, warmGrammarsFor } from "./build.js";
 import { readGraph, wiringPath } from "./write.js";
 import { readFingerprint } from "./fingerprint.js";
 import { readSourceFile } from "../util/source.js";
+import { cmd } from "../brand.js";
 
 export interface GraphCheckResult {
   ok: boolean;
@@ -87,25 +88,19 @@ export async function checkGraph(
   const fpOnlyDirs = readFingerprint(outDir)?.onlyDirs;
   const onlyDirs = fpOnlyDirs && fpOnlyDirs.length > 0 ? new Set(fpOnlyDirs) : undefined;
   const sourceFiles = listSourceFiles(root, outDir, undefined, onlyDirs);
-  await warmGenericGrammars(
-    new Set(sourceFiles.map((f) => genericLangOf(f)?.name).filter((n): n is string => !!n)),
-  );
   // Container-tier grammars need the same warmup as the generic ones, for the same
-  // reason: extraction below is synchronous. Missing this is what made `graft
+  // reason: extraction below is synchronous. Missing that is what made `graft
   // check` report every `.vue` node as `removed` right after a clean build (#236)
   // — the tier extracted fine, and then the check had no branch that could see it.
-  await warmContainerGrammars(
-    new Set(sourceFiles.map((f) => containerLangOf(f)?.name).filter((n): n is string => !!n)),
-  );
+  // The same call warms the WASM stand-in for a depth language whose native
+  // grammar didn't load, exactly as the build does.
+  await warmGrammarsFor(sourceFiles);
   const current = new Map<string, string>(); // id → body_hash
   for (const file of sourceFiles) {
-    // The same three-way branch `buildGraph` uses, in the same order. The two must
-    // stay in step: a tier the build extracts and the check cannot see reports as
-    // `removed` forever, and the `graft build` the check tells you to run can never
-    // repair it.
-    const lang = languageOf(file);
-    const container = lang ? null : containerLangOf(file);
-    const generic = lang || container ? null : genericLangOf(file);
+    // The same dispatch `buildGraph` uses (`tierOf`). The two must stay in step: a
+    // tier the build extracts and the check cannot see reports as `removed`
+    // forever, and the `graft build` the check tells you to run can never repair it.
+    const { lang, container, generic } = tierOf(file);
     let source: string | null;
     try {
       source = readSourceFile(file);
@@ -166,7 +161,7 @@ export async function checkGraph(
 /** Render a graph-check result as a human-readable report. */
 export function formatGraphCheckReport(r: GraphCheckResult): string {
   if (r.missing) {
-    return "graph check: NO GRAPH\n\nNo graft/.graph/wiring.json found. Run `graft build` first.";
+    return `graph check: NO GRAPH\n\nNo graft/.graph/wiring.json found. Run \`${cmd("graft build")}\` first.`;
   }
   if (r.ok) {
     // A share, not a bare count: "1203 not yet summarized" reads the same whether
@@ -195,8 +190,8 @@ export function formatGraphCheckReport(r: GraphCheckResult): string {
     for (const id of r.stale) lines.push(`  ! ${id}`);
   }
   lines.push("");
-  if (structural) lines.push("Run `graft build` to rebuild the structure, then commit graft/.");
-  if (r.stale.length) lines.push("Run `graft build --deep` to refresh stale summaries.");
+  if (structural) lines.push(`Run \`${cmd("graft build")}\` to rebuild the structure, then commit graft/.`);
+  if (r.stale.length) lines.push(`Run \`${cmd("graft build --deep")}\` to refresh stale summaries.`);
   return lines.join("\n");
 }
 
@@ -214,7 +209,7 @@ function formatPendingNote(r: GraphCheckResult, pct: number): string {
   // meaning replies, so name the nodes and point at the last build's errors.
   return (
     `meaning tier ${pct}% complete — ${r.pending} of ${r.nodes} node(s) pending${named}. ` +
-    `Run \`graft build --deep\` to summarize them; if a deep build already left these pending, ` +
+    `Run \`${cmd("graft build --deep")}\` to summarize them; if a deep build already left these pending, ` +
     `that meaning pass failed — see that build's errors (re-running alone will not clear them)`
   );
 }

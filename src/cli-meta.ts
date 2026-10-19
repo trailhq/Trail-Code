@@ -9,8 +9,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { toPosixPath } from "./util/paths.js";
-
-const PKG_NAME = "@nanonets/graft";
+import { brand, PACKAGE_FOR } from "./brand.js";
 
 /** Locates package.json relative to a module URL (works for both `dist/cli.js`
  * running one level under the published package root, and `src/cli.ts` running
@@ -23,6 +22,22 @@ export function resolvePackageJsonPath(moduleUrl: string): string {
   }
   return candidates[0];
 }
+
+/**
+ * The npm package this code was installed as: `@trailhq/trail-code`, or
+ * `@nanonets/graft` (the same code under its old name). Upgrades and update
+ * checks go to the package actually installed, not to the name typed.
+ */
+export function readPackageName(moduleUrl: string): string {
+  try {
+    const pkg = JSON.parse(readFileSync(resolvePackageJsonPath(moduleUrl), "utf8")) as { name?: string };
+    return pkg.name ?? PACKAGE_FOR.graft;
+  } catch {
+    return PACKAGE_FOR.graft;
+  }
+}
+
+const PKG_NAME = readPackageName(import.meta.url);
 
 /** Reads the version of the graft package this module was loaded from. */
 export function readCurrentVersion(moduleUrl: string): string {
@@ -67,13 +82,13 @@ export function getNpmViewVersion(pkgName: string = PKG_NAME, timeoutMs = 2000):
 
 /** Pure formatter for `graft version` — no I/O, easy to unit-test. */
 export function formatVersionReport(current: string, latest: NpmViewResult): string {
-  const lines = [`graft ${current}`];
+  const lines = [`${brand()} ${current}`];
   if (!latest.ok || !latest.version) {
     lines.push("latest: unreachable (offline?)");
   } else if (latest.version === current) {
     lines.push(`latest on npm: ${current} ✓ up to date`);
   } else {
-    lines.push(`latest on npm: ${latest.version} — run graft upgrade`);
+    lines.push(`latest on npm: ${latest.version} — run ${brand()} upgrade`);
   }
   return lines.join("\n");
 }
@@ -116,20 +131,23 @@ export interface UpgradeResult {
   errorMessage?: string;
   oldVersion?: string;
   newVersion?: string;
+  /** The `trail` package's version, when `graft upgrade` installed it alongside. */
+  trailVersion?: string;
 }
 
 /** Pure formatter for a finished upgrade — no I/O, easy to unit-test. */
 export function formatUpgradeReport(result: UpgradeResult): string {
   if (!result.ran) {
     return (
-      "running via npx — npx already fetches the latest graft on every run.\n" +
-      "For a permanent install: npm install -g @nanonets/graft"
+      `running via npx — npx already fetches the latest ${brand()} on every run.\n` +
+      `For a permanent install: npm install -g ${PKG_NAME}`
     );
   }
   if (!result.ok) {
     return `✗ npm install -g ${PKG_NAME}@latest failed${result.errorMessage ? `: ${result.errorMessage}` : ""}`;
   }
-  return `graft ${result.oldVersion ?? "?"} → ${result.newVersion ?? result.oldVersion ?? "?"}`;
+  const line = `${brand()} ${result.oldVersion ?? "?"} → ${result.newVersion ?? result.oldVersion ?? "?"}`;
+  return result.trailVersion ? `${line}\n✓ trail ${result.trailVersion} installed too — graft keeps working, and trail is its new name` : line;
 }
 
 /** Runs `npm install -g @nanonets/graft@latest` (inheriting stdio so the user
@@ -140,10 +158,14 @@ export function runUpgrade(moduleUrl: string): UpgradeResult {
   if (isRunningViaNpx(moduleUrl)) {
     return { ran: false, ok: true, oldVersion };
   }
-  const res = spawnSync("npm", ["install", "-g", `${PKG_NAME}@latest`], { stdio: "inherit" });
+  // `graft upgrade` is the handover: it also installs the `trail` command, once
+  // that package is published. One npm call, so the two land at one version.
+  const alongside = PKG_NAME === PACKAGE_FOR.graft && getNpmViewVersion(PACKAGE_FOR.trail).ok ? [`${PACKAGE_FOR.trail}@latest`] : [];
+  const res = spawnSync("npm", ["install", "-g", `${PKG_NAME}@latest`, ...alongside], { stdio: "inherit" });
   if (res.error || (res.status ?? 1) !== 0) {
     return { ran: true, ok: false, oldVersion, errorMessage: res.error?.message };
   }
   const newVersion = readGlobalInstalledVersion(PKG_NAME) ?? getNpmViewVersion(PKG_NAME).version ?? oldVersion;
-  return { ran: true, ok: true, oldVersion, newVersion };
+  const trailVersion = alongside.length ? (readGlobalInstalledVersion(PACKAGE_FOR.trail) ?? undefined) : undefined;
+  return { ran: true, ok: true, oldVersion, newVersion, trailVersion };
 }

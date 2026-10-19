@@ -23,6 +23,7 @@
  * Budget: keep this under ~1,000 characters. Observed sibling servers sit at
  * 660–984, and nothing proves a longer one survives un-truncated.
  */
+import { brand, inBrand } from '../brand.js';
 
 /** Tool names in the order an agent should reach for them, most-used first. */
 const TOOL_ORDER = [
@@ -34,12 +35,13 @@ const TOOL_ORDER = [
 ] as const;
 
 /** The `select:` argument that loads every graft tool in one lookup. */
-export function toolSearchQuery(prefix = 'mcp__graft__'): string {
-  return `select:${TOOL_ORDER.map((t) => `${prefix}${t}`).join(',')}`;
+export function toolSearchQuery(prefix = `mcp__${brand()}__`): string {
+  return `select:${TOOL_ORDER.map((t) => `${prefix}${inBrand(t)}`).join(',')}`;
 }
 
+/** Under trail, the same text with trail's tool names (see brand.ts `inBrand`). */
 export function mcpInstructions(): string {
-  return [
+  return inBrand([
     'This repo is indexed by graft: a prebuilt graph of every symbol, its file:line',
     'span, and who calls what. Prefer these tools over grep/read — one call usually',
     'replaces several file reads.',
@@ -53,5 +55,5 @@ export function mcpInstructions(): string {
     '- graft_repo_map — orientation in an unfamiliar repo.',
     '',
     'Results already reflect uncommitted edits — the graph refreshes before each query.',
-  ].join('\n');
+  ].join('\n'));
 }

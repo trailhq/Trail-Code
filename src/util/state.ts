@@ -11,6 +11,7 @@
  */
 import { readFileSync, writeFileSync, mkdirSync, renameSync, rmSync, statSync } from 'node:fs';
 import { join, dirname, isAbsolute } from 'node:path';
+import { mapDirFor } from '../context/map-dir.js';
 
 export interface Stats {
   nodeCount: number; edgeCount: number; languages: string[];
@@ -42,7 +43,7 @@ const LOCK_FILE = '.sync.lock';
  */
 export function resolveContextDir(projectDir: string): string {
   const override = process.env.GRAFT_DIR;
-  if (!override) return join(projectDir, 'graft');
+  if (!override) return mapDirFor(projectDir);
   return isAbsolute(override) ? override : join(projectDir, override);
 }
 
@@ -66,11 +67,13 @@ export function readJson<T>(p: string): T | null {
  * open) accumulates one full-size file per attempt, and nothing in graft ever lists
  * `.cache/` to clean them up.
  */
-export function writeJsonAtomic(p: string, value: unknown, compact = false): void {
+export function writeJsonAtomic(p: string, value: unknown, compact = false, mode?: number): void {
   mkdirSync(dirname(p), { recursive: true });
   const tmp = `${p}.${process.pid}.tmp`;
   try {
-    writeFileSync(tmp, compact ? JSON.stringify(value) : JSON.stringify(value, null, 2));
+    // `mode` applies to the new file before it's renamed into place, so a
+    // secret is never readable by others even for a moment.
+    writeFileSync(tmp, compact ? JSON.stringify(value) : JSON.stringify(value, null, 2), mode === undefined ? undefined : { mode });
     renameSync(tmp, p);
   } catch (e) {
     try { rmSync(tmp, { force: true }); } catch { /* nothing more we can do */ }
@@ -102,19 +105,6 @@ export interface BuildConfig {
    * checkout someone parked in the tree. Absent/false keeps the historical
    * boundary. */
   followNestedRepos?: boolean;
-  /** The Trail brain this repo's rules come from: the brain id and the token to
-   * read it with. Persisted here — in the git-ignored `.graft/` — rather than in
-   * `~/.graft/`, because a brain belongs to one repository and two checkouts on
-   * one machine must not share one. `undefined` clears it. */
-  brain?: { brainId: string; token: string; baseUrl?: string };
-  /** A sign-up an agent-run `graft trail push` opened and has not collected
-   * yet: the state in its link, and which repository it was for. Cleared once
-   * collected. `undefined` clears it. */
-  pendingSignup?: { state: string; repo: string; createdAt: number };
-  /** `false` turns off the once-a-day background `graft trail push` the
-   * session-start hook starts for a repo with a trail (see brain/autopush.ts).
-   * Absent means on. GRAFT_TRAIL_AUTOPUSH=0 does the same for every repo. */
-  trailAutoPush?: boolean;
 }
 
 /** Local, Git-ignored repository configuration. Kept outside generated

@@ -224,3 +224,27 @@ test('--no-global uninstall leaves the user-level copy in place', () => {
   assert.ok(existsSync(shimOf(home)));
   assert.ok(readJson(settingsOf(home)).hooks?.SessionStart);
 });
+
+test('under trail, graft keeps its user-level server and is turned off only in the trail folder', async () => {
+  const { disableGraftServerIn } = await import('../src/hosts/claude-global.js');
+  const home = tmpRepo('cgtrail');
+  writeFileSync(userMcpOf(home), JSON.stringify({ mcpServers: { graft: { command: 'graft', args: ['mcp'] } }, projects: { '/w/other': { disabledMcpServers: ['paper'] } } }, null, 2));
+
+  installClaudeGlobal(home, 'trail');
+  const after = readJson(userMcpOf(home));
+  assert.ok(after.mcpServers.graft, 'graft still serves the repos wired as graft');
+  assert.equal(after.mcpServers.trail, undefined, 'no second server for every repo');
+
+  assert.equal(disableGraftServerIn(home, '/w/trail-repo').action, 'updated');
+  assert.equal(disableGraftServerIn(home, '/w/trail-repo').action, 'unchanged', 'once');
+  const cfg = readJson(userMcpOf(home));
+  assert.deepEqual(cfg.projects['/w/trail-repo'].disabledMcpServers, ['graft']);
+  assert.deepEqual(cfg.projects['/w/other'].disabledMcpServers, ['paper'], 'other folders untouched');
+
+  // trail registers no server of its own, and takes back the one an older trail registered.
+  const fresh = tmpRepo('cgtrailfresh');
+  writeFileSync(userMcpOf(fresh), JSON.stringify({ mcpServers: { trail: { command: 'trail', args: ['mcp'] }, paper: { command: 'paper' } } }, null, 2));
+  installClaudeGlobal(fresh, 'trail');
+  assert.deepEqual(Object.keys(readJson(userMcpOf(fresh)).mcpServers), ['paper']);
+  assert.equal(disableGraftServerIn(fresh, '/w/x').action, 'unchanged');
+});

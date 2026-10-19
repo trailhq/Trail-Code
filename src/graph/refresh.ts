@@ -41,6 +41,7 @@ import { driftCount, isClean, probeDrift, readFingerprint, type Drift } from "./
 import { invalidateGraphCaches } from "./load.js";
 import { seedGraph, type SeedResult } from "./seed.js";
 import { wiringPath } from "./write.js";
+import { tag } from "../brand.js";
 
 /** How long to wait for another process's in-flight rebuild before giving up and
  * answering from the current graph. Long enough to ride out a small repo's build,
@@ -263,11 +264,11 @@ export async function ensureFreshChildren(
 /** The one-line note a CLI/MCP surface prints when a refresh actually happened.
  * Null when there's nothing to say (the overwhelmingly common case). */
 export function refreshNote(r: RefreshResult): string | null {
-  if (!r.refreshed) return r.note ? `[graft] ${r.note}` : null;
+  if (!r.refreshed) return r.note ? `${tag()} ${r.note}` : null;
   const n = r.drift ? driftCount(r.drift) : 0;
   const built = `refreshed the graph (${n || "?"} file${n === 1 ? "" : "s"} changed) before answering`;
   // Both facts, when a worktree was seeded *and* the copy needed repairing: the
   // count is the interesting half (it's the branch diff), the provenance explains
   // where a graph came from in a directory the user knows they never built.
-  return r.note ? `[graft] ${built} — ${r.note}` : `[graft] ${built}`;
+  return r.note ? `${tag()} ${built} — ${r.note}` : `${tag()} ${built}`;
 }

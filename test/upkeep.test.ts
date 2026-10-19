@@ -49,7 +49,7 @@ test('formatUpdateNudge stays silent unless there is something to say', () => {
   const line = formatUpdateNudge('0.9.1', '0.11.0');
   assert.ok(line);
   assert.match(line, /0\.9\.1 → 0\.11\.0/);
-  assert.match(line, /npm i -g @nanonets\/graft@latest/);
+  assert.match(line, /run `graft upgrade`/);
   assert.equal(line.split('\n').length, 1, 'one line — this rides in an agent context window');
 });
 

@@ -22,18 +22,20 @@
  *   - `afterMCPExecution` → the graft MCP calls, savings parsed from `result_json`.
  *   - `sessionEnd` → roll the closed session up into `session_summary` as Cursor.
  */
-import { writeFileSync } from 'node:fs';
+import { rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { hooksShim } from '../claude/shim-template.js';
-import { claudeDistDir } from '../claude/paths.js';
 import type { PlannedWrite } from './plan.js';
 import { writeOwned, isGraftEntry, readJsonObject, type ConfigWrite } from './config-write.js';
+import { cursorHookShimRelPath } from './registry.js';
+import type { Brand } from '../brand.js';
 
 /** The Cursor hooks.json schema version graft writes. */
 const CURSOR_HOOKS_VERSION = 1;
 
-function shimPathFor(repo: string): string {
-  return join(repo, '.cursor', 'hooks', 'graft-hooks.cjs');
+/** `.cursor/hooks/graft-hooks.cjs`, or `trail-hooks.cjs` in a repo that uses trail. */
+export function shimPathFor(repo: string, name: Brand = 'graft'): string {
+  return join(repo, cursorHookShimRelPath(name));
 }
 function configPathFor(repo: string): string {
   return join(repo, '.cursor', 'hooks.json');
@@ -45,11 +47,11 @@ function configPathFor(repo: string): string {
  * the Cursor-only, no-global init). Always returns the pair: unlike Codex there
  * is no "is the CLI installed" gate — the repo's own `.cursor/` is what we write.
  */
-export function cursorHookTargets(repo: string): PlannedWrite[] {
+export function cursorHookTargets(repo: string, name: Brand = 'graft'): PlannedWrite[] {
   return [
     {
       hostId: 'cursor', id: 'cursor-hook-shim',
-      path: shimPathFor(repo),
+      path: shimPathFor(repo, name),
       scope: 'repo', kind: 'hook', what: 'session-scoring hook shim',
     },
     {
@@ -81,9 +83,12 @@ function desiredEntries(): DesiredEntry[] {
  * clobbered. Foreign hook entries are preserved; a stale graft entry is replaced
  * so an upgrade re-points to the current shim/sub-command instead of stacking.
  */
-export function installCursorHooks(repo: string): ConfigWrite[] {
-  const shimPath = shimPathFor(repo);
-  const shimWrite = writeOwned('cursor-hook-shim', shimPath, hooksShim(claudeDistDir()), 0o755);
+export function installCursorHooks(repo: string, name: Brand = 'graft'): ConfigWrite[] {
+  const shimPath = shimPathFor(repo, name);
+  const shimWrite = writeOwned('cursor-hook-shim', shimPath, hooksShim(), 0o755);
+  // A repo moving to trail's names: graft's shim goes, and its entries are
+  // replaced below (`isGraftEntry` knows both names).
+  if (name === 'trail') rmSync(shimPathFor(repo, 'graft'), { force: true });
   const cfgPath = configPathFor(repo);
   const skipped: ConfigWrite = { id: 'cursor-hooks', path: cfgPath, action: 'skipped-unparseable' };
 
