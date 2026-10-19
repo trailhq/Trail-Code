@@ -233,7 +233,17 @@ export function resolveEdges(
         const targetFile = e.file.endsWith(".php")
           ? resolvePhpUse(e.specifier, phpFilesBySuffix)
           : resolveImport(e.specifier, e.file, byId);
-        if (!byId.has(targetFile)) continue; // external or unresolved module
+        if (!byId.has(targetFile)) {
+          // PHP: a `use` that does not map to an in-repo file (vendor
+          // `#[Route]`, `#[Deprecated]`, …) still keeps an inferred references
+          // edge, matching Java annotations whose `@interface` is not in the
+          // graph (#144). Other languages keep dropping — an unresolved TS
+          // import is not a type use.
+          if (e.file.endsWith(".php") && byId.get(e.source)?.origin === "ast") {
+            add(e.source, e.name, "references", "inferred");
+          }
+          continue;
+        }
         const candidates = perFileName.get(targetFile)?.get(e.name) ?? [];
         if (candidates.length === 1) add(e.source, candidates[0].id, "references", "extracted");
       } else if (e.file.endsWith(".php") && byId.get(e.source)?.origin === "ast") {
@@ -250,7 +260,7 @@ export function resolveEdges(
         // contains the literal `@interface` (`includes`, not `startsWith`: a
         // meta-annotated type is `@Documented @Retention(...) public @interface
         // JsonAdapter`). Unresolved targets keep the bare name, matching
-        // heritage, rather than dropping the way PHP attributes do.
+        // heritage. PHP vendor attributes now take the same inferred path.
         const refKinds: Kind[] = ["interface"];
         const hit = resolveName(e.name, e.file, refKinds, perFileName, globalName);
         const anno = hit ? byId.get(hit.id) : undefined;

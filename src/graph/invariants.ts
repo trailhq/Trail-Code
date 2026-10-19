@@ -9,8 +9,9 @@
  *   - every edge source is a real node
  *   - every edge target is a real node, EXCEPT the relations that deliberately keep
  *     an unresolved external string (an import specifier, a bare heritage name for
- *     an out-of-repo supertype, or a Java annotation type with no in-repo
- *     `@interface`) — those are a feature of "drop rather than guess",
+ *     an out-of-repo supertype, a Java annotation type with no in-repo
+ *     `@interface`, or a PHP 8 attribute class that exists only via `use` /
+ *     vendor) — those are a feature of "drop rather than guess",
  *     not a dangling edge.
  *
  * Self-loop `calls` are NOT a violation: direct recursion is a real edge a function
@@ -35,10 +36,9 @@ const CONFIDENCE = new Set<string>([
 ]);
 // Relations whose target may be a deliberately-unresolved external string rather
 // than an in-repo node id: an import's module specifier, a heritage clause naming
-// a supertype defined outside the repo (or a generic type parameter), or a Java
-// annotation whose type is not declared in-repo. The set is language-agnostic —
-// no other producer currently leaves an unresolved `references` target, so a
-// future bug elsewhere would be masked here.
+// a supertype defined outside the repo (or a generic type parameter), a Java
+// annotation whose type is not declared in-repo, or a PHP 8 attribute whose
+// class is only imported from vendor (#144). The set is language-agnostic.
 const TARGET_MAY_BE_EXTERNAL = new Set<string>(["imports", "extends", "implements", "references"]);
 
 export interface InvariantResult {

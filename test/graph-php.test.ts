@@ -479,6 +479,49 @@ test("PHP extraction: attribute usage resolves to references edges (#144)", asyn
   }
 });
 
+// #144 remainder: a `use`d attribute class that is not defined in the repo
+// (Symfony `#[Route]`, `#[Deprecated]`, …) was dropped in resolve.ts because
+// `if (!byId.has(targetFile)) continue`. Java annotations in the same situation
+// keep an inferred references edge to the bare name. Do not mint a vendor
+// class node.
+const VENDOR_ROUTE_PHP = `<?php
+use Symfony\\Component\\Routing\\Annotation\\Route;
+
+class Controller {
+    #[Route('/')]
+    public function index(): void {}
+}
+`;
+
+test("PHP extraction: vendor attribute keeps an inferred references edge (#144)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "graft-php-vendor-attr-"));
+  try {
+    writeFileSync(join(dir, "composer.json"), `{"name": "poc/vendor-attr"}\n`);
+    writeFileSync(join(dir, "Controller.php"), VENDOR_ROUTE_PHP);
+    await buildGraph(dir);
+    const graph = readGraph(wiringPath(join(dir, "graft")))!;
+
+    assert.ok(
+      !graph.nodes.some((n) => n.name === "Route" && n.kind === "class"),
+      "must not mint a Route class node for a vendor attribute",
+    );
+
+    const refs = graph.edges.filter(
+      (e) => e.relation === "references" && e.source === "Controller.php#Controller.index",
+    );
+    assert.ok(
+      refs.some(
+        (e) =>
+          e.confidence === "inferred" &&
+          (e.target === "Route" || e.target === "Symfony\\Component\\Routing\\Annotation\\Route"),
+      ),
+      `index should keep an inferred references edge to vendor Route, got: ${JSON.stringify(refs)}`,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // Issue #144: an anonymous class (`new class implements I {…}`) previously
 // produced no node and no heritage edge — its methods were mis-attributed to
 // the enclosing function (`…#make.run`), so the type and its interface
