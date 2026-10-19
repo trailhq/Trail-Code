@@ -30,6 +30,7 @@ import { openBrowser } from "./util/browser.js";
 import { learningsAtBase, teammateEdits, withBaseLearnings } from "./check/learning-edits.js";
 import { contextDirFor } from "./context/node-file.js";
 import { loadGraphCached } from "./graph/load.js";
+import { buildCondensation, formatCondensation } from "./graph/scc.js";
 import { ensureFreshChildren, ensureFreshGraph, refreshNote } from "./graph/refresh.js";
 import { isWorkspaceBuildRoot, readWorkspace } from "./graph/workspace.js";
 import { hasGraftIndex, nearestGraftRoot } from "./graph/root.js";
@@ -1074,16 +1075,43 @@ grouped(program.command("grep"), GROUP.find)
 
 grouped(program.command("map"), GROUP.find)
   .description(
-    "Token-budgeted repo orientation — directory clusters, per-directory hubs, and global hotspots from the wiring graph ($0, no LLM)",
+    "Token-budgeted repo orientation by default; --scc shows full dependency clusters and single-edge boundaries ($0, no LLM)",
   )
   .argument(...DIR_ARG)
   .option("--max-dirs <n>", "max directory entries shown, rest counted into dropped (default 16)")
+  .option("--scc", "show the full SCC condensation DAG and single-edge boundaries")
   .option("--json", "output as JSON")
   .option(...NO_REFRESH_FLAG)
-  .action(async (dirArg: string | undefined, opts: { json?: boolean; maxDirs?: string; refresh?: boolean }) => {
+  .action(async (dirArg: string | undefined, opts: { json?: boolean; maxDirs?: string; refresh?: boolean; scc?: boolean }) => {
     const dir = noteQuery(queryRoot(dirArg));
     const root = resolve(dir);
     const globalOpts = program.opts<{ dir?: string }>();
+    if (opts.scc === true) {
+      if (opts.maxDirs !== undefined) {
+        console.error("✗ --scc cannot be combined with --max-dirs");
+        process.exit(1);
+        return;
+      }
+      if (readWorkspace(root, globalOpts.dir)) {
+        console.error("✗ SCC view requires one repository graph — pass a workspace child directory");
+        process.exit(1);
+        return;
+      }
+      await refreshBefore(dir, opts);
+      const graph = loadGraphCached(contextDirFor(root, globalOpts.dir));
+      if (!graph) {
+        console.error(`✗ no graph — run ${cmd("graft build")} first`);
+        process.exit(1);
+        return;
+      }
+      const result = buildCondensation(graph);
+      if (opts.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        process.stdout.write(formatCondensation(result));
+      }
+      return;
+    }
     let maxDirsW: number | undefined;
     if (opts.maxDirs !== undefined) {
       const n = parseInt(opts.maxDirs, 10);

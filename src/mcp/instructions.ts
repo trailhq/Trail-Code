@@ -52,7 +52,7 @@ export function mcpInstructions(): string {
     '- graft_find_all — when you need EVERY occurrence; find_code is top-N and misses some.',
     '- graft_trace_calls — who calls it, what it calls, blast radius before a rename.',
     '- graft_file_api — a file\'s whole API in ~200 tokens.',
-    '- graft_repo_map — orientation in an unfamiliar repo.',
+    '- graft_repo_map — orientation; scc:true for SCC clusters and single-edge boundaries.',
     '',
     'Results already reflect uncommitted edits — the graph refreshes before each query.',
   ].join('\n'));

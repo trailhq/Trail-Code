@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Opt-in SCC condensation maps** (#632): `graft map [dir] --scc` (also
+  `trail map`) and MCP `graft_repo_map { "scc": true }` show dependency clusters,
+  every member's definition location, and the complete directed links between
+  clusters. Single-dependency links are candidate abstraction boundaries;
+  `--scc --json` retains original dependencies for every link. This full view
+  requires one repository graph and rejects directory budgets. Default maps
+  and the main skill remain unchanged.
+
 ## 0.23.0
 
 ### Changed
