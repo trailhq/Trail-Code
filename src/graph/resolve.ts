@@ -237,7 +237,7 @@ export function resolveEdges(
         const candidates = perFileName.get(targetFile)?.get(e.name) ?? [];
         if (candidates.length === 1) add(e.source, candidates[0].id, "references", "extracted");
       } else if (e.file.endsWith(".php") && byId.get(e.source)?.origin === "ast") {
-        // PHP attribute without a `use` import (same-file or globally unique class).
+        // PHP type/attribute without a `use` import (same-file or globally unique type).
         const refKinds: Kind[] = ["class", "interface", "trait", "enum"];
         const hit = resolveName(e.name, e.file, refKinds, perFileName, globalName);
         if (hit && hit.id !== e.source) add(e.source, hit.id, "references", hit.confidence);
