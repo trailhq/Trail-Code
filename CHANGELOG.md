@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.23.1
+
+### Fixed
+
+- **Learnings reach Claude when it opens the file they're about** (#642). When
+  Claude reads or edits a file, it gets the learnings whose `touches` name that
+  file, at most two, once a session, without calling trail first.
+- **A learning's `touches` come from what the session did**: files edited, then
+  files named in the learning, then files read. They no longer list whatever
+  untracked files sat in the repo.
+- **An empty `trail grep` names the git-ignored code it didn't search.**
+- **Exploratory turns are asked for a learning too**, when trail's answers
+  saved 30k+ tokens of reading.
+- **`trail init` refuses your home folder**, and outside git it says the
+  learnings stay on this machine.
+- **The shared hook reads single-quoted learning titles** (#626), as Prettier
+  writes them, so teammates without trail see clean titles. `.trail/hook.cjs`
+  is updated at the next session; commit it once.
+
 ## 0.23.0
 
 ### Changed
