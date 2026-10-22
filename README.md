@@ -86,8 +86,6 @@ Nothing is written until you pick. Run `graft init --dry-run` to see every file 
 
 `graft build` adds `graft/` to your `.gitignore` automatically — the graph is a local, regenerable cache (like `node_modules`), not something you commit. What you share is the wiring `init` dropped into `.claude/`; each teammate runs `graft build` to generate their own graph:
 
-The generated `.ignore` re-admits only the configured context directory from the repository root. Hidden files and directories beneath it stay excluded from search, including current and future caches. Builds migrate the exact legacy unanchored re-admit entry in place and preserve other search rules. `GRAFT_NO_IGNORE=1` disables these updates.
-
 ```bash
 git add .claude && git commit -m "wire in graft"
 ```
