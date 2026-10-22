@@ -54,6 +54,17 @@ test('preserves user content around the fenced section', () => {
   assert.ok(text.includes('graft ask'));
 });
 
+test('CLI: init --help warns that agent selection removes user-level wiring', () => {
+  const res = runCli(['init', '--help'], { home: fresh() });
+  assert.equal(res.status, 0, res.describe());
+  const help = res.stdout.replace(/\s+/g, ' ');
+  const agents = help.match(/--agents <ids\.\.\.>(.*?)--all-agents/)?.[1] ?? '';
+  assert.match(agents, /removes .*wiring for unlisted agents, including user-level files/);
+  assert.match(agents, /unless --no-global/);
+  assert.match(agents, /pass every agent you use/);
+  assert.match(help, /--no-global\s+skip writes and removals outside this repo/);
+});
+
 test('CLI: graft init --agents gemini writes GEMINI.md and exits 0', () => {
   const repo = fresh();
   execFileSync(process.execPath, ['--import', 'tsx', 'src/cli.ts', 'init', repo, '--no-build', '--agents', 'gemini'], {
