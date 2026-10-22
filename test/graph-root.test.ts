@@ -6,6 +6,7 @@
  * resolved the context dir as `<cwd>/graft`, found nothing, and reported "no
  * graph — run graft build" while the repo's graph sat two levels up.
  */
+import { execFileSync } from "node:child_process";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
@@ -17,6 +18,24 @@ import { tmpRepo } from "./helpers.js";
 function builtRepo(root: string): string {
   mkdirSync(join(root, "graft", ".graph"), { recursive: true });
   writeFileSync(join(root, "graft", ".graph", "wiring.json"), '{"version":1,"nodes":[],"edges":[]}\n');
+  return root;
+}
+
+/** Run git quietly in `cwd`, with an identity so commits work on a bare runner. */
+function git(cwd: string, ...args: string[]): void {
+  execFileSync("git", ["-c", "user.name=Graft Tests", "-c", "user.email=graft-tests@example.invalid", ...args], {
+    cwd,
+    stdio: "ignore",
+  });
+}
+
+/** A real repo with one commit, so it can grow worktrees and be added as a submodule. */
+function committedRepo(root: string): string {
+  mkdirSync(root, { recursive: true });
+  git(root, "init", "-q", "-b", "main");
+  writeFileSync(join(root, "README.md"), "fixture\n");
+  git(root, "add", "-A");
+  git(root, "commit", "-qm", "fixture");
   return root;
 }
 
@@ -52,6 +71,48 @@ test("the NEAREST root wins — a built child inside a workspace parent, not the
   mkdirSync(deep, { recursive: true });
 
   assert.deepEqual(nearestGraftRoot(deep), { root: child, levels: 1 }, "must stop at the child, not federate at the parent");
+});
+
+/*
+ * The repository boundary. Real `git worktree add` / `git submodule add` rather
+ * than hand-written `.git` files: a worktree and a submodule both have a `.git`
+ * FILE, and only git's own layout (`commondir` under `.git/worktrees/<name>`) tells
+ * them apart — a fixture written by hand can't falsify that.
+ */
+
+test("a linked worktree nested in its main checkout is its own root, not the parent's graph (#453)", () => {
+  const main = builtRepo(committedRepo(tmpRepo("root-nested-worktree")));
+  const worktree = join(main, ".claude", "worktrees", "wt");
+  git(main, "worktree", "add", "-q", "-b", "feature", worktree);
+  const deep = join(worktree, "src", "foo");
+  mkdirSync(deep, { recursive: true });
+
+  assert.deepEqual(
+    nearestGraftRoot(deep),
+    { root: worktree, levels: 2 },
+    "must stop at the worktree so seeding can run, not answer from the main checkout's graph",
+  );
+  assert.deepEqual(nearestGraftRoot(worktree), { root: worktree, levels: 0 });
+});
+
+test("a submodule is not a boundary — its graph lives in the parent (--follow-submodules)", () => {
+  const child = committedRepo(tmpRepo("root-submodule-child"));
+  const parent = committedRepo(tmpRepo("root-submodule-parent"));
+  git(parent, "-c", "protocol.file.allow=always", "submodule", "add", "-q", child.replace(/\\/g, "/"), "modules/lib");
+  builtRepo(parent);
+  const deep = join(parent, "modules", "lib", "src");
+  mkdirSync(deep, { recursive: true });
+
+  assert.deepEqual(nearestGraftRoot(deep), { root: parent, levels: 3 }, "must walk through the submodule's .git file");
+});
+
+test("a nested clone is not a boundary — its graph lives in the parent (--follow-nested-repos)", () => {
+  const parent = builtRepo(committedRepo(tmpRepo("root-nested-clone")));
+  const nested = committedRepo(join(parent, "vendor", "lib"));
+  const deep = join(nested, "src");
+  mkdirSync(deep, { recursive: true });
+
+  assert.deepEqual(nearestGraftRoot(deep), { root: parent, levels: 3 }, "must walk through the nested clone's .git dir");
 });
 
 test("nothing indexed anywhere above → the start dir, so `build` in a fresh repo still means here", () => {
