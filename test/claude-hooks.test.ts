@@ -6,6 +6,9 @@ import { join } from 'node:path';
 import { underGraft, main, lastFileScopeHint, promptAskTimeout } from '../src/claude/hooks.js';
 import { readStats, readSession } from '../src/claude/state.js';
 import { runSync } from '../src/claude/sync-run.js';
+import { buildGraph } from '../src/graph/build.js';
+import { fingerprintPath } from '../src/graph/fingerprint.js';
+import { writeWorkspace } from '../src/graph/workspace.js';
 import { savingsLine } from '../src/context/savings.js';
 import { CI_ENV_VARS } from '../src/telemetry/gate.js';
 import { writeStats, emptyStats, acquireLock, resolveContextDir } from '../src/claude/state.js';
@@ -123,6 +126,29 @@ test("runSync's default build passes --dir <resolved> to graft build when GRAFT_
   }
 });
 
+test("runSync's default build retains extension selection after an extractor change", async () => {
+  const d = mkdtempSync(join(tmpdir(), 'graft-sync-extensions-'));
+  const argsFile = join(d, 'args-seen.json');
+  const stub = join(d, 'build-stub.cjs');
+  writeFileSync(stub, `require('fs').writeFileSync(${JSON.stringify(argsFile)}, JSON.stringify(process.argv.slice(2)));`);
+  process.env.GRAFT_TEST_CLI = stub;
+  process.env.GRAFT_DIR = 'elsewhere';
+  try {
+    await buildGraph(d, { contextDir: resolveContextDir(d), extensions: ['.go', '.rs'] });
+    const fpPath = fingerprintPath(resolveContextDir(d));
+    const fp = JSON.parse(readFileSync(fpPath, 'utf8'));
+    fp.extractor = 'prior-extractor';
+    writeFileSync(fpPath, JSON.stringify(fp));
+    runSync(d);
+    assert.deepEqual(JSON.parse(readFileSync(argsFile, 'utf8')), [
+      'build', '.', '--dir', resolveContextDir(d), '--extensions', '.go', '.rs',
+    ]);
+  } finally {
+    delete process.env.GRAFT_TEST_CLI;
+    delete process.env.GRAFT_DIR;
+  }
+});
+
 test('runSync clears syncing even if build throws (money-safe failure)', () => {
   const d = mkdtempSync(join(tmpdir(), 'graft-sync-'));
   writeStats(d, { ...emptyStats(), dirty: true, syncing: true });
@@ -144,6 +170,27 @@ test('runSync stays dirty when build succeeds but wiring is unreadable', () => {
   assert.equal(s.dirty, true, 'unreadable wiring → stay dirty, retry next turn');
   assert.equal(s.syncedAt, null, 'not marked synced');
   assert.equal(acquireLock(d), true, 'lock released');
+});
+
+test('runSync clears dirty after a workspace sync writes workspace.json', () => {
+  const d = mkdtempSync(join(tmpdir(), 'graft-sync-workspace-'));
+  for (const child of ['api', 'web']) mkdirSync(join(d, child, '.git'), { recursive: true });
+  writeWorkspace(d, { version: 1, children: ['api', 'web'] }, resolveContextDir(d));
+  const stub = join(d, 'build-stub.cjs');
+  writeFileSync(stub, '');
+  writeStats(d, { ...emptyStats(), dirty: true, syncing: true, staleCount: 2 });
+  acquireLock(d);
+  process.env.GRAFT_TEST_CLI = stub;
+  try {
+    runSync(d);
+    const s = readStats(d)!;
+    assert.equal(s.dirty, false, 'a workspace parent has no wiring.json; workspace.json is its index');
+    assert.equal(s.syncing, false);
+    assert.ok(s.syncedAt);
+    assert.equal(acquireLock(d), true, 'lock released');
+  } finally {
+    delete process.env.GRAFT_TEST_CLI;
+  }
 });
 
 // ── lastFileScopeHint (the "you're working in backend/, weight it" hint) ──

@@ -123,6 +123,8 @@ export interface GraphV1 {
     nodeCount: number;
     edgeCount: number;
     languages: string[];
+    /** Normalized source selection, retained independently of extractor caches. */
+    extensions?: string[];
     /** Ranking scopes: posix path prefixes relative to the graph root, "" = root scope.
      * Absent (old graphs) ≡ [{ prefix: "", label: "" }]. Sorted by prefix length desc. */
     scopes?: ScopeV1[];
