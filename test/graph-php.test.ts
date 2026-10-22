@@ -12,6 +12,8 @@ import { tmpdir } from "node:os";
 import { buildGraph } from "../src/graph/build.js";
 import { checkGraph } from "../src/graph/check.js";
 import { extractFile } from "../src/graph/extract.js";
+import { nativeParser } from "../src/graph/native.js";
+import { resolveEdges } from "../src/graph/resolve.js";
 import { readGraph, wiringPath } from "../src/graph/write.js";
 import type { GraphV1, NodeV1 } from "../src/graph/types.js";
 
@@ -198,6 +200,268 @@ test("PHP extraction: trait use and typed-parameter receiver binding", async () 
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("PHP typed properties: all injected and local callers resolve (#478)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "graft-php-properties-"));
+  const files: Record<string, string> = {
+    "LeadService.php": `<?php
+namespace App;
+class LeadService {
+    public function unlockLead(int $id): bool { return true; }
+}
+`,
+    "PromotedController.php": `<?php
+namespace App;
+class PromotedController {
+    public function __construct(private readonly LeadService $leadService) {}
+    public function unlock(int $id): bool {
+        return $this->leadService->unlockLead($id);
+    }
+}
+`,
+    "ClassicController.php": `<?php
+namespace App;
+class ClassicController {
+    private LeadService $leadService;
+    public function __construct(LeadService $leadService) {
+        $this->leadService = $leadService;
+    }
+    public function unlock(int $id): bool {
+        return $this->leadService->unlockLead($id);
+    }
+}
+`,
+    "LocalVarCaller.php": `<?php
+namespace App;
+class LocalVarCaller {
+    public function run(): bool {
+        $service = new LeadService();
+        return $service->unlockLead(1);
+    }
+}
+`,
+  };
+  try {
+    writeFileSync(join(dir, "composer.json"), `{"name": "acme/properties"}\n`);
+    for (const [path, source] of Object.entries(files)) writeFileSync(join(dir, path), source);
+    const result = await buildGraph(dir);
+    assert.deepEqual(result.errors, []);
+    const graph = readGraph(wiringPath(join(dir, "graft")))!;
+    const callers = graph.edges
+      .filter((e) => e.relation === "calls" && e.target === "LeadService.php#LeadService.unlockLead")
+      .map((e) => e.source)
+      .sort();
+    assert.deepEqual(callers, [
+      "ClassicController.php#ClassicController.unlock",
+      "LocalVarCaller.php#LocalVarCaller.run",
+      "PromotedController.php#PromotedController.unlock",
+    ]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("PHP typed properties: single-class hints bind at class scope (#478)", () => {
+  const declarations = [
+    "private LeadService $service;",
+    "protected ?LeadService $service;",
+    "public \\App\\LeadService $other, $service;",
+    "public function __construct(private readonly LeadService $service) {}",
+    "public function __construct(public LeadService $service) {}",
+    "public function __construct(protected ?\\App\\LeadService $service) {}",
+  ];
+  for (const declaration of declarations) {
+    for (const receiver of ["$this->service", "$this?->service"]) {
+      const src = `<?php
+class Controller {
+    ${declaration}
+    public function run() { ${receiver}?->unlockLead(1); }
+}
+`;
+      const { rawEdges } = extractFile("properties.php", src, "php");
+      const call = rawEdges.find((e) => e.relation === "calls" && e.name === "unlockLead");
+      assert.ok(call, declaration);
+      assert.equal(call.recvType, "LeadService", `${declaration}: ${receiver}`);
+    }
+  }
+});
+
+test("PHP typed properties: bindings stay separate from locals and other classes (#478)", () => {
+  const { rawEdges } = extractFile("scopes.php", `<?php
+class First {
+    private LeadService $service;
+    public function run() { $this->service->unlockLead(); }
+}
+class Second {
+    public function __construct(private OtherService $service) { $service->unlockLead(); }
+    public function run(LeadService $service) { $this->service->unlockLead(); }
+}
+class Plain {
+    public function __construct(LeadService $service) { $service->unlockLead(); }
+    public function run() { $this->service->unlockLead(); }
+}
+`, "php");
+  const calls = rawEdges.filter((e) => e.relation === "calls" && e.name === "unlockLead");
+  assert.deepEqual(calls.map((e) => [e.source, e.recvType]), [
+    ["scopes.php#First.run", "LeadService"],
+    ["scopes.php#Second.__construct", "OtherService"],
+    ["scopes.php#Second.run", "OtherService"],
+    ["scopes.php#Plain.__construct", "LeadService"],
+    ["scopes.php#Plain.run", undefined],
+  ]);
+});
+
+test("PHP typed properties: nested classes never fall back to an outer property (#478)", () => {
+  for (const classHeader of ["return new class", "class Nested"]) {
+    for (const declaration of [
+      "",
+      "private $service;",
+      "private int $service;",
+      "private LeadService|OtherService $service;",
+      "public function __construct(private LeadService|OtherService $service) {}",
+    ]) {
+      const { nodes, rawEdges } = extractFile("nested.php", `<?php
+class LeadService { public function unlockLead() {} }
+class OtherService { public function unlockLead() {} }
+class Controller {
+    private LeadService $service;
+    public function create() {
+        ${classHeader} {
+            ${declaration}
+            public function run() { $this->service->unlockLead(); }
+        };
+    }
+    public function run() { $this->service->unlockLead(); }
+}
+`, "php");
+      const calls = rawEdges.filter((e) => e.relation === "calls" && e.name === "unlockLead");
+      const context = `${classHeader}: ${declaration}`;
+      assert.deepEqual(calls.map((e) => e.recvType), [undefined, "LeadService"], context);
+      const resolved = resolveEdges(nodes, rawEdges).filter((e) => e.relation === "calls");
+      assert.deepEqual(resolved.map((e) => [e.source, e.target]), [
+        ["nested.php#Controller.run", "nested.php#LeadService.unlockLead"],
+      ], context);
+    }
+  }
+});
+
+for (const [kind, declaration] of [
+  ["classic", `private OtherService $service;
+   public function __construct(OtherService $service, OtherService $local, OtherService $other) {
+       $this->service = $service;
+   }`],
+  ["promoted", "public function __construct(private OtherService $service, OtherService $local, OtherService $other) {}"],
+]) {
+  test(`PHP typed properties: ${kind} anonymous constructor arguments keep enclosing scope (#478)`, () => {
+    const source = `<?php
+class LeadService { public function unlockLead(): OtherService { return new OtherService(); } }
+class OtherService { public function unlockLead(): OtherService { return $this; } }
+class Controller {
+    private LeadService $service;
+    private function other(): OtherService { return new OtherService(); }
+    public function create(LeadService $service) {
+        return new class($this->service->unlockLead(), $service->unlockLead(), $this->other()) {
+            ${declaration}
+            public function run() { $this->service->unlockLead(); }
+        };
+    }
+}
+`;
+    assert.equal(nativeParser("php").parse(source).rootNode.hasError, false);
+    const { nodes, rawEdges } = extractFile("arguments.php", source, "php");
+    const calls = rawEdges.filter((e) => e.relation === "calls");
+    assert.deepEqual(calls.map((e) => [e.source, e.name, e.recvType]), [
+      ["arguments.php#Controller.create", "unlockLead", "LeadService"],
+      ["arguments.php#Controller.create", "unlockLead", "LeadService"],
+      ["arguments.php#Controller.create", "other", "Controller"],
+      ["arguments.php#Controller.create.{anonymous}.run", "unlockLead", "OtherService"],
+    ]);
+    const resolved = resolveEdges(nodes, rawEdges).filter((e) => e.relation === "calls");
+    assert.deepEqual(resolved.map((e) => [e.source, e.target, e.confidence]), [
+      ["arguments.php#Controller.create", "arguments.php#LeadService.unlockLead", "extracted"],
+      ["arguments.php#Controller.create", "arguments.php#Controller.other", "extracted"],
+      ["arguments.php#Controller.create.{anonymous}.run", "arguments.php#OtherService.unlockLead", "extracted"],
+    ]);
+  });
+}
+
+test("PHP typed properties: sibling anonymous classes keep distinct bindings (#478)", () => {
+  const declarations = [
+    (type: string) => `private ${type} $service;
+        public function __construct(${type} $service) {
+            $this->service = $service;
+            $service->unlockLead();
+            $this->service->unlockLead();
+        }`,
+    (type: string) => `public function __construct(private ${type} $service) {
+            $service->unlockLead();
+            $this->service->unlockLead();
+        }`,
+  ];
+  for (const first of declarations) {
+    for (const second of declarations) {
+      const source = `<?php
+class LeadService { public function unlockLead() {} }
+class OtherService { public function unlockLead() {} }
+function create() {
+    $a = new class(new LeadService()) {
+        ${first("LeadService")}
+        public function run() { $this->service->unlockLead(); }
+    };
+    $b = new class(new OtherService()) {
+        ${second("OtherService")}
+        public function run() { $this->service->unlockLead(); }
+    };
+    $c = new class {
+        private $service;
+        public function run() { $this->service->unlockLead(); }
+    };
+}
+`;
+      assert.equal(nativeParser("php").parse(source).rootNode.hasError, false);
+      const { nodes, rawEdges } = extractFile("siblings.php", source, "php");
+      const calls = rawEdges.filter((e) => e.relation === "calls" && e.name === "unlockLead");
+      const context = `${first("LeadService")}; ${second("OtherService")}`;
+      assert.deepEqual(calls.map((e) => e.recvType), [
+        "LeadService", "LeadService", "LeadService",
+        "OtherService", "OtherService", "OtherService", undefined,
+      ], context);
+      const resolved = resolveEdges(nodes, rawEdges).filter((e) => e.relation === "calls");
+      assert.deepEqual(resolved.map((e) => [e.source, e.target]), [
+        ["siblings.php#create.{anonymous}.__construct", "siblings.php#LeadService.unlockLead"],
+        ["siblings.php#create.{anonymous}.run", "siblings.php#LeadService.unlockLead"],
+        ["siblings.php#create.{anonymous}.__construct~2", "siblings.php#OtherService.unlockLead"],
+        ["siblings.php#create.{anonymous}.run~2", "siblings.php#OtherService.unlockLead"],
+      ], context);
+    }
+  }
+});
+
+test("PHP typed properties: uncertain or dynamic receivers remain unresolved (#478)", () => {
+  const { rawEdges } = extractFile("unknown.php", `<?php
+class Controller {
+    private LeadService $service;
+    private LeadService|OtherService $union;
+    private LeadService&OtherService $intersection;
+    private $untyped;
+    public function __construct(private LeadService|OtherService $promoted) {}
+    public function run() {
+        $this->union->unlockLead();
+        $this->intersection->unlockLead();
+        $this->untyped->unlockLead();
+        $this->promoted->unlockLead();
+        $this->$service->unlockLead();
+        $this->{$service}->unlockLead();
+        $this->{service}->unlockLead();
+        $this->service->nested->unlockLead();
+        $other->service->unlockLead();
+    }
+}
+`, "php");
+  const calls = rawEdges.filter((e) => e.relation === "calls" && e.name === "unlockLead");
+  assert.equal(calls.length, 9);
+  assert.ok(calls.every((e) => e.viaMember && e.recvType === undefined));
 });
 
 // A variable-assigned closure is named after its variable, so its node id is
