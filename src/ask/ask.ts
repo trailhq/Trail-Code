@@ -309,9 +309,12 @@ const OUTGOING_RELS: Relation[] = ["calls", "references", "imports", "implements
 
 /** Split a prose query into word-like tokens, keeping dots so a qualified name
  * ("Cache.get") or package-qualified name ("pkg.Fn") survives as one token —
- * `resolveSymbol`'s own suffix/last-segment matching handles the rest. */
+ * `resolveSymbol`'s own suffix/last-segment matching handles the rest.
+ * The separator is Unicode-aware (#432): an ASCII-only class silently dropped
+ * every non-Latin script, so a query that named a CJK symbol — or merely mixed
+ * scripts — lost its words before they could be tried. */
 function subjectWords(query: string): string[] {
-  return [...new Set(query.split(/[^A-Za-z0-9_.]+/).filter(Boolean))];
+  return [...new Set(query.split(/[^\p{L}\p{N}._]+/u).filter(Boolean))];
 }
 
 /** Resolve the query's structural subject via {@link resolveSymbol}, trying

@@ -34,13 +34,58 @@ const STOP = new Set([
 /** Split prose + identifiers into lowercased subword tokens (camelCase, snake, kebab).
  * The single source of truth for tokenization — shared by build-time indexing
  * (this file) and query-time fallback (`ask.ts`) so the sidecar is a provably
- * exact cache of the live path. */
+ * exact cache of the live path.
+ *
+ * Unicode-aware (#432): splitting on `[^a-z0-9]+` treated every non-ASCII
+ * character as a separator, so Cyrillic, Greek, Arabic, Hebrew, Hindi and CJK
+ * text tokenized to nothing and non-Latin queries silently returned zero hits.
+ * The separator is now "any run of non-letter/non-number" — combining marks
+ * (`\p{M}`) stay inside words so Devanagari, Hebrew niqqud and similar scripts
+ * survive whole, while `_` separates exactly as before. `toLowerCase()` is
+ * already Unicode-aware, and deliberately locale-independent (a locale-aware
+ * fold — e.g. Turkish dotless i — would corrupt the index for other users).
+ * The camelCase break uses `\p{Ll}`/`\p{Lu}` for the same reason: a cased script
+ * that is not Latin splits on case too. Input is NFC-normalized first, so a
+ * decomposed sequence and its precomposed form are one token (#552).
+ *
+ * CJK scripts add character bigrams on top of the word token: they have no
+ * word separators, so a whole phrase arrives as one token and a shorter query
+ * phrase would never match it. Bigram overlap makes "中文检索" find a card
+ * that says "中文检索系统". */
+const WORD_SEPARATOR = /[^\p{L}\p{N}\p{M}]+/u;
+const CJK_RUN = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]{2,}/gu;
+
+const cjkBigrams = (word: string): string[] => {
+  const bigrams: string[] = [];
+  for (const match of word.matchAll(CJK_RUN)) {
+    const run = match[0];
+    for (let i = 0; i + 1 < run.length; i += 1) bigrams.push(run.slice(i, i + 2));
+  }
+  return bigrams;
+};
+
 export function tokenize(text: string): string[] {
-  return text
-    .replace(/([a-z0-9])([A-Z])/g, "$1 $2") // camelCase → camel Case
+  // NFC so a decomposed sequence ("e" + combining acute) lands on the same
+  // token as the precomposed form the concept slugs are written with (#552).
+  const normalized = text.normalize("NFC");
+  // camelCase → camel Case. `\p{Ll}`/`\p{Lu}` rather than `[a-z]`/`[A-Z]` so a
+  // cased script that is not Latin splits too: `перевіритиОрендаря` becomes
+  // `перевірити орендаря` (#432). CJK carries no case, so nothing changes there.
+  const withCamelBreaks = normalized.replace(/([\p{Ll}\p{N}])(\p{Lu})/gu, "$1 $2");
+  const words = withCamelBreaks
     .toLowerCase()
-    .split(/[^a-z0-9]+/)
+    .split(WORD_SEPARATOR)
     .filter((t) => t.length > 1 && !STOP.has(t));
+  const tokens: string[] = [];
+  for (const word of words) {
+    tokens.push(word);
+    for (const bigram of cjkBigrams(word)) {
+      // A two-character word's only bigram is the word itself; the word token
+      // already covers it, so skip instead of emitting a duplicate.
+      if (bigram !== word) tokens.push(bigram);
+    }
+  }
+  return tokens;
 }
 
 /** Term-frequency count map. */
@@ -61,7 +106,10 @@ export interface AskIndexDoc {
 /** The build-time sidecar. `df`/`docCount` cover symbol+file nodes only (no
  * concepts — see module docstring); `avgBodyLen` is the BM25 corpus average. */
 export interface AskIndex {
-  version: 1;
+  /** Tokenizer shape generation: 2 = Unicode-aware tokens + CJK bigrams (#432).
+   * Bumped from 1 so pre-#432 sidecars read as unknown and fall back to live
+   * tokenization instead of serving ASCII-only bags forever. */
+  version: 2;
   avgBodyLen: number;
   df: [string, number][];
   docCount: number;
@@ -117,7 +165,7 @@ export function writeAskIndex(outDir: string, graph: GraphV1): string {
     : 0;
 
   const index: AskIndex = {
-    version: 1,
+    version: 2,
     avgBodyLen,
     df: pairs(df),
     docCount: nodes.length,
@@ -143,7 +191,7 @@ export function readAskIndex(outDir: string): AskIndex | null {
     if (
       !raw ||
       typeof raw !== "object" ||
-      raw.version !== 1 ||
+      raw.version !== 2 ||
       typeof raw.docCount !== "number" ||
       typeof raw.avgBodyLen !== "number" ||
       !Array.isArray(raw.df) ||
