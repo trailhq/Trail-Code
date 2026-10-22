@@ -5,16 +5,20 @@
  * writes, no spawning): this file is the only place that knows how to actually
  * re-run the wiring, and it is deliberately thin.
  */
-import { runInit } from './claude/init.js';
+import { spawn } from 'node:child_process';
+import { runInit, wiringName } from './claude/init.js';
 import { runHostsInit } from './hosts/init.js';
 import { graftCliPath } from './claude/paths.js';
+import { BRAND_ENV, repoWiredForTrail, setBrand, trailOnPath } from './brand.js';
+import { ensureRepoHome } from './notes/home.js';
+import { ensureRepoTrail } from './notes/repo-trail.js';
 import {
   formatUpdateNudge,
   formatWiringRefresh,
-  maybeRefreshBrainRules,
   maybeRefreshInBackground,
   readUpdateCache,
   reconcileWiring,
+  wiredHostIds,
   type WiringOpts,
 } from './upkeep.js';
 
@@ -39,15 +43,57 @@ export interface UpkeepResult {
  * the bytes match. A user who declined them at init time is honoured via
  * `opts.global`/`opts.hooks`, replayed from the stamp.
  */
-function rewriteWiring(repo: string, hosts: string[], opts: WiringOpts): void {
+function rewriteWiring(repo: string, hosts: string[], opts: WiringOpts, toTrail = false): void {
+  // Moving to trail: everything written from here speaks trail, the repo gets
+  // its .trail/, and the hosts are rewired under trail's names.
+  if (toTrail) setBrand('trail');
+  // Under trail, each refresh also brings `.trail/` and its README up to date.
+  if (toTrail || wiringName(repo) === 'trail') {
+    const { place } = ensureRepoHome(repo);
+    if (place.git) ensureRepoTrail(place.checkout);
+  }
   // `opts.global` reaches the claude layer for the same reason `opts.statusline` does:
   // its `~/.claude` writes (hosts/claude-global.ts) are out-of-repo, and a user who
   // declined those at init time must keep declining them on every replay.
   if (hosts.includes('claude'))
-    runInit(repo, { build: false, cliPath: graftCliPath(), statusline: opts.statusline, global: opts.global });
+    runInit(repo, { build: false, cliPath: graftCliPath(), statusline: opts.statusline, global: opts.global, ...(toTrail ? { brand: 'trail' as const } : {}) });
+  // The other agents move with Claude Code: their graft-named files and
+  // fenced blocks are replaced by trail's (see hosts/init.ts).
   const others = hosts.filter((h) => h !== 'claude');
   if (others.length)
-    runHostsInit(repo, { agents: others, global: opts.global, mcp: opts.mcp, hooks: opts.hooks });
+    runHostsInit(repo, { agents: others, global: opts.global, mcp: opts.mcp, hooks: opts.hooks, ...(toTrail ? { brand: 'trail' as const } : {}) });
+  if (toTrail && hosts.includes('claude')) readPastSessionsInBackground(repo);
+}
+
+/**
+ * Whether a repo wired as graft should move to trail now: the person has the
+ * trail command, so they've taken the update that renames graft. Each repo
+ * moves the first time a session opens in it. GRAFT_NO_TRAIL_SWITCH=1 keeps a
+ * machine on graft.
+ */
+export function shouldMoveToTrail(repo: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  if (env.GRAFT_NO_TRAIL_SWITCH === '1') return false;
+  // Claude Code's wiring is what says a repo is on trail, so only a repo with it moves.
+  return wiredHostIds(repo).includes('claude') && !repoWiredForTrail(repo) && trailOnPath(env);
+}
+
+/**
+ * `trail init`'s first read of past sessions, for a repo that moved at session
+ * start: it takes about a minute, so a detached child does it, and what it
+ * learns is there from the next session.
+ */
+function readPastSessionsInBackground(repo: string): void {
+  try {
+    const child = spawn(process.execPath, [graftCliPath(), '_trail-past-read', repo], {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+      env: { ...process.env, [BRAND_ENV]: 'trail' },
+    });
+    child.unref();
+  } catch {
+    // `trail init` in the repo reads them instead.
+  }
 }
 
 /**
@@ -63,15 +109,10 @@ export function runUpkeep(
 ): UpkeepResult {
   const lines: string[] = [];
   try {
-    const refreshed = reconcileWiring(repo, current, { rewrite: rewriteWiring });
+    const refreshed = reconcileWiring(repo, current, { rewrite: rewriteWiring, toTrail: (r) => shouldMoveToTrail(r) });
     const refreshLine = formatWiringRefresh(refreshed);
     if (refreshLine) lines.push(refreshLine);
   } catch { /* fail-soft: wiring refresh is never worth breaking a session for */ }
-  try {
-    // Rules the attached brain has gained since the last pull. Detached, so it
-    // never delays the session it runs in.
-    if (opts.background !== false) maybeRefreshBrainRules(repo);
-  } catch { /* same */ }
   try {
     if (opts.background !== false) maybeRefreshInBackground(opts.home);
     const nudge = formatUpdateNudge(current, readUpdateCache(opts.home)?.latest);

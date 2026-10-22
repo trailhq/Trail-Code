@@ -10,6 +10,8 @@ import { mainWorktreeRoot } from '../graph/seed.js';
 import { runUpkeep } from '../upkeep-run.js';
 import { runningVersion } from '../upkeep.js';
 import { maybeFlushInBackground, track } from '../telemetry/index.js';
+import { brand, inBrand } from '../brand.js';
+import { canonicalToolName } from './tool-names.js';
 
 /**
  * MCP tool name → the command enum the telemetry contract knows. A tool absent
@@ -104,7 +106,7 @@ export function startMcpServer(root: string, dirOverride?: string, version = '0'
         reply(id, {
           protocolVersion: params?.protocolVersion ?? '2024-11-05',
           capabilities: { tools: {} },
-          serverInfo: { name: 'graft', version },
+          serverInfo: { name: brand(), version },
           // The one channel that survives tool deferral — see ./instructions.ts.
           instructions: upkeep.length ? `${upkeep.join('\n')}\n\n${mcpInstructions()}` : mcpInstructions(),
         });
@@ -117,7 +119,8 @@ export function startMcpServer(root: string, dirOverride?: string, version = '0'
         return;
       case 'tools/list': {
         if (isNotification) return;
-        reply(id, { tools: advertised(root, dirOverride).map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })) });
+        // Under trail, the same tools as `trail_*`, described in trail's words.
+        reply(id, { tools: advertised(root, dirOverride).map((t) => ({ name: inBrand(t.name), description: inBrand(t.description), inputSchema: t.inputSchema })) });
         return;
       }
       case 'tools/call': {
@@ -135,7 +138,8 @@ export function startMcpServer(root: string, dirOverride?: string, version = '0'
             // hasOwn for the same reason as track()'s: a client is free to send
             // `{"name":"constructor"}`, and a plain lookup would hand `track` a
             // function rather than undefined.
-            const command = Object.hasOwn(TOOL_COMMAND, name) ? TOOL_COMMAND[name] : undefined;
+            const canonical = canonicalToolName(name);
+            const command = Object.hasOwn(TOOL_COMMAND, canonical) ? TOOL_COMMAND[canonical] : undefined;
             track('query', { command, surface: 'mcp' }, { repo: root, host: 'mcp' });
             reply(id, { content: [{ type: 'text', text: r.text }], isError: r.isError });
           },

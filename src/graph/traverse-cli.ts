@@ -18,6 +18,7 @@ import { withSavings, savingsFor, type Savings } from "../context/savings.js";
 import { loadGraphCached } from "./load.js";
 import { resolveSymbol, edgeWalk, type Direction, type EdgeHit } from "./traverse.js";
 import type { GraphV1, NodeV1 } from "./types.js";
+import { cmd } from "../brand.js";
 
 export interface CallersCliOptions {
   in?: string;
@@ -107,7 +108,7 @@ export function looseNoteFor(direction: Direction, name: string, candidateCount:
     candidateCount > 1
       ? ` ${candidateCount} definitions share the name "${name}"; a cross-file caller of an ambiguous name is dropped rather than guessed, so this may undercount.`
       : "";
-  return `  no indexed ${label} — the graph has no ${dir} call/reference edges for this symbol as written.${ambiguity} Check the name (try the bare symbol, or "Type.method"), or find its uses with graft grep "${name}". Fall back to raw grep -rn only for unindexed files`;
+  return `  no indexed ${label} — the graph has no ${dir} call/reference edges for this symbol as written.${ambiguity} Check the name (try the bare symbol, or "Type.method"), or find its uses with ${cmd("graft grep")} "${name}". Fall back to raw grep -rn only for unindexed files`;
 }
 
 interface SymbolJson {
@@ -168,7 +169,7 @@ export function runCallersCommand(query: string, dir: string, opts: CallersCliOp
   const contextDir = contextDirFor(root, opts.globalDir);
   const graph = loadGraphCached(contextDir);
   if (!graph) {
-    console.error(`✗ no graph found at ${contextDir} — run \`graft build\` first`);
+    console.error(`✗ no graph found at ${contextDir} — run \`${cmd("graft build")}\` first`);
     process.exit(1);
   }
 
@@ -184,7 +185,7 @@ export function runCallersCommand(query: string, dir: string, opts: CallersCliOp
     return;
   }
   if (matches.length === 0) {
-    console.error(`✗ no symbol "${query}" in the graph — check spelling or run graft build`);
+    console.error(`✗ no symbol "${query}" in the graph — check spelling or run ${cmd("graft build")}`);
     process.exit(1);
   }
 

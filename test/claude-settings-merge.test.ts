@@ -17,7 +17,7 @@ test('empty settings gets the full Graft blocks', () => {
   // accumulator over the retrieval tools (Bash `graft …`, the graft_* MCP tools)
   // and the source-read tools (Read/Grep/Glob) it scores against.
   const savings = merged.hooks.PostToolUse[1];
-  assert.equal(savings.matcher, 'Bash|mcp__graft__|Read|Grep|Glob');
+  assert.equal(savings.matcher, 'Bash|mcp__graft__|mcp__trail__|Read|Grep|Glob');
   assert.ok(savings.hooks[0].command.includes('tool-savings'), 'savings hook wired');
   assert.ok(merged.footerLinksRegexes.includes('graft/[\\w./-]+\\.md'));
   assert.deepEqual(warnings, []);
@@ -99,41 +99,41 @@ test('re-running is idempotent (no duplicate Graft entries or footer)', () => {
 test('foreign top-level keys survive', () => {
   const { merged } = mergeGraftSettings({ model: 'claude-sonnet-5', permissions: { allow: ['Bash(ls)'] } });
   assert.equal(merged.model, 'claude-sonnet-5');
-  assert.deepEqual(merged.permissions.allow, ['Bash(ls)', 'Bash(graft:*)', 'Bash(npx graft:*)', 'Bash(graft-dev:*)', 'Bash(node dist/cli.js:*)']);
+  assert.deepEqual(merged.permissions.allow, ['Bash(ls)', 'Bash(trail:*)', 'Bash(graft:*)', 'Bash(npx graft:*)', 'Bash(graft-dev:*)', 'Bash(node dist/cli.js:*)']);
 });
 
 test('fresh init adds the graft CLI allowlist', () => {
   const { merged } = mergeGraftSettings({});
-  assert.deepEqual(merged.permissions.allow, ['Bash(graft:*)', 'Bash(npx graft:*)', 'Bash(graft-dev:*)', 'Bash(node dist/cli.js:*)']);
+  assert.deepEqual(merged.permissions.allow, ['Bash(trail:*)', 'Bash(graft:*)', 'Bash(npx graft:*)', 'Bash(graft-dev:*)', 'Bash(node dist/cli.js:*)']);
 });
 
 test('re-init does not duplicate allowlist entries', () => {
   const once = mergeGraftSettings({}).merged;
   const twice = mergeGraftSettings(once).merged;
-  assert.deepEqual(twice.permissions.allow, ['Bash(graft:*)', 'Bash(npx graft:*)', 'Bash(graft-dev:*)', 'Bash(node dist/cli.js:*)']);
+  assert.deepEqual(twice.permissions.allow, ['Bash(trail:*)', 'Bash(graft:*)', 'Bash(npx graft:*)', 'Bash(graft-dev:*)', 'Bash(node dist/cli.js:*)']);
 });
 
 test('pre-existing unrelated allow entries are preserved and ours appended', () => {
   const existing = { permissions: { allow: ['Bash(ls)', 'Bash(git:*)'] } };
   const { merged } = mergeGraftSettings(existing);
-  assert.deepEqual(merged.permissions.allow, ['Bash(ls)', 'Bash(git:*)', 'Bash(graft:*)', 'Bash(npx graft:*)', 'Bash(graft-dev:*)', 'Bash(node dist/cli.js:*)']);
+  assert.deepEqual(merged.permissions.allow, ['Bash(ls)', 'Bash(git:*)', 'Bash(trail:*)', 'Bash(graft:*)', 'Bash(npx graft:*)', 'Bash(graft-dev:*)', 'Bash(node dist/cli.js:*)']);
 });
 
 test('a partially-present allowlist gains only what it lacks, in order', () => {
   const existing = { permissions: { allow: ['Bash(graft:*)'] } };
   const { merged } = mergeGraftSettings(existing);
-  assert.deepEqual(merged.permissions.allow, ['Bash(graft:*)', 'Bash(npx graft:*)', 'Bash(graft-dev:*)', 'Bash(node dist/cli.js:*)']);
+  assert.deepEqual(merged.permissions.allow, ['Bash(trail:*)', 'Bash(graft:*)', 'Bash(npx graft:*)', 'Bash(graft-dev:*)', 'Bash(node dist/cli.js:*)']);
 });
 
 test('pre-existing allow entries are kept and only the missing ones appended', () => {
   const existing = { permissions: { allow: ['Bash(graft:*)', 'Bash(npx graft:*)'] } };
   const { merged } = mergeGraftSettings(existing);
-  assert.deepEqual(merged.permissions.allow, ['Bash(graft:*)', 'Bash(npx graft:*)', 'Bash(graft-dev:*)', 'Bash(node dist/cli.js:*)']);
+  assert.deepEqual(merged.permissions.allow, ['Bash(trail:*)', 'Bash(graft:*)', 'Bash(npx graft:*)', 'Bash(graft-dev:*)', 'Bash(node dist/cli.js:*)']);
 });
 
 test('permissions object with no allow key gets one added; other keys preserved', () => {
   const existing = { permissions: { deny: ['Bash(rm:*)'] } };
   const { merged } = mergeGraftSettings(existing);
   assert.deepEqual(merged.permissions.deny, ['Bash(rm:*)']);
-  assert.deepEqual(merged.permissions.allow, ['Bash(graft:*)', 'Bash(npx graft:*)', 'Bash(graft-dev:*)', 'Bash(node dist/cli.js:*)']);
+  assert.deepEqual(merged.permissions.allow, ['Bash(trail:*)', 'Bash(graft:*)', 'Bash(npx graft:*)', 'Bash(graft-dev:*)', 'Bash(node dist/cli.js:*)']);
 });

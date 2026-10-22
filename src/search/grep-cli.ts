@@ -12,6 +12,8 @@ import { contextDirFor } from "../context/node-file.js";
 import { withSavings } from "../context/savings.js";
 import { loadGraphCached } from "../graph/load.js";
 import { grepGraph, type GrepGroup, type GrepResult } from "./grep.js";
+import { cmd } from "../brand.js";
+import { ignoredCode, ignoredLabel } from "./ignored-code.js";
 
 export interface GrepCliOptions {
   ignoreCase?: boolean;
@@ -69,12 +71,18 @@ export function formatGrepResult(result: GrepResult): string {
  * Truncation is never silent, even on the zero-hit path: if some indexed
  * files couldn't be read (`truncated.files > 0`), that's called out too —
  * otherwise a zero-hit result on a stale graph or wrong root reads as "no
- * matches" when really some files were never searched at all. */
-export function zeroHitNote(result: GrepResult): string {
-  const base = `no hits for "${result.pattern}" in ${result.filesSearched} indexed files. The pattern may be too specific — retry graft grep with a bare symbol name or short substring (drop the receiver, full signature, and regex anchors). All indexed code was searched; use raw grep -rn only for genuinely unindexed files (docs, configs, brand-new files)`;
+ * matches" when really some files were never searched at all.
+ *
+ * `ignored`: git-ignored code under the root (see `ignoredCode`). When there
+ * is some, the note names it instead of saying all the code was searched. */
+export function zeroHitNote(result: GrepResult, ignored: string[] = []): string {
+  const retry = `no hits for "${result.pattern}" in ${result.filesSearched} indexed files. The pattern may be too specific — retry ${cmd("graft grep")} with a bare symbol name or short substring (drop the receiver, full signature, and regex anchors).`;
+  const base = ignored.length
+    ? `${retry} Git-ignored code isn't indexed and wasn't searched: ${ignoredLabel(ignored)}. Run grep -rn there, and on docs and configs`
+    : `${retry} All indexed code was searched; use raw grep -rn only for genuinely unindexed files (docs, configs, brand-new files)`;
   const { files } = result.truncated;
   if (files === 0) return base;
-  return `${base} — note: ${files} indexed file${files === 1 ? "" : "s"} could not be read (stale graph? run graft build)`;
+  return `${base} — note: ${files} indexed file${files === 1 ? "" : "s"} could not be read (stale graph? run ${cmd("graft build")})`;
 }
 
 /**
@@ -89,7 +97,7 @@ export function runGrepCommand(pattern: string, dir: string, opts: GrepCliOption
   const contextDir = contextDirFor(root, opts.globalDir);
   const graph = loadGraphCached(contextDir);
   if (!graph) {
-    console.error("✗ no graph — run graft build first");
+    console.error(`✗ no graph — run ${cmd("graft build")} first`);
     process.exit(1);
   }
 
@@ -111,7 +119,7 @@ export function runGrepCommand(pattern: string, dir: string, opts: GrepCliOption
   }
 
   if (result.totalHits === 0) {
-    console.error(zeroHitNote(result));
+    console.error(zeroHitNote(result, ignoredCode(root)));
     return;
   }
 

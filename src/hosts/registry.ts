@@ -6,9 +6,12 @@
  * kind: 'section' → upsert the fenced block into a shared file the user owns.
  * kind: 'owned'   → graft owns the whole file; overwrite it each run.
  */
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { instructionBody, cursorRule, kiroSteering, windsurfRule } from './instructions.js';
 import { skillTemplate } from '../claude/skill-template.js';
+import { markersFor } from './sections.js';
+import { repoWiredForTrail, type Brand } from '../brand.js';
 
 export interface DetectProbe {
   home: string;
@@ -20,9 +23,10 @@ export interface HostTarget {
   id: string;
   name: string;
   kind: 'section' | 'owned';
-  /** Target file, relative to the repo root. */
+  /** Target file, relative to the repo root, under graft's names (see `hostRelPath`). */
   relPath: string;
-  content(): string;
+  /** The text, in the spelling of the repo's name for the tool. */
+  content(name?: Brand): string;
   detect(probe: DetectProbe): boolean;
 }
 
@@ -129,4 +133,53 @@ export function hostIds(): string[] {
 
 export function detectHosts(probe: DetectProbe): HostTarget[] {
   return HOSTS.filter((h) => h.detect(probe));
+}
+
+/**
+ * A host's file under `name`. A file the tool owns carries its name, like
+ * Claude Code's skill and shims do (`.cursor/rules/trail.mdc`,
+ * `.adal/skills/trail/SKILL.md`); a shared file is the same file either way.
+ */
+export function hostRelPath(host: HostTarget, name: Brand): string {
+  return name === 'trail' && host.kind === 'owned' ? host.relPath.replace(/\bgraft\b/g, 'trail') : host.relPath;
+}
+
+/** Cursor's hooks shim is repo-local, so it carries the repo's name too. */
+export function cursorHookShimRelPath(name: Brand): string {
+  return join('.cursor', 'hooks', `${name}-hooks.cjs`);
+}
+
+/**
+ * Whether another agent's files in `repo` are already under trail's names: a
+ * trail-named file, or a shared file holding trail's block.
+ */
+export function hostsWiredForTrail(repo: string): boolean {
+  if (existsSync(join(repo, cursorHookShimRelPath('trail')))) return true;
+  const seen = new Set<string>();
+  for (const host of HOSTS) {
+    const path = join(repo, hostRelPath(host, 'trail'));
+    if (seen.has(path)) continue;
+    seen.add(path);
+    if (host.kind === 'owned') {
+      if (existsSync(path)) return true;
+      continue;
+    }
+    try {
+      if (readFileSync(path, 'utf8').includes(markersFor('trail').start)) return true;
+    } catch {
+      /* not there */
+    }
+  }
+  return false;
+}
+
+/**
+ * The name the other agents' wiring goes by in `repo`, decided the way Claude
+ * Code's is (`wiringName` in claude/init.ts): trail's where `trail init` is
+ * wiring it now (`initBrand`) or the repo is already on trail, graft's
+ * everywhere else. Read from the repo, not the machine, so a teammate on
+ * graft refreshing the files writes the same ones and never flips them back.
+ */
+export function hostWiringName(repo: string, initBrand?: Brand): Brand {
+  return initBrand === 'trail' || repoWiredForTrail(repo) || hostsWiredForTrail(repo) ? 'trail' : 'graft';
 }

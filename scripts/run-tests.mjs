@@ -11,7 +11,8 @@
  * Enumerating the files here instead means `npm test` behaves identically in
  * cmd.exe, PowerShell, bash and CI, on any supported Node.
  */
-import { readdirSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -43,11 +44,25 @@ const gitEnv = {
   GIT_CONFIG_KEY_1: "tag.gpgsign", GIT_CONFIG_VALUE_1: "false",
 };
 
+// Tests make thousands of scratch repos and homes under the temp folder and
+// don't all remove them: a day of runs left over 50,000 folders (6 GB). Give the
+// run its own temp folder and remove it at the end, whatever the outcome.
+const runTmp = mkdtempSync(join(tmpdir(), "trail-test-run-"));
+const tmpEnv = { TMPDIR: runTmp, TEMP: runTmp, TMP: runTmp };
+
+// A graft repo moves to trail when a session opens on a machine with the trail
+// command, so a contributor who has trail installed would see test repos move.
+// Off for the run; the tests of the move turn it back on.
 const result = spawnSync(process.execPath, ["--import", "tsx", "--test", ...files], {
   cwd: repoRoot,
   stdio: "inherit",
-  env: { ...process.env, ...gitEnv },
+  env: { ...process.env, ...gitEnv, ...tmpEnv, GRAFT_NO_TRAIL_SWITCH: "1" },
 });
+try {
+  rmSync(runTmp, { recursive: true, force: true });
+} catch {
+  /* best effort: a locked file on Windows must not fail the run */
+}
 
 if (result.error) {
   console.error(`✗ could not start the test runner: ${result.error.message}`);

@@ -29,13 +29,22 @@ export const GRAFT_MCP_TOOL_ALIASES: Record<string, string> = {
   graft_check: 'graft_check_freshness',
 };
 
-/** Every name graft answers to (canonical + legacy), lower-cased, for a membership
- *  test that anchors on the real vocabulary instead of a loose `includes('graft')`. */
+/**
+ * The same tools under trail's name: `trail_find_code` is `graft_find_code`.
+ * Started as `trail mcp`, the server advertises these; it answers both sets
+ * either way, so a config, prompt or note written against one name keeps
+ * working when the server goes by the other.
+ */
+export const TRAIL_MCP_TOOL_CANONICAL = GRAFT_MCP_TOOL_CANONICAL.map((n) => n.replace(/^graft_/, 'trail_'));
+
+/** Every name graft answers to (canonical, legacy and trail's), lower-cased, for a
+ *  membership test that anchors on the real vocabulary instead of a loose `includes('graft')`. */
 export const GRAFT_MCP_TOOL_NAMES: ReadonlySet<string> = new Set(
-  [...GRAFT_MCP_TOOL_CANONICAL, ...Object.keys(GRAFT_MCP_TOOL_ALIASES)].map((n) => n.toLowerCase()),
+  [...GRAFT_MCP_TOOL_CANONICAL, ...Object.keys(GRAFT_MCP_TOOL_ALIASES), ...TRAIL_MCP_TOOL_CANONICAL].map((n) => n.toLowerCase()),
 );
 
-/** Canonical name for a requested tool: itself, or what it was renamed to. */
+/** Canonical name for a requested tool: itself, its graft name, or what it was renamed to. */
 export function canonicalToolName(name: string): string {
-  return GRAFT_MCP_TOOL_ALIASES[name] ?? name;
+  const graftName = name.startsWith('trail_') ? `graft_${name.slice('trail_'.length)}` : name;
+  return GRAFT_MCP_TOOL_ALIASES[graftName] ?? graftName;
 }

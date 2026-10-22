@@ -23,6 +23,7 @@ import { enqueue } from './queue.js';
 import { telemetryOn } from './gate.js';
 import { installId, patchState, readState, repoId } from './identity.js';
 import { runningVersion } from '../upkeep.js';
+import { brand } from '../brand.js';
 
 /** One queued event, exactly as it will be sent. */
 export interface QueuedEvent {
@@ -69,6 +70,10 @@ function commonProps(ctx: TrackContext): Record<string, string> {
     node_major: String(process.versions.node.split('.')[0]),
     ci: 'false', // an event only exists at all when the CI gate passed
     agent_host: detectHost(ctx.host, ctx.env ?? process.env),
+    // `trail` or `graft`: which name started this process. The share of
+    // queries under `trail` is how the rename is measured, and both names
+    // share one install id, so nobody is counted twice.
+    cli_name: brand(ctx.env ?? process.env),
   };
   if (ctx.repo) {
     try { props.repo_id = repoId(ctx.repo); } catch { /* unwritable cache — omit */ }

@@ -2,10 +2,10 @@
  * End-to-end tests for the markdown-graph pipeline (`init` → `check`), driven by
  * offline test doubles so no LLM/network is needed.
  */
-import { test } from "node:test";
+import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, realpathSync, rmSync, readdirSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 import { buildContext } from "../src/context/build.js";
@@ -49,6 +49,19 @@ function makeFixture(): string {
 function buildOpts() {
   return { model: "fake", ...fakeProviders() };
 }
+
+test("init includes Gleam sources by default", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ctxgraph-gleam-"));
+  try {
+    writeFileSync(join(dir, "app.gleam"), "pub fn main() { Nil }\n");
+
+    const r = await buildContext(dir, buildOpts());
+
+    assert.equal(r.files, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test("init builds one markdown node per entity, with links and a manifest", async () => {
   const dir = makeFixture();
@@ -492,6 +505,31 @@ test("graft check: keyless build then code changes (wiring stale) exits 1", () =
   }
 });
 
+// The ensureGitignored tests ask real git whether a path is ignored, so they must not see the
+// developer's environment: a global excludes file, a TMPDIR inside a repo, GIT_DIR exported by
+// a hook, or GRAFT_NO_GITIGNORE would each change the answer. Pin all of it for every test
+// in this file and restore it afterwards.
+const ISOLATED_ENV = [
+  "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM",
+  "GIT_CEILING_DIRECTORIES", "XDG_CONFIG_HOME", "GRAFT_NO_GITIGNORE", "GRAFT_NO_IGNORE",
+];
+let savedEnv: Record<string, string | undefined> = {};
+beforeEach(() => {
+  savedEnv = Object.fromEntries(ISOLATED_ENV.map((k) => [k, process.env[k]]));
+  for (const k of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GRAFT_NO_GITIGNORE", "GRAFT_NO_IGNORE"]) delete process.env[k];
+  // Missing files read as empty config / no default excludes file.
+  process.env.GIT_CONFIG_GLOBAL = join(tmpdir(), "ctxgi-no-global-config");
+  process.env.XDG_CONFIG_HOME = join(tmpdir(), "ctxgi-no-xdg-config");
+  process.env.GIT_CONFIG_NOSYSTEM = "1";
+  // Stop git's repo discovery above the temp root, so a scratch dir never finds an outer repo.
+  process.env.GIT_CEILING_DIRECTORIES = dirname(realpathSync(tmpdir()));
+});
+afterEach(() => {
+  for (const [k, v] of Object.entries(savedEnv)) {
+    if (v === undefined) delete process.env[k]; else process.env[k] = v;
+  }
+});
+
 // ensureGitignored — every `graft build` self-ignores its regenerable graph dir.
 test("ensureGitignored: creates .gitignore with the graft/ entry when none exists", () => {
   const dir = mkdtempSync(join(tmpdir(), "ctxgi-"));
@@ -593,6 +631,89 @@ test("ensureGitignored: GRAFT_NO_GITIGNORE=1 skips writing .gitignore", () => {
   } finally {
     delete process.env.GRAFT_NO_GITIGNORE;
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// A git-ignored context dir needs no `.gitignore` entry, whichever file git reads the rule from.
+function gitInit(dir: string): void {
+  execFileSync("git", ["init", "-q"], { cwd: dir, stdio: "ignore" });
+}
+
+test("ensureGitignored: leaves .gitignore alone when .git/info/exclude already ignores the graph dir", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ctxgi-"));
+  try {
+    gitInit(dir);
+    writeFileSync(join(dir, ".git", "info", "exclude"), "/graft/\n");
+    writeFileSync(join(dir, ".gitignore"), "node_modules/\n");
+    ensureGitignored(dir, contextDirFor(dir));
+    assert.equal(readFileSync(join(dir, ".gitignore"), "utf8"), "node_modules/\n");
+    const fresh = mkdtempSync(join(tmpdir(), "ctxgi-"));
+    try {
+      gitInit(fresh);
+      writeFileSync(join(fresh, ".git", "info", "exclude"), "/graft/\n");
+      ensureGitignored(fresh, contextDirFor(fresh));
+      assert.equal(existsSync(join(fresh, ".gitignore")), false, "must not create .gitignore either");
+    } finally {
+      rmSync(fresh, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ensureGitignored: leaves .gitignore alone when core.excludesFile already ignores the graph dir", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ctxgi-"));
+  try {
+    gitInit(dir);
+    const globalIgnore = join(dir, ".git", "global-ignore");
+    writeFileSync(globalIgnore, "graft/\n");
+    execFileSync("git", ["config", "core.excludesFile", globalIgnore], { cwd: dir, stdio: "ignore" });
+    ensureGitignored(dir, contextDirFor(dir));
+    assert.equal(existsSync(join(dir, ".gitignore")), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ensureGitignored: leaves .gitignore alone when a parent .gitignore already ignores the graph dir", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ctxgi-"));
+  try {
+    gitInit(dir);
+    writeFileSync(join(dir, ".gitignore"), "graft/\n");
+    const sub = join(dir, "pkg");
+    mkdirSync(sub);
+    ensureGitignored(sub, contextDirFor(sub));
+    assert.equal(existsSync(join(sub, ".gitignore")), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ensureGitignored: still writes the entry in a git repo that does not ignore the graph dir", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ctxgi-"));
+  try {
+    gitInit(dir);
+    writeFileSync(join(dir, ".git", "info", "exclude"), "/something-else/\n");
+    ensureGitignored(dir, contextDirFor(dir));
+    assert.match(readFileSync(join(dir, ".gitignore"), "utf8"), /^\/graft\/$/m);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ensureGitignored: an inherited GIT_DIR does not make git answer for another repo", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ctxgi-"));
+  const other = mkdtempSync(join(tmpdir(), "ctxgi-"));
+  try {
+    gitInit(dir);
+    gitInit(other);
+    writeFileSync(join(other, ".git", "info", "exclude"), "/graft/\n");
+    process.env.GIT_DIR = join(other, ".git"); // what a git hook exports; restored by afterEach
+    ensureGitignored(dir, contextDirFor(dir));
+    assert.match(readFileSync(join(dir, ".gitignore"), "utf8"), /^\/graft\/$/m);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(other, { recursive: true, force: true });
   }
 });
 

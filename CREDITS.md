@@ -2,7 +2,7 @@
 
 ## Language support
 
-graft's multi-language support was shaped by community contributors who opened
+The graft map's multi-language support was shaped by community contributors who opened
 language pull requests. That wave of one-language-at-a-time PRs is exactly what
 motivated the generic breadth tier (one tree-sitter grammar + `tags.scm` per
 language) that now covers most of them. With gratitude to:

@@ -9,6 +9,7 @@ import {
   formatUpdateNudge,
   formatWiringRefresh,
   isNewer,
+  maybeRefreshInBackground,
   needsRefresh,
   readStamp,
   reconcileWiring,
@@ -49,7 +50,7 @@ test('formatUpdateNudge stays silent unless there is something to say', () => {
   const line = formatUpdateNudge('0.9.1', '0.11.0');
   assert.ok(line);
   assert.match(line, /0\.9\.1 → 0\.11\.0/);
-  assert.match(line, /npm i -g @nanonets\/graft@latest/);
+  assert.match(line, /run `graft upgrade`/);
   assert.equal(line.split('\n').length, 1, 'one line — this rides in an agent context window');
 });
 
@@ -65,6 +66,14 @@ test('needsRefresh treats a missing or malformed cache as stale', () => {
 test('the update cache is machine-global, not per-repo', () => {
   // One dev with twelve repos should cost the registry one request a day.
   assert.equal(updateCachePath('/home/dev'), join('/home/dev', '.graft', 'update-check.json'));
+});
+
+test('DO_NOT_TRACK disables the automatic update check', () => {
+  const home = tmpRepo('upkeep-do-not-track');
+  const now = 1_700_000_000_000;
+
+  assert.equal(maybeRefreshInBackground(home, now, { DO_NOT_TRACK: '1' }), false);
+  assert.equal(existsSync(updateCachePath(home)), false, 'a disabled check leaves no attempt stamp');
 });
 
 test('runningVersion resolves this package, not the caller depth', () => {

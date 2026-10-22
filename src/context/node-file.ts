@@ -23,11 +23,14 @@
  */
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import matter from "gray-matter";
+import { spawnSync } from "node:child_process";
+import { matter } from "../util/front-matter.js";
 import { contentHash, normalizeName } from "../util/id.js";
 import { relPosix, stripTrailingSlashes } from "../util/paths.js";
 // Value-only import of a constant; `write.ts` pulls in nothing from here, so no cycle.
 import { GRAPH_DIR } from "../graph/write.js";
+import { mapDirFor, isTrailMapDir } from "./map-dir.js";
+import { ignoreInTrailDir } from "../notes/repo-trail.js";
 
 /** A source file a node was derived from, with its content hash at generation time. */
 export interface SourceRef {
@@ -104,22 +107,25 @@ export function digestSources(sources: SourceRef[]): string {
   return contentHash(lines);
 }
 
-/** Absolute path of the `graft/` directory for a repo root. Visible (not
- * dot-prefixed) on purpose: default ripgrep skips hidden dirs, so the agent's
- * grep/ls/find reflex must be able to land on the graph. */
+/** Absolute path of a repo's code map: `graft/`, or `.trail/cache/` in a repo
+ * on trail (see context/map-dir.ts). An explicit `--dir` wins. `graft/` is
+ * visible (not dot-prefixed) on purpose: default ripgrep skips hidden dirs, so
+ * a grep can land on its cards; under trail the hooks name the path instead. */
 export function contextDirFor(root: string, override?: string): string {
   if (override) return override;
-  return join(root, "graft");
+  return mapDirFor(root);
 }
 
 /**
  * Make sure the repo's root `.gitignore` ignores the graft output dir. The
  * graph is a local, regenerable cache (like `node_modules`), not a committed
  * artifact, so every `graft build` adds the entry itself the first time — the
- * user never has to think about it. No-ops when the entry is already present
- * or the dir lives outside `root` (a custom `--dir` elsewhere, which can't be
- * expressed as a repo-relative ignore). Best-effort: an unwritable `.gitignore`
- * must never abort a build, so write failures are swallowed.
+ * user never has to think about it. No-ops when the entry is already present,
+ * when git already ignores the dir by other means (`.git/info/exclude`, a parent
+ * `.gitignore`, `core.excludesFile`), or when the dir lives outside `root` (a
+ * custom `--dir` elsewhere, which can't be expressed as a repo-relative ignore).
+ * Best-effort: an unwritable `.gitignore` must never abort a build, so write
+ * failures are swallowed.
  */
 const GRAPH_CACHE_NOTE = "graft's local graph cache — regenerable, not committed (run `graft build`).";
 
@@ -129,6 +135,11 @@ export const LINK_NOTE = "graft's brain link — holds a read token, never commi
 
 export function ensureGitignored(root: string, contextDir: string, note = GRAPH_CACHE_NOTE): void {
   if (envTruthy("GRAFT_NO_GITIGNORE")) return;
+  // trail's map: `.trail/.gitignore` keeps it out, and the repo's own file is never touched.
+  if (isTrailMapDir(root, contextDir)) {
+    try { ignoreInTrailDir(root, "cache/"); } catch { /* best-effort */ }
+    return;
+  }
   const rel = relPosix(root, contextDir);
   if (rel === "" || rel.startsWith("..")) return; // dir is at/above the repo root — nothing sane to ignore
   const bare = stripTrailingSlashes(rel); // "graft" (or a `--dir` subpath like "tools/ctx")
@@ -147,9 +158,40 @@ export function ensureGitignored(root: string, contextDir: string, note = GRAPH_
     return t === entry || t === `${bare}/` || t === bare;
   });
   if (present) return;
+  // Not in `.gitignore` itself, but git may already ignore the dir through `.git/info/exclude`,
+  // a parent `.gitignore` or `core.excludesFile`. Then there is nothing to add, and appending
+  // would dirty the checkout again on every build for a user who keeps tooling noise out of
+  // the tracked `.gitignore` on purpose.
+  if (gitAlreadyIgnores(root, bare)) return;
   const gap = current === "" ? "" : current.endsWith("\n") ? "\n" : "\n\n";
   const block = `${gap}# ${note}\n${entry}\n`;
   try { writeFileSync(path, current + block); } catch { /* best-effort — build already succeeded */ }
+}
+
+/** Variables that point git at a different repo than the one in `cwd` (a git hook exports
+ *  `GIT_DIR` and `GIT_INDEX_FILE`, a wrapper may export the rest). Left in the child's
+ *  environment they make `check-ignore` answer for that other repo. */
+const GIT_REPO_ENV = [
+  "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY", "GIT_NAMESPACE",
+];
+
+/** True when `root` is a git work tree whose ignore rules (every source git reads: `.gitignore`
+ *  files, `.git/info/exclude`, `core.excludesFile`) already cover the directory `rel/`. Any
+ *  failure (git missing, not a repo, timeout) answers false, so the caller falls back to
+ *  writing the entry. The trailing slash makes git treat the path as a directory, so dir-only
+ *  patterns like `graft/` match. A negation rule (an allowlist `.gitignore` that re-includes
+ *  directories) can judge a not-yet-created path differently from an existing one, so callers
+ *  create the dir first. `core.fsmonitor` is off because it would run a command named by the
+ *  repo's own config. */
+function gitAlreadyIgnores(root: string, rel: string): boolean {
+  try {
+    const env = { ...process.env };
+    for (const k of GIT_REPO_ENV) delete env[k];
+    const r = spawnSync("git", ["-c", "core.fsmonitor=false", "check-ignore", "-q", "--", `${rel}/`], {
+      cwd: root, env, stdio: "ignore", timeout: 5000, windowsHide: true,
+    });
+    return r.status === 0;
+  } catch { return false; }
 }
 
 /**
@@ -174,6 +216,8 @@ export function ensureGitignored(root: string, contextDir: string, note = GRAPH_
  */
 export function ensureSearchable(root: string, contextDir: string): void {
   if (envTruthy("GRAFT_NO_IGNORE")) return;
+  // trail's map is reached by the path the hooks name, not by a grep from the root: no `.ignore`.
+  if (isTrailMapDir(root, contextDir)) return;
   const rel = relPosix(root, contextDir);
   if (rel === "" || rel.startsWith("..")) return; // outside the repo — nothing to re-admit
   const dir = stripTrailingSlashes(rel);

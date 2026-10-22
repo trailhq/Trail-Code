@@ -6,7 +6,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -47,6 +47,7 @@ fn helper() -> String {
 test("genericLangOf routes .rs to the breadth tier (and not depth-tier extensions)", () => {
   assert.equal(genericLangOf("src/main.rs")?.name, "rust");
   assert.equal(genericLangOf("src/init.lua")?.name, "lua");
+  assert.equal(genericLangOf("src/app.gleam")?.name, "gleam");
   assert.equal(genericLangOf("src/app.ts"), null); // depth tier owns .ts
   assert.equal(genericLangOf("README.md"), null);
 });
@@ -132,6 +133,23 @@ const SNIPPETS: Array<{ lang: string; file: string; src: string; defs: string[];
     src: `let\n  helper = x: x + 1;\nin {\n  greet = name: helper 2;\n  version = "1.0";\n}\n`,
     defs: ["function:greet", "function:helper"], call: ["greet", "helper"],
   },
+  {
+    // Gleam's module functions are declarations, while custom types are named
+    // through their nested `type_name` node. Constants and the variants of a
+    // custom type are API too — `Ready` is a callable you can pass around. A
+    // direct function call still resolves through the bare-name resolver.
+    lang: "gleam", file: "src/app.gleam",
+    src: `pub const limit = 3
+
+pub type State { Ready }
+
+pub fn helper() { 1 }
+
+pub fn run() { helper() }
+`,
+    defs: ["constant:limit", "function:Ready", "function:helper", "function:run", "type:State"],
+    call: ["run", "helper"],
+  },
 ];
 
 for (const s of SNIPPETS) {
@@ -147,6 +165,272 @@ for (const s of SNIPPETS) {
     assert.equal(call?.target, `${s.file}#${s.call[1]}`, `${s.lang}: resolved ${s.call[0]}→${s.call[1]}`);
   });
 }
+
+test("Gleam files build into a queryable wiring graph", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "graft-gleam-"));
+  try {
+    mkdirSync(join(dir, "src"));
+    writeFileSync(
+      join(dir, "src", "app.gleam"),
+      `pub type State { Ready }
+
+pub fn helper() { 1 }
+
+pub fn run() { helper() }
+`,
+    );
+
+    const built = await buildGraph(dir, { reuse: false });
+    assert.deepEqual(built.languages, ["gleam"]);
+
+    const graph = readGraph(wiringPath(built.contextDir));
+    assert.ok(graph?.nodes.some((n) => n.id === "src/app.gleam#State"));
+    assert.ok(graph?.edges.some((e) => e.source === "src/app.gleam#run" && e.target === "src/app.gleam#helper"));
+
+    const api = skeleton(dir, "src/app.gleam");
+    assert.deepEqual(api.entries.map((e) => e.name).sort(), ["Ready", "State", "helper", "run"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/** A two-module Gleam package: `app.gleam` reaches `app/thing.gleam` every way
+ * Gleam offers, and reaches the stdlib the same way it reaches in-repo code. */
+function gleamPackage(dir: string): void {
+  mkdirSync(join(dir, "src", "app"), { recursive: true });
+  // A local function whose name collides with gleam/list's — the bait for a
+  // bare-name resolver. `Cfg` is the idiomatic type/constructor name collision.
+  writeFileSync(join(dir, "src", "mine.gleam"), `pub fn map(x: Int) -> Int { x }\n`);
+  writeFileSync(
+    join(dir, "src", "app", "thing.gleam"),
+    `pub type State {
+  Ready
+  Busy(since: Int)
+}
+
+pub type Cfg { Cfg(a: Int) }
+
+pub fn helper(n: Int) -> Int { n }
+`,
+  );
+  writeFileSync(
+    join(dir, "src", "app.gleam"),
+    `import gleam/list
+import app/thing
+import app/thing.{helper} as t
+
+pub fn run(xs: List(Int), c: thing.Cfg) -> thing.State {
+  list.map(xs, fn(x) { x })
+  thing.helper(1)
+  helper(2)
+  let s = thing.Busy(since: 1)
+  let _ = thing.Cfg(a: 2)
+  case s { thing.Ready -> s _ -> s }
+}
+`,
+  );
+}
+
+test("Gleam imports resolve to in-repo modules and leave the stdlib a string", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "graft-gleam-imports-"));
+  try {
+    gleamPackage(dir);
+    const built = await buildGraph(dir, { reuse: false });
+    const g = readGraph(wiringPath(built.contextDir));
+    const imports = (g?.edges ?? []).filter((e) => e.relation === "imports" && e.source === "src/app.gleam");
+    assert.deepEqual([...new Set(imports.map((e) => e.target))].sort(), ["gleam/list", "src/app/thing.gleam"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a Gleam qualified call resolves through the import, never by bare name", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "graft-gleam-calls-"));
+  try {
+    gleamPackage(dir);
+    const built = await buildGraph(dir, { reuse: false });
+    const g = readGraph(wiringPath(built.contextDir));
+    const from = (g?.edges ?? []).filter((e) => e.source === "src/app.gleam#run");
+
+    // `list.map` is gleam/list's — NOT the same-named function next door. This is
+    // the whole point of routing qualified calls through the import table.
+    assert.equal(from.find((e) => e.target === "src/mine.gleam#map"), undefined);
+
+    // Both the qualified `thing.helper(1)` and the unqualified-import `helper(2)`
+    // name the same module, so both land on that module's definition.
+    assert.ok(from.some((e) => e.relation === "calls" && e.target === "src/app/thing.gleam#helper"));
+
+    // Construction and destructuring reach a remote constructor.
+    assert.ok(from.some((e) => e.relation === "calls" && e.target === "src/app/thing.gleam#Busy"));
+    assert.ok(from.some((e) => e.relation === "calls" && e.target === "src/app/thing.gleam#Ready"));
+
+    // A type and its constructor share the name `Cfg`; the use site picks which.
+    const cfg = g?.nodes.find((n) => n.name === "Cfg" && n.kind === "type");
+    const ctor = g?.nodes.find((n) => n.name === "Cfg" && n.kind === "function");
+    assert.ok(cfg && ctor && cfg.id !== ctor.id, "both a Cfg type and a Cfg constructor exist");
+    assert.ok(from.some((e) => e.relation === "references" && e.target === cfg.id), "`c: thing.Cfg` → the type");
+    assert.ok(from.some((e) => e.relation === "calls" && e.target === ctor.id), "`thing.Cfg(a: 2)` → the constructor");
+
+    // A type used only in an annotation is not an orphan.
+    assert.ok(from.some((e) => e.relation === "references" && e.target === "src/app/thing.gleam#State"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a Gleam call with no import to back it is dropped, not guessed", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "graft-gleam-drop-"));
+  try {
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(join(dir, "src", "util.gleam"), `pub fn run(x: Int) -> Int { x }\n`);
+    // `cfg.run()` is a record field holding a function — `cfg` is a local, not a
+    // module, so there is nothing to scope the name to and no edge to be had.
+    writeFileSync(
+      join(dir, "src", "app.gleam"),
+      `pub fn go(cfg) {\n  cfg.run(1)\n}\n`,
+    );
+    const built = await buildGraph(dir, { reuse: false });
+    const g = readGraph(wiringPath(built.contextDir));
+    assert.equal((g?.edges ?? []).find((e) => e.source === "src/app.gleam#go"), undefined);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a Gleam function that is piped into or passed as a value is not an orphan", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "graft-gleam-values-"));
+  try {
+    mkdirSync(join(dir, "src", "app"), { recursive: true });
+    writeFileSync(
+      join(dir, "src", "app", "thing.gleam"),
+      `pub const limit = 3
+
+pub fn piped(n: Int) -> Int { n }
+
+pub fn handed(n: Int) -> Int { n }
+
+pub fn name(n: Int) -> Int { n }
+`,
+    );
+    writeFileSync(
+      join(dir, "src", "app.gleam"),
+      `import gleam/list
+import app/thing
+
+pub fn local(n: Int) -> Int { n }
+
+pub fn run(xs: List(Int), cb) {
+  let n = 1 |> thing.piped |> local |> cb
+  list.map(xs, thing.handed)
+  list.map(xs, local)
+  list.map(xs, cb)
+  n + thing.limit
+}
+
+pub fn show(thing) { thing.name }
+
+pub fn apply(thing) { thing.piped(thing) }
+
+pub type Shape { Shape(local: Int) }
+
+pub fn unwrap(s: Shape) {
+  let Shape(local:) = s
+  list.map([1], fn(_) { local })
+  [local]
+}
+`,
+    );
+    const built = await buildGraph(dir, { reuse: false });
+    const g = readGraph(wiringPath(built.contextDir));
+    const from = (id: string) => (g?.edges ?? []).filter((e) => e.source === id).map((e) => `${e.relation} ${e.target}`);
+    const run = from("src/app.gleam#run");
+
+    // The right of a pipe is applied, parentheses or not.
+    assert.ok(run.includes("calls src/app/thing.gleam#piped"));
+    assert.ok(run.includes("calls src/app.gleam#local"));
+
+    // A callback is named, not called — and so is a constant.
+    assert.ok(run.includes("references src/app/thing.gleam#handed"));
+    assert.ok(run.includes("references src/app.gleam#local"));
+    assert.ok(run.includes("references src/app/thing.gleam#limit"));
+
+    // `cb` is a parameter: nothing to point at, piped or passed.
+    assert.equal(run.find((e) => e.endsWith("#cb") || e.endsWith(" cb")), undefined);
+
+    // In `show` and `apply`, `thing` is a parameter that shadows the import. Read
+    // as a value, `thing.name` is a record field — not app/thing's `name`. Applied,
+    // `thing.piped(thing)` is the module's function, which is what Gleam falls
+    // back to when the record has no such field.
+    assert.deepEqual(from("src/app.gleam#show"), []);
+    assert.deepEqual(from("src/app.gleam#apply"), ["calls src/app/thing.gleam#piped"]);
+
+    // `Shape(local:)` binds `local` by label shorthand, so `[local]` is that
+    // value — not this file's `local` function.
+    assert.equal(from("src/app.gleam#unwrap").find((e) => e.endsWith("#local")), undefined);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a bare Gleam name never resolves outside its own file and imports", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "graft-gleam-bare-"));
+  try {
+    mkdirSync(join(dir, "src"), { recursive: true });
+    // The only `commands` function and `State` type in the repo — exactly what a
+    // repo-wide bare-name lookup would settle on.
+    writeFileSync(join(dir, "src", "other.gleam"), `pub type State { State }\n\npub fn commands(x) { x }\n`);
+    // Here `commands` is a parameter being called and `State` is not imported.
+    writeFileSync(
+      join(dir, "src", "app.gleam"),
+      `pub fn local(x) { x }\n\npub fn run(commands, s: State) {\n  commands(1)\n  local(s)\n}\n`,
+    );
+    const built = await buildGraph(dir, { reuse: false });
+    const g = readGraph(wiringPath(built.contextDir));
+    const from = (g?.edges ?? []).filter((e) => e.source === "src/app.gleam#run").map((e) => `${e.relation} ${e.target}`);
+    assert.deepEqual(from, ["calls src/app.gleam#local"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a Gleam file's own names resolve even when a nested package repeats its path", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "graft-gleam-nested-"));
+  try {
+    const src = `pub fn helper() { 1 }\n\npub fn run() { helper() }\n`;
+    for (const root of [dir, join(dir, "packages", "inner")]) {
+      mkdirSync(join(root, "src"), { recursive: true });
+      writeFileSync(join(root, "src", "app.gleam"), src);
+    }
+    const built = await buildGraph(dir, { reuse: false });
+    const g = readGraph(wiringPath(built.contextDir));
+    const calls = (g?.edges ?? []).filter((e) => e.relation === "calls").map((e) => `${e.source} -> ${e.target}`).sort();
+    assert.deepEqual(calls, [
+      "packages/inner/src/app.gleam#run -> packages/inner/src/app.gleam#helper",
+      "src/app.gleam#run -> src/app.gleam#helper",
+    ]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Gleam's newer syntax (echo, assert messages) parses without losing the surrounding calls", async () => {
+  await warmGenericGrammars(["gleam"]);
+  const src = `import app/thing
+
+pub fn run(x) {
+  let assert Ok(y) = thing.helper(x) as "must work"
+  echo y
+  echo y as "label"
+  y
+}
+`;
+  const { nodes, rawEdges } = extractGeneric("src/app.gleam", src, "gleam");
+  assert.ok(nodes.some((n) => n.kind === "function" && n.name === "run"));
+  assert.ok(
+    rawEdges.some((e) => e.source === "src/app.gleam#run" && e.name === "helper" && e.specifier === "app/thing"),
+    "the qualified call survives an `as` message and `echo` lines after it",
+  );
+});
 
 // Structural references the grammar already marks — a supertype (extends), an
 // implemented interface, an object creation — become `references` edges the resolver

@@ -16,6 +16,7 @@ import type { BlastReport, ChangedArea, ImpactedModule, Impacted, TestSignal } f
 import type { Evidence } from "../viz/assemble.js";
 import { fileReader, impactedEvidence, reachTerms } from "./evidence.js";
 import { MAX_REVIEWERS, mention, sinceLabel, type Owner } from "./owners.js";
+import { brand, cmd } from "../brand.js";
 
 /** Diagram cap. Everything past it folds into one aggregate circle carrying the
  * dropped counts, so the picture shrinks but never lies. */
@@ -116,7 +117,7 @@ export function markdownReport(r: BlastReport, opts: { root?: string } = {}): st
   const out: string[] = [];
   const symbols = r.modules.reduce((n, m) => n + m.symbols.length, 0);
 
-  out.push("### 🌱 graft blast radius");
+  out.push(`### 🌱 ${brand()} blast radius`);
   out.push("");
   out.push(headline(r, symbols));
   const testLine = testHeadline(r);
@@ -155,7 +156,7 @@ export function markdownReport(r: BlastReport, opts: { root?: string } = {}): st
     for (const line of caveats) out.push(line);
   }
   out.push("");
-  out.push(`<sub>\`graft blast\` · ${r.basis} · ${depthLabel(r.depth)} · ${plural(r.changed.length, "changed file")}</sub>`);
+  out.push(`<sub>\`${cmd("graft blast")}\` · ${r.basis} · ${depthLabel(r.depth)} · ${plural(r.changed.length, "changed file")}</sub>`);
   return out.join("\n") + "\n";
 }
 

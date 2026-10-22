@@ -17,15 +17,22 @@
 import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { relPosix } from "../util/paths.js";
-import matter from "gray-matter";
+import { matter } from "../util/front-matter.js";
 import type { GraphV1, NodeV1 } from "./types.js";
 import { CACHE_DIR, readNodes } from "../context/node-file.js";
 import { GRAPH_DIR } from "./write.js";
+import { inBrand } from "../brand.js";
 
 const INDEX_FILE = "INDEX.md";
 /** Where a root-level file card goes when `graft/<stem>.md` is already a concept
  * node (same stem as a slug — Laravel `server.php` vs a "Server" concept). */
 const ROOT_CARD_DIR = "_root";
+
+function writeIfChanged(path: string, content: string): void {
+  if (existsSync(path) && readFileSync(path, "utf8") === content) return;
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, content);
+}
 
 export interface CardFileInfo {
   /** Card path relative to the context dir, e.g. "src/ai/providers.md". */
@@ -184,8 +191,7 @@ export function writeCards(graph: GraphV1, outDir: string): CardStats {
     const fileNode = group.find((n) => n.kind === "file");
     const symbols = group.filter((n) => n.kind !== "file");
     const cardPath = cardPathFor(outDir, sourcePath);
-    mkdirSync(dirname(cardPath), { recursive: true });
-    writeFileSync(cardPath, renderCard(sourcePath, fileNode, symbols, concepts.get(sourcePath) ?? []));
+    writeIfChanged(cardPath, renderCard(sourcePath, fileNode, symbols, concepts.get(sourcePath) ?? []));
     written.add(cardPath);
     files.push({ card: relPosix(outDir, cardPath), path: sourcePath, symbols: symbols.length });
   }
@@ -208,6 +214,7 @@ export function writeCards(graph: GraphV1, outDir: string): CardStats {
  * nodes on disk and the per-file cards. Deterministic order; no timestamps.
  */
 export function writeIndex(outDir: string, files: CardFileInfo[]): void {
+  // Spelled by the name that built it: a trail-only machine has no `graft` to run.
   const lines: string[] = [
     "# graft — repo map",
     "",
@@ -223,7 +230,7 @@ export function writeIndex(outDir: string, files: CardFileInfo[]): void {
     "as the `graft` CLI everywhere else. Edges — who calls what — live only in the",
     "graph, not in these files: `graft callers <symbol>` is the only way to read them.",
     "",
-  ];
+  ].map((l) => inBrand(l));
 
   const concepts = readNodes(outDir).sort((a, b) => a.slug.localeCompare(b.slug));
   if (concepts.length) {
@@ -247,7 +254,7 @@ export function writeIndex(outDir: string, files: CardFileInfo[]): void {
     );
   }
 
-  writeFileSync(join(outDir, INDEX_FILE), lines.join("\n"));
+  writeIfChanged(join(outDir, INDEX_FILE), lines.join("\n"));
 }
 
 /** One symbol a concept node covers: its name, kind, and `path:span` pointer. */
@@ -307,7 +314,7 @@ export function writeCovers(graph: GraphV1, outDir: string): number {
 
     // Re-stringify with covers appended last, so re-runs produce a stable diff.
     const { covers: _prev, ...rest } = parsed.data as Record<string, unknown>;
-    writeFileSync(full, matter.stringify(parsed.content, { ...rest, covers }));
+    writeIfChanged(full, matter.stringify(parsed.content, { ...rest, covers }));
     enriched++;
   }
   return enriched;

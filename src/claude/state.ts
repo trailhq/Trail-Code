@@ -35,6 +35,11 @@ export interface SessionState {
    * a hit whose pointer was shown once is never re-injected). Optional so
    * session files written before this field still parse. */
   injectedPointers?: string[];
+  /** Notes already put in front of the agent this session by the per-prompt
+   * hook, by path, so each is shown once (see `notesForPrompt`). */
+  injectedNotes?: string[];
+  /** `<branch> <function id>` pairs: a teammate's open branch on a function the agent edited, already put in front of it this session. */
+  injectedOverlaps?: string[];
   /** Weak-match nudges spent this session, capped so the line stays signal.
    * Optional for the same backwards-compatibility reason as above. */
   nudges?: number;
@@ -65,6 +70,9 @@ export interface SessionState {
    * are sampled on different turns: the tally only on graft turns, the cost on
    * every one. */
   lastBillingUuid?: string;
+  /** Set once the Stop hook has asked the agent to leave a note this session,
+   * so it asks at most once (see `turnWantsNote`). */
+  noteAsked?: boolean;
   /** Set once this session has been rolled up into a `session_summary`
    * telemetry event, so a resumed or long-lived session is counted once.
    * A flag rather than deleting the file: the file still holds `lastQuery` and

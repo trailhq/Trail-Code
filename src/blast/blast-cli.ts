@@ -12,6 +12,7 @@ import type { GraphV1 } from "../graph/types.js";
 import { blastRadiusIn, type BlastReport } from "./blast.js";
 import { changedFiles, refExists } from "./diff.js";
 import { markdownReport, mermaidDiagram, textReport } from "./render.js";
+import { cmd } from "../brand.js";
 
 export type BlastFormat = "text" | "markdown" | "mermaid" | "json";
 
@@ -68,7 +69,7 @@ export async function runBlastCommand(dir: string, opts: BlastCliOptions): Promi
 
   const graph = loadGraphCached(contextDir);
   if (!graph) {
-    console.error(`✗ no graph found at ${contextDir} — run \`graft build\` first`);
+    console.error(`✗ no graph found at ${contextDir} — run \`${cmd("graft build")}\` first`);
     process.exit(1);
   }
 

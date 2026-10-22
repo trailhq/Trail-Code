@@ -96,7 +96,7 @@ test("a query from a subdirectory answers from the repo's graph one level up", (
 
   const r = cliIn(join(child, "src"), ["map"], home);
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stderr, /no graft\/ here — answering from/, "the walk must announce itself");
+  assert.match(r.stderr, /no code map here — answering from/, "the walk must announce itself");
   assert.match(r.stdout + r.stderr, /main\.ts/, "must actually answer from the child's graph");
 });
 

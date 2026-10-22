@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs';
 import { renderStatusline, renderSubagent } from './format.js';
 import { readStats, readSession, emptyStats, type Stats } from './state.js';
 import { readWiring, computeStats } from './stats.js';
+import { adoptRepoBrand } from '../brand.js';
+import { noteCount } from '../notes/home.js';
 
 /**
  * The statusline's fast path is the hook-maintained cache (graft/.cache/stats.json).
@@ -25,11 +27,12 @@ export function main(): void {
   let input: any = {};
   try { input = JSON.parse(readFileSync(0, 'utf8')); } catch { /* no/invalid stdin */ }
   const dir = process.env.CLAUDE_PROJECT_DIR || input.cwd || process.cwd();
+  adoptRepoBrand(dir);
   const session = readSession(dir, input.session_id || 'default');
   const agent = input?.agent?.name;
   if (agent) { process.stdout.write(renderSubagent(agent, session)); return; }
   const stats = resolveStats(dir);
   const raw = input?.context_window?.used_percentage;
   const ctxPct = typeof raw === 'number' ? Math.round(raw) : null;
-  process.stdout.write(renderStatusline(stats, session, { ctxPct }).join('\n'));
+  process.stdout.write(renderStatusline(stats, session, { ctxPct, notes: noteCount(dir) }).join('\n'));
 }

@@ -8,7 +8,8 @@
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { pathToFileURL } from "node:url";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { win32 } from "node:path";
 import {
   createMessageConnection,
   StreamMessageReader,
@@ -28,6 +29,43 @@ export interface CallHierarchyItem {
 
 const uriOf = (abs: string): string => pathToFileURL(abs).toString();
 
+/** The JavaScript entry point an npm Windows shim (`<bin>.cmd`) runs: its last line is
+ * `"%_prog%" "%dp0%\<entry>.js" %*` (older npm: `"%~dp0\<entry>.js"`). Null for anything
+ * else. */
+export function npmShimEntry(shimPath: string, shimText: string): string | null {
+  const m = /"%(?:dp0%|~dp0)\\([^"]+\.[cm]?js)"\s+%\*/i.exec(shimText);
+  return m ? win32.join(win32.dirname(shimPath), m[1]) : null;
+}
+
+/** How to spawn a server. npm-installed servers (typescript-language-server,
+ * pyright-langserver) are `.cmd` shims on Windows, which Node refuses to spawn without a
+ * shell (EINVAL since the CVE-2024-27980 fix). Going through cmd.exe would let the repo
+ * being mapped supply the `node` the shim runs (it searches the cwd and any relative PATH
+ * entry) and breaks on `&`/`%`/`^` in the install path, so instead run the shim's entry
+ * point with Node directly: the node.exe beside the shim, as the shim itself prefers, else
+ * the Node running graft, without NODE_OPTIONS: graft loads the cwd's `.env` into its own
+ * environment, so a checkout could set `NODE_OPTIONS=--require ./x.js` and have that Node
+ * run its code. Any other `.cmd` is spawned as before (and fails cleanly: no enrichment). */
+export function spawnSpec(
+  command: string,
+  args: string[],
+  platform: NodeJS.Platform = process.platform,
+  readText: (p: string) => string = (p) => readFileSync(p, "utf8"),
+  exists: (p: string) => boolean = existsSync,
+): { command: string; args: string[]; env?: NodeJS.ProcessEnv } {
+  if (platform === "win32" && /\.cmd$/i.test(command)) {
+    let entry: string | null = null;
+    try { entry = npmShimEntry(command, readText(command)); } catch { entry = null; }
+    if (entry) {
+      const beside = win32.join(win32.dirname(command), "node.exe");
+      const env = { ...process.env };
+      for (const k of Object.keys(env)) if (k.toUpperCase() === "NODE_OPTIONS") delete env[k];
+      return { command: exists(beside) ? beside : process.execPath, args: [entry, ...args], env };
+    }
+  }
+  return { command, args };
+}
+
 export class LspClient {
   private proc: ChildProcessWithoutNullStreams;
   private conn: MessageConnection;
@@ -42,7 +80,8 @@ export class LspClient {
     private readonly languageId: string,
     private readonly callTimeoutMs = 15000,
   ) {
-    this.proc = spawn(command, args, { cwd: root, stdio: ["pipe", "pipe", "pipe"] });
+    const s = spawnSpec(command, args);
+    this.proc = spawn(s.command, s.args, { cwd: root, stdio: ["pipe", "pipe", "pipe"], env: s.env ?? process.env });
     // ENOENT (bad path) OR an immediate exit (e.g. a rustup shim whose component
     // isn't installed) must fail fast, not hang a request for the full timeout.
     this.proc.on("error", () => { this.spawnFailed = true; });

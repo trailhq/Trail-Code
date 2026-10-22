@@ -71,7 +71,11 @@ export async function enrichWithLsp(
   let sources = graph.nodes.filter((n) => CALLABLE.has(n.kind) && serverLangs.has(langOf(n.path) ?? ""));
   if (opts.maxNodes && sources.length > opts.maxNodes) sources = sources.slice(0, opts.maxNodes);
 
-  const client = new LspClient(server.command, server.args, root, server.languageId);
+  let client: LspClient;
+  // spawn throws synchronously when Windows refuses the program (e.g. a .cmd that isn't an
+  // npm shim: EINVAL), before any error listener exists — no enrichment, not a failed build.
+  try { client = new LspClient(server.command, server.args, root, server.languageId); }
+  catch { return { added: 0, queried: 0, server: server.command }; }
   if (!(await client.initialize())) { await client.dispose(); return { added: 0, queried: 0, server: server.command }; }
 
   const existing = new Set(graph.edges.map((e) => `${e.source}\0${e.relation}\0${e.target}`));

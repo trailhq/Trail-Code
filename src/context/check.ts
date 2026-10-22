@@ -19,6 +19,7 @@ import { relPosix } from "../util/paths.js";
 import { readSourceFile } from "../util/source.js";
 import { CODE_EXTENSIONS, listContextFiles } from "./build.js";
 import { contextDirFor, readManifest, readNodes } from "./node-file.js";
+import { brand, cmd } from "../brand.js";
 
 export interface CheckResult {
   ok: boolean;
@@ -145,20 +146,20 @@ export function indexFreshness(dir: string, opts: CheckOptions = {}): FreshnessR
 export function staleBanner(f: FreshnessResult | null): string | null {
   if (!f || f.missing === 0) return null;
   return (
-    `⚠ graft's index may be ahead of your working tree: ${f.missing} of ${f.total} indexed ` +
-    `files are not on disk (branch switch or uncommitted move?). If graft names a path that ` +
-    `isn't there, don't chase it — \`graft grep\` the symbol to find where it lives now; run \`graft build\` to refresh.`
+    `⚠ ${brand()}'s index may be ahead of your working tree: ${f.missing} of ${f.total} indexed ` +
+    `files are not on disk (branch switch or uncommitted move?). If ${brand()} names a path that ` +
+    `isn't there, don't chase it — \`${cmd("graft grep")}\` the symbol to find where it lives now; run \`${cmd("graft build")}\` to refresh.`
   );
 }
 
 /** Render a check result as a human-readable report. */
-export function formatCheckReport(r: CheckResult): string {
+export function formatCheckReport(r: CheckResult, label = "graft check"): string {
   if (r.missing) {
-    return "graft check: NO GRAPH\n\nNo graft/manifest.json found. Run `graft build --deep` first.";
+    return `${label}: NO GRAPH\n\nNo graft/manifest.json found. Run \`${cmd("graft build --deep")}\` first.`;
   }
-  if (r.ok) return "graft check: OK — the graph is in sync with the code.";
+  if (r.ok) return `${label}: OK — the graph is in sync with the code.`;
 
-  const lines: string[] = ["graft check: STALE", ""];
+  const lines: string[] = [`${label}: STALE`, ""];
   if (r.contentDrift.length) {
     lines.push(`changed (${r.contentDrift.length}):`);
     for (const c of r.contentDrift) lines.push(`  ~ ${c.path}  (${c.from} → ${c.to})`);
@@ -175,7 +176,7 @@ export function formatCheckReport(r: CheckResult): string {
     lines.push(`index mismatch (${r.indexDrift.length}):`);
     for (const s of r.indexDrift) lines.push(`  ! ${s}`);
   }
-  lines.push("", "Run `graft build --deep` to regenerate, then commit graft/.");
+  lines.push("", `Run \`${cmd("graft build --deep")}\` to regenerate, then commit graft/.`);
   return lines.join("\n");
 }
 

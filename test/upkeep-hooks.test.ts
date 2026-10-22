@@ -6,7 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { main } from '../src/claude/hooks.js';
 import { readStamp, runningVersion, updateCachePath } from '../src/upkeep.js';
 import { tmpRepo } from './helpers.js';
@@ -87,7 +87,7 @@ test('session-start surfaces a cached upgrade nudge', async () => {
   const repo = wiredRepo('hook-nudge');
   const ctx = contextOf(await runHook('session-start', repo, homeWithCache('hook-nudge-home', '99.0.0')));
   assert.match(ctx, /graft .* → 99\.0\.0 available/);
-  assert.match(ctx, /npm i -g @nanonets\/graft@latest/);
+  assert.match(ctx, /run `graft upgrade`/);
 });
 
 test('an up-to-date install gets no nudge', async () => {
@@ -118,4 +118,23 @@ test('a nudge still lands in a wired repo with no graph built yet', async () => 
   const repo = wiredRepo('hook-nograph');
   const ctx = contextOf(await runHook('session-start', repo, homeWithCache('hook-nograph-home', '99.0.0')));
   assert.match(ctx, /99\.0\.0 available/, 'the no-INDEX.md path still reports upkeep');
+});
+
+test('a repo graft set up, on a machine without trail, hands the agent the trail line once a week', async () => {
+  const path = process.env.PATH;
+  const ci = process.env.CI;
+  // node and git, and no trail command; and not CI, where the line stays quiet
+  process.env.PATH = [dirname(process.execPath), '/usr/bin', '/bin'].join(delimiter);
+  delete process.env.CI;
+  try {
+    const home = homeWithCache('hook-handover-home', null);
+    const first = contextOf(await runHook('session-start', wiredRepo('hook-handover'), home));
+    assert.match(first, /graft is now Trail-code/);
+    assert.match(first, /`graft upgrade` adds it/);
+    const again = contextOf(await runHook('session-start', wiredRepo('hook-handover-2'), home));
+    assert.doesNotMatch(again, /graft is now Trail-code/, 'once a week, not every session');
+  } finally {
+    process.env.PATH = path;
+    if (ci !== undefined) process.env.CI = ci;
+  }
 });

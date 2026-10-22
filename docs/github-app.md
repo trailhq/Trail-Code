@@ -1,4 +1,4 @@
-# The graft GitHub App
+# The Trail-code GitHub App
 
 Posts a blast-radius comment on every pull request, and hosts the interactive
 graph behind a signed link.
@@ -85,52 +85,6 @@ App settings → Install App → pick the repos. **Installing requires admin on 
 repository** (or org-owner for an org-wide install) — the one thing an App does
 not get you around.
 
-## Reading a repository into a Trail brain
-
-The App has a second, optional job: reading one repository's own history so
-Trail can mine rules out of it. That is what backs "paste a repo URL" during
-brain onboarding, and it lives here because this is the only service holding the
-GitHub App credentials and the only one that can build a symbol graph.
-
-`POST /brain/build`, off unless `GRAFT_BRAIN_BUILD_SECRET` is set:
-
-```bash
-curl -X POST https://<your-host>/brain/build \
-  -H "authorization: Bearer $GRAFT_BRAIN_BUILD_SECRET" \
-  -H 'content-type: application/json' \
-  -d '{"owner":"acme","repo":"api"}'
-```
-
-It resolves the installation for `acme/api` (`GET /repos/{owner}/{repo}/installation`,
-App-JWT authed), clones it shallow, builds the graph, and reads:
-
-- **commit subjects and bodies**, `--no-merges --reverse`, up to 1000
-- **closed pull requests and their discussion**, most-discussed first, bots dropped
-- **exported symbols**, with the body hash that later tells Trail whether a rule
-  still describes the code it was mined from
-
-What comes back is a digest of that — **messages, titles, comments, symbol ids
-and hashes. No source code.** Two modes:
-
-| Request | Response |
-| --- | --- |
-| `owner` + `repo` | `202` with the digest, for the caller to ingest itself |
-| plus `brainId` + `brainToken` | the digest is POSTed to the brain; `202` with its job id |
-
-The platform uses the first: it already holds the user's session and writes to
-the brain directly, so handing this service a workspace key just to have it call
-back would mean minting a credential per build for nothing.
-
-`404` with an `error` means the App is not installed on the repository — the
-expected answer for "someone pasted a repo we cannot see", not a failure. The
-caller turns it into a choice: install the App, or run `graft init --trail`
-locally, where the code never leaves the machine.
-
-| Variable | Meaning |
-| --- | --- |
-| `GRAFT_BRAIN_BUILD_SECRET` | Bearer secret for the route. Unset disables it entirely. |
-| `GRAFT_BRAIN_URL` | Platform base URL the digest is posted to, when a `brainToken` is sent. Overrides anything a request supplies, so a caller cannot redirect a repository's history elsewhere. |
-
 ## Security
 
 The App clones code written by strangers on every fork PR while holding a token
@@ -146,10 +100,6 @@ for the base repository, so:
 - **Pages are capabilities, not public URLs.** `/p/<id>?t=<hmac>` — an unknown
   page and a bad token are both `404`, so the endpoint cannot be used to
   discover which pull requests exist. Links expire with the page they point at.
-- **`/brain/build` sends no source.** Its digest is commit messages, pull-request
-  discussion, symbol ids and hashes; the checkout is deleted in a `finally`. The
-  route is off until `GRAFT_BRAIN_BUILD_SECRET` is set, and the secret is
-  compared in constant time — it is long-lived, unlike a per-payload signature.
 
 ## What is not built yet
 

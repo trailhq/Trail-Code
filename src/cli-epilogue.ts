@@ -4,6 +4,7 @@
  * so the exact text — spacing is hand-aligned, not incidental — can be
  * unit-tested without spawning the CLI.
  */
+import { brand, cmd } from "./brand.js";
 
 // The widest line (index 4, tied with index 2 at 26 chars) gets the live
 // node/edge stats appended, when a graph exists.
@@ -52,8 +53,8 @@ export function formatInitEpilogue(opts: InitEpilogueOptions): string {
   }
 
   const steps: Step[] = [
-    ...(graphBuilt ? [] : [{ label: "build the graph", command: "graft build" }]),
-    { label: "restart your agent", command: "a new session picks up graft automatically" },
+    ...(graphBuilt ? [] : [{ label: "build the graph", command: cmd("graft build") }]),
+    { label: "restart your agent", command: `a new session picks up ${brand()} automatically` },
     {
       label: "code as usual",
       command: "ask your agent to fix a bug or explain a flow —",
@@ -61,7 +62,7 @@ export function formatInitEpilogue(opts: InitEpilogueOptions): string {
     },
     {
       label: "explore by hand",
-      command: 'graft ask "where is auth handled?" · graft callers <fn> · graft viz',
+      command: `${cmd("graft ask")} "where is auth handled?" · ${cmd("graft callers")} <fn> · ${cmd("graft viz")}`,
     },
   ];
 
@@ -79,7 +80,7 @@ export function formatInitEpilogue(opts: InitEpilogueOptions): string {
     }
   });
 
-  const closing = `${indent}share it: git add .claude && git commit — teammates run \`graft build\` for their own local graph`;
+  const closing = `${indent}share it: git add .claude && git commit — teammates run \`${cmd("graft build")}\` for their own local graph`;
 
   return [...wordmark, "", ...stepLines, "", closing].join("\n");
 }

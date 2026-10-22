@@ -179,6 +179,59 @@ test("openai: does NOT paper over a rejected object tool_choice when multiple to
   assert.equal(callCount, 1); // no ambiguous retry — the caller asked for "a" specifically
 });
 
+test("openai: array-of-parts message.content is concatenated to plain text", async () => {
+  const { client } = fakeOpenAI(
+    openAiResp({
+      choices: [
+        {
+          message: { content: [{ type: "text", text: "hello " }, { type: "text", text: "there" }], tool_calls: [] },
+          finish_reason: "stop",
+        },
+      ],
+    }),
+  );
+  const m = new OpenAIChatModel({ apiKey: "x", model: "gpt-x", client });
+  const res = await m.create({ messages: [{ role: "user", content: "hi" }] });
+  assert.equal(res.text, "hello there");
+  assert.equal(res.assistant.content, "hello there");
+});
+
+test("openai: non-text parts in an array content are dropped, not stringified", async () => {
+  const { client } = fakeOpenAI(
+    openAiResp({
+      choices: [
+        {
+          message: {
+            content: [{ type: "image_url", image_url: { url: "x" } }, { type: "text", text: "caption" }],
+            tool_calls: [],
+          },
+          finish_reason: "stop",
+        },
+      ],
+    }),
+  );
+  const m = new OpenAIChatModel({ apiKey: "x", model: "gpt-x", client });
+  const res = await m.create({ messages: [{ role: "user", content: "hi" }] });
+  assert.equal(res.text, "caption");
+});
+
+test("openai: null message.content becomes an empty string", async () => {
+  const { client } = fakeOpenAI(
+    openAiResp({ choices: [{ message: { content: null, tool_calls: [] }, finish_reason: "stop" }] }),
+  );
+  const m = new OpenAIChatModel({ apiKey: "x", model: "gpt-x", client });
+  const res = await m.create({ messages: [{ role: "user", content: "hi" }] });
+  assert.equal(res.text, "");
+});
+
+test("openai: an unrecognized message.content shape throws instead of silently stringifying", async () => {
+  const { client } = fakeOpenAI(
+    openAiResp({ choices: [{ message: { content: { weird: true }, tool_calls: [] }, finish_reason: "stop" }] }),
+  );
+  const m = new OpenAIChatModel({ apiKey: "x", model: "gpt-x", client });
+  await assert.rejects(() => m.create({ messages: [{ role: "user", content: "hi" }] }), /Unsupported message\.content type/);
+});
+
 // --- Anthropic adapter ------------------------------------------------------
 
 function fakeAnthropic(resp: unknown) {

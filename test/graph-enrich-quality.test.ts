@@ -184,3 +184,29 @@ test("#235: blank parsed summaries name empty-parsed and stay pending", async ()
   assert.equal(nodes[0].summary_state, "pending");
   assert.equal(nodes[0].summary, null);
 });
+
+test("#259: unmatched ids name id-mismatch with the returned id, and never reach the gate", async () => {
+  // A returned id can hold any source text; "Quota" here must not read as a quota error.
+  const invented = "f0.ts#Quota | function | lines L1-L3";
+  const summarizer = new ChatCruxSummarizer(
+    new CannedModel({
+      toolCalls: [
+        {
+          id: "1",
+          name: "record_symbols",
+          args: { symbols: [{ id: invented, summary: "runs it", crux_start: 0, crux_end: 0 }] },
+        },
+      ],
+      stopReason: "tool_calls",
+    }),
+  );
+  const { stats, nodes } = await oneFile(summarizer);
+  assert.equal(stats.failedFiles, 1);
+  assert.equal(stats.fatal, undefined);
+  assert.equal(
+    stats.errors[0],
+    "f0.ts: model returned summaries but no id matched a requested target [id-mismatch, finish_reason=tool_calls]" +
+      `\n    first of 1 returned id(s): ${JSON.stringify(invented)}`,
+  );
+  assert.equal(nodes[0].summary_state, "pending");
+});

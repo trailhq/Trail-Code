@@ -36,6 +36,7 @@ import { dollarsSaved, formatDollars } from '../context/price.js';
 import { readSession, writeSession, sessionDir, listSessionIds, type SessionState } from './state.js';
 import type { AgentHost } from '../telemetry/contract.js';
 import { GRAFT_MCP_TOOL_NAMES } from '../mcp/tool-names.js';
+import { brand, cmd } from '../brand.js';
 
 export type ToolKind = 'graft' | 'source';
 
@@ -73,13 +74,15 @@ export function isGraftMcpTool(toolName: string): boolean {
   return GRAFT_MCP_TOOL_NAMES.has(bare);
 }
 
-/** Whether a shell command line invokes the graft CLI (any of its install shapes). */
+/** Whether a shell command line invokes the CLI under either name (any of its install shapes). */
 export function commandInvokesGraft(command: string): boolean {
   const c = command.trim();
-  if (/dist[/\\]cli\.js/.test(c)) return true; // running from a source checkout
-  // `graft …`, `graft-dev …`, `npx [-y] [@nanonets/]graft …`, at the start of the
-  // line or of a &&/;/| segment — not "mygraft" or a path that merely contains it.
-  return /(^|[|&;]\s*)(npx\s+(-y\s+)?(@nanonets\/)?)?graft(-dev)?\b/i.test(c);
+  // running from a source checkout
+  if (/dist[/\\](cli|bin[/\\](trail|graft))\.js/.test(c)) return true;
+  // `graft …`, `graft-dev …`, `npx [-y] [@nanonets/]graft …`, and the same for
+  // `trail` / `@trailhq/trail-code`, at the start of the line or of a &&/;/| segment —
+  // not "mygraft" or a path that merely contains it.
+  return /(^|[|&;]\s*)(npx\s+(-y\s+)?(@nanonets\/|@trailhq\/)?)?(graft|trail)(-dev)?\b/i.test(c);
 }
 
 /**
@@ -186,7 +189,7 @@ export function sessionInputRate(dir: string): number | null {
 
 export function formatSessionStats(s: SessionSummary | null): string {
   if (s === null) {
-    return 'graft stats: no session recorded yet — use graft in an agent session, then look again.';
+    return `${cmd('graft stats')}: no session recorded yet — use ${brand()} in an agent session, then look again.`;
   }
   const graft = s.graftReads ?? 0;
   const source = s.sourceReads ?? 0;
@@ -195,7 +198,7 @@ export function formatSessionStats(s: SessionSummary | null): string {
   const mix =
     total === 0 ? 'no retrieval yet' : `${Math.round((graft / total) * 100)}% graft`;
   const lines = [
-    `graft stats — session ${s.id}`,
+    `${cmd('graft stats')} — session ${s.id}`,
     `  graft reads:   ${graft}`,
     `  source reads:  ${source}   (Read / Grep / Glob)`,
     `  mix:           ${mix}`,

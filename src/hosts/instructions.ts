@@ -1,9 +1,23 @@
 /**
  * The one canonical Graft instruction block, rendered into each host's
  * native format. Content changes happen HERE only; renderers just wrap it.
+ *
+ * `name` is the repo's name for the tool (see `hostWiringName`): a repo wired
+ * by trail gets the same text in trail's spelling, so an agent on a machine
+ * with only `trail` installed is never told to run `graft`.
  */
+import type { Brand } from '../brand.js';
+import { trailSpelling } from '../claude/skill-template.js';
 
-export function instructionBody(): string {
+function inName(text: string, name: Brand): string {
+  return name === 'trail' ? trailSpelling(text) : text;
+}
+
+export function instructionBody(name: Brand = 'graft'): string {
+  return inName(graftBody(), name);
+}
+
+function graftBody(): string {
   return `## Graft — repo context graph
 
 This repo is indexed in \`graft/\`: small linked markdown nodes that explain each
@@ -45,24 +59,24 @@ After big code changes, refresh the graph with \`graft build\` (deterministic,
 no API key, $0).`;
 }
 
-export function cursorRule(): string {
-  return `---
+export function cursorRule(name: Brand = 'graft'): string {
+  return inName(`---
 description: Use the Graft context graph in graft/ before exploring source
 alwaysApply: true
 ---
-${instructionBody()}
-`;
+${graftBody()}
+`, name);
 }
 
-export function kiroSteering(): string {
-  return `---
+export function kiroSteering(name: Brand = 'graft'): string {
+  return inName(`---
 inclusion: always
 ---
-${instructionBody()}
-`;
+${graftBody()}
+`, name);
 }
 
-export function windsurfRule(): string {
-  return `${instructionBody()}
-`;
+export function windsurfRule(name: Brand = 'graft'): string {
+  return inName(`${graftBody()}
+`, name);
 }

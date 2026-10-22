@@ -35,7 +35,7 @@ test('runInit scaffolds settings + both shims + the skill (build skipped)', () =
   const s = JSON.parse(readFileSync(join(d, '.claude', 'settings.json'), 'utf8'));
   assert.ok(s.statusLine.command.includes('graft-statusline.cjs'));
   assert.ok(s.hooks.Stop[0].hooks[0].command.includes('graft-hooks.cjs'));
-  assert.deepEqual(s.permissions.allow, ['Bash(graft:*)', 'Bash(npx graft:*)', 'Bash(graft-dev:*)', 'Bash(node dist/cli.js:*)']);
+  assert.deepEqual(s.permissions.allow, ['Bash(trail:*)', 'Bash(graft:*)', 'Bash(npx graft:*)', 'Bash(graft-dev:*)', 'Bash(node dist/cli.js:*)']);
 });
 
 test('runInit overwrites a stale skill file', () => {
@@ -101,7 +101,7 @@ test('runInit is idempotent', () => {
   runInit(d, { build: false, home: fresh() });
   const s = JSON.parse(readFileSync(join(d, '.claude', 'settings.json'), 'utf8'));
   assert.equal(s.hooks.PostToolUse.length, 2); // post-edit + tool-savings, not duplicated on re-init
-  assert.deepEqual(s.permissions.allow, ['Bash(graft:*)', 'Bash(npx graft:*)', 'Bash(graft-dev:*)', 'Bash(node dist/cli.js:*)']);
+  assert.deepEqual(s.permissions.allow, ['Bash(trail:*)', 'Bash(graft:*)', 'Bash(npx graft:*)', 'Bash(graft-dev:*)', 'Bash(node dist/cli.js:*)']);
 });
 
 test('runInit appends the allowlist to a pre-existing permissions block, preserving unrelated entries', () => {
@@ -110,7 +110,7 @@ test('runInit appends the allowlist to a pre-existing permissions block, preserv
   writeFileSync(join(d, '.claude', 'settings.json'), JSON.stringify({ permissions: { allow: ['Bash(ls)'] } }));
   runInit(d, { build: false, home: fresh() });
   const s = JSON.parse(readFileSync(join(d, '.claude', 'settings.json'), 'utf8'));
-  assert.deepEqual(s.permissions.allow, ['Bash(ls)', 'Bash(graft:*)', 'Bash(npx graft:*)', 'Bash(graft-dev:*)', 'Bash(node dist/cli.js:*)']);
+  assert.deepEqual(s.permissions.allow, ['Bash(ls)', 'Bash(trail:*)', 'Bash(graft:*)', 'Bash(npx graft:*)', 'Bash(graft-dev:*)', 'Bash(node dist/cli.js:*)']);
 });
 
 test('postinstall prints the nudge in a fresh dir', () => {

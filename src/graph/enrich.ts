@@ -19,7 +19,7 @@
  * once, to cut `crux.code` verbatim from the source. `crux.span` is a pointer
  * only and is never used to re-slice.
  */
-import { formatCruxMiss, type CruxMissKind, type CruxSummarizer, type NodeCrux, type NodeRef } from "../ai/crux.js";
+import { formatCruxMiss, formatCruxMissDetail, type CruxMissKind, type CruxSummarizer, type NodeCrux, type NodeRef } from "../ai/crux.js";
 import { LlmFailureGate } from "../ai/failure.js";
 import type { Crux, NodeV1 } from "./types.js";
 
@@ -171,7 +171,7 @@ export async function enrichGraph(
     const { results, error, quality } = await collectFileCrux(summarizer, path, source, refs);
     let fileError = error;
     if (fileError) {
-      stats.errors.push(`${path}: ${fileError}`);
+      stats.errors.push(`${path}: ${fileError}${cruxMissDetail(summarizer)}`);
       gate.record(fileError, { quality });
     }
 
@@ -198,7 +198,7 @@ export async function enrichGraph(
       // collectFileCrux already labels a total miss; this catches "got entries
       // but every summary was blank" so the CLI's #127 degraded-exit path fires.
       fileError = cruxMissMessage(summarizer, "empty-parsed");
-      stats.errors.push(`${path}: ${fileError}`);
+      stats.errors.push(`${path}: ${fileError}${cruxMissDetail(summarizer)}`);
       gate.record(fileError, { quality: true });
     } else if (!fileError) {
       gate.succeeded();
@@ -243,6 +243,12 @@ async function mapWithConcurrency<T, R>(
 function cruxMissMessage(summarizer: CruxSummarizer, fallback: CruxMissKind): string {
   const miss = summarizer.lastMiss;
   return formatCruxMiss(miss?.kind ?? fallback, miss?.finishReason ?? null);
+}
+
+/** The echoed id behind an `id-mismatch`, as an indented second line; "" otherwise. */
+function cruxMissDetail(summarizer: CruxSummarizer): string {
+  const detail = formatCruxMissDetail(summarizer.lastMiss);
+  return detail ? `\n    ${detail}` : "";
 }
 
 /**

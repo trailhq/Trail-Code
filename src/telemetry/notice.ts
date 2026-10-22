@@ -14,12 +14,13 @@
  * who see it — this catches everyone else.
  */
 import { patchState, readState } from './identity.js';
-import { explainOff, offReason } from './gate.js';
+import { doNotTrack, explainOff, offReason } from './gate.js';
 import { peek } from './queue.js';
 import { buildBatch } from './send.js';
 import { posthogHost } from './key.js';
+import { brand, cmd, inBrand } from '../brand.js';
 
-export const TELEMETRY_DOC_URL = 'https://github.com/NanoNets/context-graph-engine/blob/main/TELEMETRY.md';
+export const TELEMETRY_DOC_URL = 'https://github.com/trailhq/Trail-Code/blob/main/TELEMETRY.md';
 
 export const NOTICE = [
   '· graft collects anonymous usage stats (no code, no file paths, no queries).',
@@ -36,7 +37,7 @@ export function firstRunNotice(home?: string, env?: NodeJS.ProcessEnv): string |
     if (offReason(home, env) !== null) return null; // nothing to disclose if nothing can be sent
     if (readState(home)?.noticeShownAt) return null;
     patchState({ noticeShownAt: new Date().toISOString() }, home);
-    return NOTICE;
+    return inBrand(NOTICE, brand(env));
   } catch {
     return null;
   }
@@ -53,16 +54,17 @@ export function formatStatus(home?: string, env?: NodeJS.ProcessEnv): string {
       : `telemetry: ${explainOff(reason)}`,
     `  contract:  ${TELEMETRY_DOC_URL}`,
   ];
+  if (doNotTrack(env)) lines.push('  update check: off — DO_NOT_TRACK is set');
   if (reason === null || reason === 'disabled') {
     lines.push(`  endpoint:  ${posthogHost()}`);
     lines.push(`  queued:    ${pending} event${pending === 1 ? '' : 's'} waiting for the next daily flush`);
   }
   lines.push(
     reason === 'disabled'
-      ? '  enable:    graft telemetry enable'
-      : '  disable:   graft telemetry disable  (or set DO_NOT_TRACK=1)',
+      ? `  enable:    ${cmd('graft telemetry enable')}`
+      : `  disable:   ${cmd('graft telemetry disable')}  (or set DO_NOT_TRACK=1)`,
   );
-  lines.push('  inspect:   graft telemetry debug   (prints the exact batch, sends nothing)');
+  lines.push(`  inspect:   ${cmd('graft telemetry debug')}   (prints the exact batch, sends nothing)`);
   return lines.join('\n');
 }
 

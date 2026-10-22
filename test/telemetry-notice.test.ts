@@ -123,5 +123,7 @@ test('CI gets no notice — there is no one there to read a disclosure', () => {
 test('DO_NOT_TRACK gets no notice either', () => {
   const h = home('notice-dnt', { installId: 'x' });
   assert.equal(firstRunNotice(h, { DO_NOT_TRACK: '1' }), null);
-  assert.match(formatStatus(h, { DO_NOT_TRACK: '1' }), /DO_NOT_TRACK/);
+  const status = formatStatus(h, { DO_NOT_TRACK: '1' });
+  assert.match(status, /DO_NOT_TRACK/);
+  assert.match(status, /update check: off/);
 });

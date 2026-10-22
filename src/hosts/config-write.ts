@@ -40,7 +40,8 @@ export function writeOwned(id: string, path: string, content: string, mode?: num
  *  `?? ''` guards a stray `undefined` entry: `JSON.stringify(undefined)` is
  *  `undefined`, whose `.includes` would throw. */
 export function isGraftEntry(entry: unknown): boolean {
-  return JSON.stringify(entry ?? '').includes('graft-hooks.cjs');
+  const s = JSON.stringify(entry ?? '');
+  return s.includes('graft-hooks.cjs') || s.includes('trail-hooks.cjs') || s.includes('/.trail/hook.cjs');
 }
 
 /**
