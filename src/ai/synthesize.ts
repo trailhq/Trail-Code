@@ -88,8 +88,11 @@ const NODES_SCHEMA = {
   required: ["nodes"],
 } as const;
 
-/** Cap the total summary text sent in one call so it never blows the context. */
-const MAX_INPUT_CHARS = 60_000;
+/** Cap the total summary text sent in one call so it never blows the context.
+ *  Also the ceiling the synthesis batch budget is clamped to
+ *  (`context/batches.ts`): a batch planned past this would be recorded complete
+ *  while the call silently dropped its tail. */
+export const MAX_INPUT_CHARS = 60_000;
 
 function userContent(files: FileSummary[]): string {
   const body = files.map((f) => `## ${f.path}\n\n${f.summary}`).join("\n\n");

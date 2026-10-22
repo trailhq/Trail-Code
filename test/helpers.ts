@@ -76,11 +76,11 @@ export interface CliRun extends SpawnSyncReturns<string> {
  * The `timeout` matters just as much: a child that blocks on stdin used to burn
  * the runner's patience silently, so it fails fast and says so instead.
  */
-export function runCli(args: string[], opts: { home?: string; timeoutMs?: number } = {}): CliRun {
+export function runCli(args: string[], opts: { home?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv } = {}): CliRun {
   const res = spawnSync(process.execPath, ["--import", "tsx", "src/cli.ts", ...args], {
     encoding: "utf8",
     timeout: opts.timeoutMs ?? 120_000,
-    env: opts.home ? homeEnv(opts.home) : process.env,
+    env: opts.env ?? (opts.home ? homeEnv(opts.home) : process.env),
   }) as CliRun;
   res.describe = () =>
     [
