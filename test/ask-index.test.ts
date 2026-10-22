@@ -447,6 +447,30 @@ test("tokenize emits CJK bigrams so a shorter query phrase matches a longer one"
   assert.deepEqual(tokenize("中文"), ["中文"]);
 });
 
+test("tokenize splits camelCase for cased scripts that are not Latin", () => {
+  // The case break is `\p{Ll}`/`\p{Lu}`, so Cyrillic splits the way Latin does.
+  // Without it `перевіритиОрендаря` stayed one token and a query for
+  // "перевірити орендаря" could never match it (#432).
+  assert.deepEqual(tokenize("перевіритиОрендаря"), ["перевірити", "орендаря"]);
+  // Greek behaves the same.
+  assert.deepEqual(tokenize("έλεγχοςΧρήστη"), ["έλεγχος", "χρήστη"]);
+  // CJK has no case, so a Han/Latin boundary is untouched — the split only
+  // happens where both sides carry case or the left side is a number. The
+  // `检索` entry is the CJK bigram of `检索helper`, not a case split.
+  assert.deepEqual(tokenize("检索Helper"), ["检索helper", "检索"]);
+  assert.deepEqual(tokenize("user中文"), ["user中文", "中文"]);
+});
+
+test("tokenize NFC-normalizes so a decomposed sequence is one token", () => {
+  // "cafe" + combining acute vs the precomposed "café": without NFC these are
+  // two different tokens and the concept slugs from #552 miss one of them.
+  assert.deepEqual(tokenize("cafe\u0301"), tokenize("caf\u00e9"));
+  assert.deepEqual(tokenize("cafe\u0301"), ["caf\u00e9"]);
+  // Already-precomposed and pure-ASCII input is unchanged by the normalization.
+  assert.deepEqual(tokenize("caf\u00e9"), ["caf\u00e9"]);
+  assert.deepEqual(tokenize("validate"), ["validate"]);
+});
+
 test("sidecar parity holds for non-ASCII cards: index bags equal live tokenization", async () => {
   const dir = mkdtempSync(join(tmpdir(), "graft-ask-index-unicode-"));
   try {
@@ -468,9 +492,13 @@ test("sidecar parity holds for non-ASCII cards: index bags equal live tokenizati
 
     const doc = index!.docs.find((d) => d.name.some(([t]) => t.includes("检索")))!;
     assert.ok(doc, "the CJK-named symbol must be indexed, not dropped");
-    // Build-time bags must equal what live tokenization produces (the sidecar contract)
+    // Build-time bags must equal what live tokenization produces (the sidecar
+    // contract). Both sides go through the same comparator: the bag is a
+    // token→count map, so the assertion is about the multiset, not the order
+    // the pairs happen to be written in.
+    const sortPairs = (p: [string, number][]) => [...p].sort((a, b) => a[0].localeCompare(b[0]));
     const node = graph!.nodes.find((n) => n.id === doc.id)!;
-    assert.deepEqual(doc.name, [...counts(tokenize(node.name))].sort());
+    assert.deepEqual(sortPairs(doc.name), sortPairs([...counts(tokenize(node.name))]));
     // And the CJK bigram from the symbol name is present in the corpus frequencies
     assert.ok(
       index!.df.some(([token]) => token === "检索" || token === "中文"),

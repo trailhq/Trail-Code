@@ -44,6 +44,9 @@ const STOP = new Set([
  * survive whole, while `_` separates exactly as before. `toLowerCase()` is
  * already Unicode-aware, and deliberately locale-independent (a locale-aware
  * fold — e.g. Turkish dotless i — would corrupt the index for other users).
+ * The camelCase break uses `\p{Ll}`/`\p{Lu}` for the same reason: a cased script
+ * that is not Latin splits on case too. Input is NFC-normalized first, so a
+ * decomposed sequence and its precomposed form are one token (#552).
  *
  * CJK scripts add character bigrams on top of the word token: they have no
  * word separators, so a whole phrase arrives as one token and a shorter query
@@ -62,7 +65,13 @@ const cjkBigrams = (word: string): string[] => {
 };
 
 export function tokenize(text: string): string[] {
-  const withCamelBreaks = text.replace(/([a-z0-9])([A-Z])/g, "$1 $2"); // camelCase → camel Case
+  // NFC so a decomposed sequence ("e" + combining acute) lands on the same
+  // token as the precomposed form the concept slugs are written with (#552).
+  const normalized = text.normalize("NFC");
+  // camelCase → camel Case. `\p{Ll}`/`\p{Lu}` rather than `[a-z]`/`[A-Z]` so a
+  // cased script that is not Latin splits too: `перевіритиОрендаря` becomes
+  // `перевірити орендаря` (#432). CJK carries no case, so nothing changes there.
+  const withCamelBreaks = normalized.replace(/([\p{Ll}\p{N}])(\p{Lu})/gu, "$1 $2");
   const words = withCamelBreaks
     .toLowerCase()
     .split(WORD_SEPARATOR)
