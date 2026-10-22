@@ -30,6 +30,43 @@ const parseSpan = (s: string): [number, number] | null => {
   return m ? [Number(m[1]), Number(m[2])] : null;
 };
 
+export function readinessSample<T extends { path: string }>(items: readonly T[]): T[] {
+  if (!items.length) return [];
+  const sample: T[] = [];
+  const seen = new Set<string>();
+  for (const fraction of [0, 0.25, 0.5, 0.75, 0.999]) {
+    const candidate = items[Math.floor(fraction * (items.length - 1))];
+    if (candidate && !seen.has(candidate.path)) {
+      seen.add(candidate.path);
+      sample.push(candidate);
+    }
+  }
+  return sample;
+}
+
+type ReadinessProbe = () => Promise<boolean>;
+
+export async function waitForReadiness(
+  probes: readonly ReadinessProbe[],
+  opts: { attempts?: number; delayMs?: number; sleep?: (ms: number) => Promise<void> } = {},
+): Promise<boolean> {
+  const attempts = opts.attempts ?? 60;
+  const delayMs = opts.delayMs ?? 2000;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    let ready = true;
+    for (const probe of probes) {
+      if (!(await probe())) {
+        ready = false;
+        break;
+      }
+    }
+    if (ready) return true;
+    if (attempt + 1 < attempts) await sleep(delayMs);
+  }
+  return false;
+}
+
 export interface LspEnrichResult { added: number; queried: number; server: string | null }
 
 export async function enrichWithLsp(
@@ -96,15 +133,22 @@ export async function enrichWithLsp(
     return null;
   };
 
-  // Wait for the server to finish indexing (it answers call-hierarchy empty
-  // until ready). Warm up on the first source node that has a findable position.
-  const warm = sources.find((s) => namePos(s));
-  if (warm) {
-    const wp = namePos(warm)!;
-    if (!(await client.waitUntilReady(join(root, warm.path), wp))) {
+  const withPos = sources.flatMap((source) => {
+    const pos = namePos(source);
+    return pos ? [{ path: source.path, pos }] : [];
+  });
+  const sample = readinessSample(withPos);
+  if (sample.length) {
+    const first = sample[0];
+    if (!(await client.waitUntilReady(join(root, first.path), first.pos))) {
       await client.dispose();
-      return { added: 0, queried: 0, server: server.command }; // never became ready
+      return { added: 0, queried: 0, server: server.command };
     }
+    await waitForReadiness(sample.map(({ path, pos }) => async () => {
+      const abs = join(root, path);
+      client.didOpen(abs);
+      return (await client.prepareCallHierarchy(abs, pos)).length > 0;
+    }));
   }
 
   let added = 0, queried = 0;
