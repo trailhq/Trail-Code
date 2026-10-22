@@ -34,10 +34,10 @@ test('explicit agents list overrides detection and flags unknown ids', () => {
 test('all writes every host and re-run converges (idempotent)', () => {
   const home = fresh(); const repo = fresh();
   const first = runHostsInit(repo, { home, all: true });
-  assert.equal(first.written.length, 10);
+  assert.equal(first.written.length, 11);
   const second = runHostsInit(repo, { home, all: true });
   assert.ok(second.written.every((w) => w.action === 'unchanged'));
-  // `agents` and `antigravity` share AGENTS.md, but the fenced section is written once
+  // `agents`, `antigravity`, `hermes` and `pi` share AGENTS.md, but the fenced section is written once
   const agents = readFileSync(join(repo, 'AGENTS.md'), 'utf8');
   assert.equal(agents.match(/graft:start/g)!.length, 1);
 });
@@ -159,6 +159,21 @@ test('global: false keeps the instruction file but skips every ~ write', () => {
   // The repo-local opencode MCP config is not a global write, so it survives.
   assert.deepEqual(r.mcp.map((m) => m.id), ['opencode']);
   assert.ok(existsSync(join(repo, 'opencode.json')));
+});
+
+test('pi host is detected and writes the AGENTS.md section', () => {
+  const home = fresh(); const repo = fresh();
+  mkdirSync(join(home, '.pi'), { recursive: true });
+  const r = runHostsInit(repo, { home });
+
+  assert.deepEqual(r.written.map((w) => w.id), ['pi']);
+  const agents = readFileSync(join(repo, 'AGENTS.md'), 'utf8');
+  assert.equal(agents.match(/graft:start/g)!.length, 1);
+  assert.ok(agents.includes('graft ask'));
+  // pi's active layer is user-level: the hook shim + the event adapter under
+  // ~/.pi, exactly as the Codex host installs its hooks under ~/.codex.
+  assert.deepEqual(r.hooks.map((h) => h.id), ['pi-hook-shim', 'pi-hooks']);
+  assert.ok(existsSync(join(home, '.pi', 'agent', 'extensions', 'graft-hooks.ts')));
 });
 
 // --- CLI: choosing what gets written ------------------------------------

@@ -31,6 +31,7 @@ import { ALL_MARKERS, type Markers } from './sections.js';
 import { mcpTargets, stripTomlSection } from './mcp-config.js';
 import { hookTargets } from './codex-hooks.js';
 import { cursorHookTargets } from './cursor-hooks.js';
+import { piHookTargets } from './pi-hooks.js';
 import { antigravitySkillTargets } from './antigravity.js';
 import { claudeGlobalTargets } from './claude-global.js';
 import { claudeTargetsFor, legacyClaudeTargets, TRAIL_HOOK, TRAIL_STATUSLINE, trailSkillPath } from '../claude/init.js';
@@ -395,6 +396,7 @@ function targets(repo: string, opts: RetractOpts): Target[] {
   }
   if (exclude.has('agents')) for (const t of hookTargets(home)) keptPaths.add(t.path);
   if (exclude.has('cursor')) for (const n of NAMES) for (const t of cursorHookTargets(repo, n)) keptPaths.add(t.path);
+  if (exclude.has('pi')) for (const n of NAMES) for (const t of piHookTargets(home, n)) keptPaths.add(t.path);
   if (exclude.has('antigravity')) for (const n of NAMES) for (const t of antigravitySkillTargets(home, n)) keptPaths.add(t.path);
 
   /** Queue a target unless a kept host owns that path, or it's already queued. */
@@ -492,6 +494,14 @@ function targets(repo: string, opts: RetractOpts): Target[] {
           hostId: t.hostId, path: t.path, what: t.what, scope: 'global',
           run: (a) => (t.path.endsWith('.json') ? stripHookEntries(t.path, a) : removeFile(t.path, a)),
         });
+      }
+    }
+    // Pi's user-level hook layer: the extension and its shim, both graft-owned files.
+    if (!exclude.has('pi')) {
+      for (const n of NAMES) {
+        for (const t of piHookTargets(home, n)) {
+          add({ hostId: t.hostId, path: t.path, what: t.what, scope: 'global', run: (a) => removeFile(t.path, a) });
+        }
       }
     }
     if (!exclude.has('antigravity')) {

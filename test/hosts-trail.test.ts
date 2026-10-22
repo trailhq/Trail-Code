@@ -232,7 +232,7 @@ test('a session start that moves a graft repo to trail moves the other agents to
     runHostsInit(repo, { agents: ['agents', 'cursor', 'gemini', 'kiro'], home, global: false });
     runUpkeep(repo, runningVersion(), { background: false, home });
     const hosts = readStamp(repo)?.hosts;
-    assert.deepEqual(hosts, ['agents', 'antigravity', 'claude', 'cursor', 'gemini', 'hermes', 'kiro'], 'AGENTS.md reads as all three of its hosts');
+    assert.deepEqual(hosts, ['agents', 'antigravity', 'claude', 'cursor', 'gemini', 'hermes', 'kiro', 'pi'], 'AGENTS.md reads as all four of its hosts');
 
     const bin = mkdtempSync(join(tmpdir(), 'bin-trail-'));
     writeFileSync(join(bin, 'trail'), '#!/bin/sh\nexit 0\n');

@@ -14,6 +14,7 @@ import { HOSTS, detectHosts, hostRelPath, hostWiringName, type DetectProbe, type
 import { mcpTargets } from './mcp-config.js';
 import { hookTargets } from './codex-hooks.js';
 import { cursorHookTargets } from './cursor-hooks.js';
+import { piHookTargets } from './pi-hooks.js';
 import { antigravitySkillTargets } from './antigravity.js';
 import { claudeTargets } from '../claude/init.js';
 import { brand, type Brand } from '../brand.js';
@@ -86,6 +87,7 @@ export function planInit(repo: string, opts: { home?: string; ids?: string[] } =
         ...mcpTargets(repo, [host.id], { home, name }),
         ...(host.id === 'agents' ? hookTargets(home) : []),
         ...(host.id === 'cursor' ? cursorHookTargets(repo, name) : []),
+        ...(host.id === 'pi' ? piHookTargets(home, name) : []),
         ...(host.id === 'antigravity' ? antigravitySkillTargets(home, name) : []),
       ],
     })),

@@ -147,7 +147,7 @@ Without a map, your coding agent starts every task blind. It greps a term, opens
 The graft map builds that understanding once, and keeps it current:
 
 - **Every file, function and caller.** Parsed with tree-sitter into a graph of symbols and who calls what. Deterministic, no model, no network, 23 languages.
-- **The right code with every prompt.** In Claude Code, hooks add the matching files and functions to each prompt, and show what depends on a file right after your agent edits it (the "blast radius"). Cursor, Codex and other agents get the same map through MCP tools and their instruction files.
+- **The right code with every prompt.** In Claude Code, hooks add the matching files and functions to each prompt, and show what depends on a file right after your agent edits it (the "blast radius"). Codex and Pi get the same four hook events; Cursor and the other agents get the same map through MCP tools and their instruction files.
 - **Always fresh.** Every query checks the working tree first (a few tens of milliseconds when nothing moved) and rebuilds only what changed, so answers describe the code as it is right now, uncommitted edits included.
 - **Plain files you can read.** Linked markdown nodes your agent opens and greps like any other file. No embeddings, no index to keep warm.
 - **Summaries if you want them.** `trail build --deep` adds plain-English summaries of each part of the system, written by the model provider you choose, under your own key.
@@ -578,6 +578,8 @@ Some agents also get **user-level** files, so the wiring follows you into worktr
 | Codex (`agents`), when `~/.codex/` exists | `~/.codex/config.toml` | the `trail` MCP server |
 | Codex | `~/.codex/hooks.json` | the same four hook events, matching `apply_patch\|Write\|Edit\|MultiEdit` after edits |
 | Codex | `~/.codex/hooks/graft/graft-hooks.cjs` | the hooks shim |
+| Pi | `~/.pi/agent/extensions/graft-hooks.ts` | the same four hook events as an extension (`session_start`, `before_agent_start`, `tool_result`, `agent_end`) |
+| Pi | `~/.pi/hooks/graft/graft-hooks.cjs` | the hooks shim it spawns |
 | Antigravity | `~/.gemini/config/mcp_config.json` | the `trail` MCP server |
 | Antigravity | `~/.gemini/skills/trail/SKILL.md` | its skill file |
 
