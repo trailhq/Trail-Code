@@ -132,6 +132,15 @@ const SNIPPETS: Array<{ lang: string; file: string; src: string; defs: string[];
     src: `let\n  helper = x: x + 1;\nin {\n  greet = name: helper 2;\n  version = "1.0";\n}\n`,
     defs: ["function:greet", "function:helper"], call: ["greet", "helper"],
   },
+  {
+    // PowerShell: function/filter statements name via the function_name leaf
+    // token; bare command invocations (cmdlets, script functions) are calls.
+    // Bodies must put statements on their own lines — single-line
+    // `function f { param($x) ... }` hits a grammar ERROR region.
+    lang: "powershell", file: "a.ps1",
+    src: `function Get-Greeting {\n    param([string]$Name)\n    return "hi $Name"\n}\n\nfunction Show-All {\n    Get-Greeting -Name "world"\n}\n`,
+    defs: ["function:Get-Greeting", "function:Show-All"], call: ["Show-All", "Get-Greeting"],
+  },
 ];
 
 for (const s of SNIPPETS) {
