@@ -12,7 +12,7 @@
  */
 
 /** Leading/trailing ```json fence, linear in `raw.length` — no quantified-whitespace regex. */
-function unwrapMarkdownFence(raw: string): string {
+export function unwrapMarkdownFence(raw: string): string {
   let s = raw;
   if (s.startsWith("```")) {
     s = s.slice(3);
@@ -93,8 +93,32 @@ export function recoverToolArgsFromContent(
   return undefined;
 }
 
-/** One stderr line when a structured op got neither a tool call nor recoverable JSON. */
-export function warnToolChoiceIgnored(op: string, reason: "empty" | "unparsed"): void {
+/**
+ * The reply was cut off by the output allowance, not finished: OpenAI's
+ * `length` and the equivalent `max_tokens` some gateways (and the Anthropic
+ * adapter) emit. A reasoning model can burn the whole allowance thinking and
+ * be stopped before it writes any answer at all — which says nothing about
+ * `tool_choice`, so callers must not read it as a forced-choice failure.
+ */
+export function isTruncatedStop(reason: string | null | undefined): boolean {
+  if (!reason) return false;
+  const r = reason.toLowerCase();
+  return r === "length" || r === "max_tokens";
+}
+
+/**
+ * One stderr line when a structured op got neither a tool call nor recoverable
+ * JSON. A reply that was cut off by the output allowance gets its own cause:
+ * the model ran out of output tokens while reasoning, and the fix is more
+ * allowance or less thinking — not a tool_choice suspect.
+ */
+export function warnToolChoiceIgnored(op: string, reason: "empty" | "unparsed", stopReason?: string | null): void {
+  if (isTruncatedStop(stopReason)) {
+    console.error(
+      `⚠ ${op}: the model ran out of output tokens while reasoning (finish_reason=${stopReason}) and wrote no usable answer — this batch is empty. Raise the op's max tokens, or lower the model's reasoning effort (GRAFT_REASONING_EFFORT=low).`,
+    );
+    return;
+  }
   const detail =
     reason === "empty"
       ? "model returned no tool call and no content (provider may ignore forced tool_choice)"
