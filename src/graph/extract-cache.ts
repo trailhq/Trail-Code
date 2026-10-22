@@ -48,10 +48,9 @@ export interface ExtractEntry {
    * re-reports the same error and contributes no nodes, exactly as a cold build
    * would. */
   error?: string;
-  /** The breadth-tier grammar that parsed this file standing in for its depth-tier
-   * one, whose native grammar didn't load. Absent for every other file. The entry is
-   * replayed only while the same stand-in would parse it again. */
-  via?: string;
+  /** The optional parser for this file's language was unavailable. Unlike `error`,
+   * this entry is re-parsed if that parser becomes available on a later run. */
+  skipped?: true;
 }
 
 export interface ExtractCache {
