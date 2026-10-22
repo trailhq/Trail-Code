@@ -117,7 +117,7 @@ git add .claude .mcp.json .trail .gitignore .ignore && git commit -m "set up Tra
 
 Teammates' Claude Code reads the learnings in `.trail/` even before they install anything, and tells them once how to get the rest.
 
-`trail init --dry-run` shows the agent wiring it would write; `trail init --agents claude` wires Claude Code alone.
+`trail init --dry-run` shows the agent wiring it would write. `trail init --agents claude` wires Claude Code and removes Trail-code's wiring for every other agent, **including user-level files** by default. Pass every agent you use; add `--no-global` to leave user-level files alone.
 
 ### Coming from graft?
 
@@ -547,7 +547,9 @@ npm install -g @trailhq/trail-code && trail init
 # Claude Code additionally gets the live statusline + hooks below
 ```
 
-On a terminal, `init` shows you every agent it knows about, flags the ones it detected (via their config directories), lists the exact files each would write, and wires only the ones you select. Claude Code is pre-selected; nothing else is. Selected agents get a marker-fenced Trail-code section in their shared instruction file (`AGENTS.md` for Codex, OpenCode and other CLIs that read it, `GEMINI.md`, `.github/copilot-instructions.md`), or a wholly-owned rule or skill file for the agents that use one, such as `.claude/skills/trail/SKILL.md` and `.cursor/rules/trail.mdc`. Claude Code is in the second group: `init` writes its own skill file and never touches your `CLAUDE.md`. Re-running only updates Trail-code's own section (or replaces the owned file) and never touches the rest of your content.
+On a terminal, `init` shows you every agent it knows about, flags the ones it detected (via their config directories), lists the exact files each would write, and wires only the ones you select. Claude Code is pre-selected; nothing else is. Selected agents get a marker-fenced Trail-code section in their shared instruction file (`AGENTS.md` for Codex, OpenCode and other CLIs that read it, `GEMINI.md`, `.github/copilot-instructions.md`), or a wholly-owned rule or skill file for the agents that use one, such as `.claude/skills/trail/SKILL.md` and `.cursor/rules/trail.mdc`. Claude Code is in the second group: `init` writes its own skill file and never touches your `CLAUDE.md`. For selected agents, re-running updates only Trail-code's own section (or replaces the owned file) and never touches the rest of your content.
+
+**Selection replaces the previous set; it is not additive.** `init` removes Trail-code's wiring for unselected agents, including their **user-level files** by default. Those removals affect every repo you use with that agent, not just this one. Pass every agent you want to keep (for example, `trail init --agents claude hermes`), or add `--no-global` to leave user-level files alone while changing this repo's wiring.
 
 In Claude Code, the committed skill file is also how a teammate without Trail-code installed gets your learnings: it tells their agent where `.trail/learnings/` is, to read it before exploring, and to tell them once how to install the rest.
 
@@ -555,7 +557,7 @@ With no TTY to prompt on (CI, a Dockerfile, a piped shell), `init` writes **noth
 
 | Flag | Effect |
 |---|---|
-| `--agents <ids...>` | wire only these, no prompt; ids: `agents`, `adal`, `cursor`, `gemini`, `grok`, `hermes`, `antigravity`, `copilot`, `kiro`, `windsurf`, `claude` |
+| `--agents <ids...>` | wire these and remove Trail-code's wiring for all unlisted agents, including user-level files (unless `--no-global`); pass every agent you use; no prompt; ids: `agents`, `adal`, `cursor`, `gemini`, `grok`, `hermes`, `antigravity`, `copilot`, `kiro`, `windsurf`, `claude` |
 | `--yes`, `-y` | skip the prompt and wire every **detected** agent |
 | `--dry-run` | print the agent wiring `init` would write, then exit without writing |
 | `--all-agents` | write instruction files for every known agent, detected or not |
@@ -564,7 +566,7 @@ With no TTY to prompt on (CI, a Dockerfile, a piped shell), `init` writes **noth
 | `--no-mcp` | skip MCP registration for agents other than Claude Code |
 | `--no-hooks` | skip hook installation for agents other than Claude Code |
 | `--no-statusline` | skip writing Claude Code `statusLine` (same as `GRAFT_NO_STATUSLINE=1`) |
-| `--no-global` | skip writes outside this repo (the `~/.codex/` entries below) |
+| `--no-global` | skip writes and removals outside this repo (the user-level files below) |
 
 #### Writes outside the repo
 
@@ -661,9 +663,10 @@ trail team [dir]                     # what the team learned this week, who's wo
 # setup
 trail init [dir]                     # pick which agents to wire (prompts on a terminal; writes nothing until you choose)
 trail init --dry-run                 # list the agent wiring it would write, then exit
-trail init --agents cursor kiro      # wire only these agents, no prompt (ids: agents, adal, cursor, gemini, grok, hermes, antigravity, copilot, kiro, windsurf, claude)
+trail init --agents cursor kiro      # replace the selection; remove other agents' wiring, including user-level files
+                                     # pass every agent you use; --no-global leaves user-level files alone
 trail init --yes                     # no prompt; wire every detected agent
-trail init --no-global               # skip writes outside this repo (~/.claude, ~/.claude.json, ~/.codex, ~/.gemini)
+trail init --no-global               # skip writes and removals outside this repo (~/.claude, ~/.claude.json, ~/.codex, ~/.gemini)
 trail init --no-statusline           # skip Claude Code statusLine (same as GRAFT_NO_STATUSLINE=1)
 trail init --no-build                # wire the files only; don't build the graph
 trail init --all-agents              # wire every known agent, detected or not
