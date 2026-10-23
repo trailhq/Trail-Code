@@ -11,8 +11,9 @@ import type { ProviderKind } from "./llm/factory.js";
  * graft is vendor-neutral: `provider` names only the WIRE FORMAT, not a company.
  * `openai` speaks the OpenAI-compatible API — point `baseUrl` at OpenRouter,
  * Fireworks, a LiteLLM proxy, Groq, a local server, or OpenAI itself, and pass
- * your own key. `anthropic` speaks the native Messages API. Any LLM-backed
- * operation needs an API key.
+ * your own key. `anthropic` speaks the native Messages API. `claude-code`
+ * runs the person's own `claude -p` on their Claude plan and needs no key;
+ * every other LLM-backed operation needs an API key.
  */
 export interface EngineConfig {
   /** Where the graph lives. Env: GRAFT_DIR. Default: `<repo>/.context`. */
@@ -65,6 +66,8 @@ export const DEFAULT_MODELS: Record<ProviderKind, string> = {
   litellm: "openai/gpt-4o-mini",
   // Provider-prefixed so the OrcaRouter gateway routes it; override with GRAFT_MODEL.
   orcarouter: "openai/gpt-4o-mini",
+  // Haiku: the deep pass makes hundreds of calls against the person's plan limit.
+  "claude-code": "claude-haiku-5-5",
 };
 
 export const DEFAULTS = {
