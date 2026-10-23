@@ -474,6 +474,7 @@ grouped(program.command("build"), GROUP.setup)
   .option("--no-reuse", "re-parse every file instead of replaying unchanged ones from the extraction cache")
   .option("--lsp", "add compiler-grade call edges via a language server if one is installed (opt-in, slower; e.g. rust-analyzer, clangd)")
   .option("--allow-partial", "with --deep: exit 0 even when some files' summaries failed (default: a degraded meaning tier exits 1)")
+  .option("--strict", "fail with exit code 1 if any structural parsing or extraction errors occur")
   .option(
     "--follow-submodules",
     "include initialized Git submodules recursively; persisted for later builds and automatic refreshes",
@@ -519,6 +520,7 @@ grouped(program.command("build"), GROUP.setup)
       reuse?: boolean;
       lsp?: boolean;
       allowPartial?: boolean;
+      strict?: boolean;
       synthConcurrency?: string;
       includeDir?: string[];
       onlyDir?: string[];
@@ -634,6 +636,7 @@ grouped(program.command("build"), GROUP.setup)
         concurrency,
         synthConcurrency,
         childConfig: cliConfig(),
+        strict: opts.strict,
         override: buildGlobalDir,
         includeDirs: opts.includeDir,
         followSubmodules: followSubmodulesWasExplicit ? opts.followSubmodules : undefined,
@@ -685,7 +688,7 @@ grouped(program.command("build"), GROUP.setup)
       throw err;
     });
     process.stderr.write("\n");
-    const structuralFailed = g.structuralErrors > 0;
+    const structuralFailed = Boolean(opts.strict && g.structuralErrors > 0);
     if (structuralFailed) {
       console.error(
         `✗ wiring incomplete: ${g.structuralErrors} structural error(s), ` +

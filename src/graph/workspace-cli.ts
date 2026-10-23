@@ -32,6 +32,8 @@ export interface WorkspaceBuildOptions {
   concurrency?: number;
   /** Max concept synthesis batches in flight per child (default 4). */
   synthConcurrency?: number;
+  /** If true, fail the build if any child repository had structural graph errors. */
+  strict?: boolean;
   /** Provider/model/key config for child builds — WITHOUT any contextDir
    * override, so each child writes to its own `<child>/graft/`. */
   childConfig: EngineConfig;
@@ -80,10 +82,14 @@ export async function runWorkspaceBuild(root: string, opts: WorkspaceBuildOption
     if (g.structuralErrors > 0) {
       failedChildren.push(childName);
       firstStructuralError ??= g.errors[0];
-      console.error(
-        `✗ ${childName}/: wiring incomplete — ${g.structuralErrors} structural error(s), ` +
-          `${g.nodes} nodes, ${g.edges} edges, ${g.cards} cards.`,
-      );
+      if (opts.strict) {
+        console.error(
+          `✗ ${childName}/: wiring incomplete — ${g.structuralErrors} structural error(s), ` +
+            `${g.nodes} nodes, ${g.edges} edges, ${g.cards} cards.`,
+        );
+      } else {
+        console.log(`✓ ${childName}/: ${g.nodes} nodes, ${g.edges} edges, ${g.cards} cards [${g.languages.join(", ")}]`);
+      }
     } else {
       console.log(`✓ ${childName}/: ${g.nodes} nodes, ${g.edges} edges, ${g.cards} cards [${g.languages.join(", ")}]`);
     }
@@ -104,7 +110,7 @@ export async function runWorkspaceBuild(root: string, opts: WorkspaceBuildOption
   // Each child self-ignored during its own build; the parent's federation
   // index (graft/workspace.json) is written outside buildGraph, so ignore it here too.
   ensureGitignored(root, contextDirFor(root, opts.override));
-  if (failedChildren.length > 0) {
+  if (opts.strict && failedChildren.length > 0) {
     track(
       "build_failed",
       { stage: "graph", code: errorCode(new Error(firstStructuralError ?? "structural build failure")) },
