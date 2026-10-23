@@ -197,8 +197,8 @@ command, unchanged). Both keep getting every release.
 
 - **A brain refreshes its rules from upkeep** (#343), so a single empty pull no
   longer leaves it stuck without rules.
-- **Structural graph failures now fail the build command** instead of printing a
-  successful wiring banner and exiting 0. Partial graph artifacts remain
+- **Structural graph failures can now fail the build command with `--strict`**
+  instead of printing a successful wiring banner. Partial graph artifacts remain
   available, workspace builds report failed children, and `--allow-partial`
   continues to waive only incomplete LLM meaning passes.
 
