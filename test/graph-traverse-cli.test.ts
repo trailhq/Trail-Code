@@ -196,6 +196,42 @@ test('graft callers: no graph at all is a stderr error, exit 1', () => {
   assert.match(r.stderr, /graft build/);
 });
 
+test('graft callers: every call site inside one caller is quoted and counted (#363)', () => {
+  const d = mkdtempSync(join(tmpdir(), 'graft-traversecli-'));
+  mkdirSync(join(d, 'src'), { recursive: true });
+  writeFileSync(
+    join(d, 'src', 'math.ts'),
+    'export function add(a: number, b: number): number {\n  return a + b;\n}\n' +
+      'export function twice(a: number): number {\n  const x = add(a, a);\n  const y = add(x, 1);\n  return add(x, y);\n}\n' +
+      'export function once(a: number): number {\n  return add(a, 0);\n}\n' +
+      'export function fact(n: number): number {\n  return n <= 1 ? 1 : n * fact(n - 1);\n}\n',
+  );
+  execFileSync(process.execPath, ['--import', 'tsx', 'src/cli.ts', 'build', d], { stdio: 'pipe' });
+
+  const r = runCli(['callers', 'add', d]);
+  assert.equal(r.status, 0, r.stderr);
+  // The graph holds one edge per calling function; the report must still show
+  // all three sites in `twice`, and say there are three, or a reader counting
+  // call sites off this list gets 2 for a true 4.
+  assert.match(r.stdout, /calls ← twice \(src\/math\.ts:[^)]*\) · 3 sites\n\s+5: const x = add\(a, a\);\n\s+6: const y = add\(x, 1\);\n\s+7: return add\(x, y\);/);
+  assert.match(r.stdout, /calls ← once \(src\/math\.ts:[^)]*\)\n\s+10: return add\(a, 0\);/);
+  assert.ok(!/once \([^)]*\) · /.test(r.stdout), 'a single site carries no count');
+
+  // A recursive function is its own caller; its declaration line names the
+  // symbol but is not a site, so it must not be quoted or counted.
+  const rec = runCli(['callers', 'fact', d]);
+  assert.equal(rec.status, 0, rec.stderr);
+  assert.match(rec.stdout, /calls ← fact \(src\/math\.ts:[^)]*\)\n\s+13: return n <= 1 \? 1 : n \* fact\(n - 1\);/);
+  assert.ok(!/fact \([^)]*\) · /.test(rec.stdout), 'the declaration line is not a site');
+
+  // --json keeps the quoted text out but carries the site line numbers.
+  const json = JSON.parse(runCli(['callers', 'add', d, '--json']).stdout);
+  const hits = json.matches[0].hits as { name: string; sites?: number[] }[];
+  assert.deepEqual(hits.find((h) => h.name === 'twice')?.sites, [5, 6, 7]);
+  assert.deepEqual(hits.find((h) => h.name === 'once')?.sites, [10]);
+  assert.ok(!JSON.stringify(json).includes('add(a, a)'));
+});
+
 test('graft callers: quotes the call site, and only where it is the right line', () => {
   const d = builtRepo();
   const r = runCli(['callers', 'add', d]);

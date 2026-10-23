@@ -12,7 +12,7 @@
  * tool (`src/mcp/tools.ts`), so both surfaces render identical reports.
  */
 import { resolve } from "node:path";
-import { fileReader, referenceLine, wordRe } from "../blast/evidence.js";
+import { fileReader, referenceLines, wordRe } from "../blast/evidence.js";
 import { contextDirFor } from "../context/node-file.js";
 import { withSavings, savingsFor, type Savings } from "../context/savings.js";
 import { loadGraphCached } from "./load.js";
@@ -48,12 +48,18 @@ export function headerOf(n: NodeV1): string {
  * references the symbol. An edge that says "total calls add" is a claim; the line
  * under it is the evidence, and it saves opening the file to check.
  */
-export function hitLine(direction: Direction, hit: EdgeHit, showDepth: boolean, quote?: Quote): string {
+export function hitLine(direction: Direction, hit: EdgeHit, showDepth: boolean, quotes?: Quote | Quote[]): string {
   const arrow = ARROW[direction];
   const depthTag = showDepth ? ` [depth ${hit.depth}]` : "";
   const label = hit.node ? `${hit.node.name} (${hit.node.path}:${hit.node.span})` : `${hit.id} (unresolved import)`;
-  const line = `  ${hit.relation} ${arrow} ${label}${depthTag}`;
-  return quote ? `${line}\n      ${quote.n}: ${quote.text.trim()}` : line;
+  const list = quotes === undefined ? [] : Array.isArray(quotes) ? quotes : [quotes];
+  // One edge per calling function, however many times it references the
+  // symbol: say so, or the list reads as complete when it is one line per
+  // caller (#363). "sites", not "call sites": the walk also follows
+  // references/imports/extends edges.
+  const sitesTag = list.length > 1 ? ` · ${list.length} sites` : "";
+  const line = `  ${hit.relation} ${arrow} ${label}${depthTag}${sitesTag}`;
+  return list.length ? [line, ...list.map((q) => `      ${q.n}: ${q.text.trim()}`)].join("\n") : line;
 }
 
 /** A quoted source line: where the edge actually happens. */
@@ -63,19 +69,26 @@ interface Quote {
 }
 
 /**
- * The call site for one hit, or nothing.
+ * Every call site for one hit, or none.
  *
  * Only for a resolved hit whose span we can read: an unresolved import has no
  * file, and a hit at depth 2+ references something in between rather than the
- * symbol asked about, so quoting it would point at the wrong line.
+ * symbol asked about, so quoting it would point at the wrong line. All matching
+ * lines are returned, not just the first: the graph keeps one edge per calling
+ * function, so this is the only place the individual call sites can be counted.
  */
-function quoteFor(
+function quotesFor(
   hit: EdgeHit,
-  name: string,
+  symbol: NodeV1,
   read: (path: string) => string[] | null,
-): Quote | undefined {
-  if (!hit.node || hit.depth > 1) return undefined;
-  return referenceLine(hit.node.path, hit.node.span, [wordRe(name)], read) ?? undefined;
+): Quote[] {
+  if (!hit.node || hit.depth > 1) return [];
+  const lines = referenceLines(hit.node.path, hit.node.span, [wordRe(symbol.name)], read);
+  // A recursive function is its own caller, and its span opens with its own
+  // declaration — which names the symbol but is not a site. Drop that line.
+  if (hit.node.id !== symbol.id) return lines;
+  const declLine = Number(/^L(\d+)/.exec(hit.node.span)?.[1]);
+  return Number.isFinite(declLine) ? lines.filter((q) => q.n !== declLine) : lines;
 }
 
 /** Tokens-saved baseline for a callers/callees walk: the files of the matched
@@ -133,13 +146,19 @@ interface HitJson {
   span?: string;
   relation: string;
   depth: number;
+  /** Line numbers inside this hit that reference the symbol. Present only for a
+   * depth-1 hit whose file could be read and had at least one matching line;
+   * absent otherwise (not computed, or nothing matched). The quoted text stays
+   * out of the JSON contract; the count does not, because a caller with three
+   * sites is a different answer from one with one (#363). */
+  sites?: number[];
 }
 
 function symbolJson(n: NodeV1): SymbolJson {
   return { id: n.id, name: n.name, kind: n.kind, path: n.path, span: n.span };
 }
 
-function hitJson(hit: EdgeHit): HitJson {
+function hitJson(hit: EdgeHit, sites?: Quote[]): HitJson {
   const out: HitJson = { id: hit.id, relation: hit.relation, depth: hit.depth };
   if (hit.node) {
     out.name = hit.node.name;
@@ -147,6 +166,7 @@ function hitJson(hit: EdgeHit): HitJson {
     out.path = hit.node.path;
     out.span = hit.node.span;
   }
+  if (sites && sites.length) out.sites = sites.map((q) => q.n);
   return out;
 }
 
@@ -212,12 +232,17 @@ export function runCallersCommand(query: string, dir: string, opts: CallersCliOp
 
   const results = matches.map((symbol) => ({ symbol, hits: edgeWalk(graph, symbol, direction, depth) }));
   const saved = callersSavings(graph, results);
+  // One reader for the whole walk: several hits usually live in the same file.
+  const read = fileReader(root);
 
   if (opts.json) {
     const payload = {
       query,
       matches: results.map((r): MatchJson => {
-        const m: MatchJson = { symbol: symbolJson(r.symbol), hits: r.hits.map(hitJson) };
+        const m: MatchJson = {
+          symbol: symbolJson(r.symbol),
+          hits: r.hits.map((h) => hitJson(h, quotesFor(h, r.symbol, read))),
+        };
         if (r.hits.length === 0) {
           m.note = looseNoteFor(direction, r.symbol.name, matches.length);
         }
@@ -230,12 +255,10 @@ export function runCallersCommand(query: string, dir: string, opts: CallersCliOp
   }
 
   const lines: string[] = [];
-  // One reader for the whole walk: several hits usually live in the same file.
-  const read = fileReader(root);
   for (const { symbol, hits } of results) {
     lines.push(headerOf(symbol));
     if (hits.length === 0) lines.push(looseNoteFor(direction, symbol.name, matches.length));
-    else for (const h of hits) lines.push(hitLine(direction, h, showDepth, quoteFor(h, symbol.name, read)));
+    else for (const h of hits) lines.push(hitLine(direction, h, showDepth, quotesFor(h, symbol, read)));
     lines.push("");
   }
   const body = lines.join("\n").replace(/\n+$/, "\n");
