@@ -474,6 +474,7 @@ grouped(program.command("build"), GROUP.setup)
   .option("--no-reuse", "re-parse every file instead of replaying unchanged ones from the extraction cache")
   .option("--lsp", "add compiler-grade call edges via a language server if one is installed (opt-in, slower; e.g. rust-analyzer, clangd)")
   .option("--allow-partial", "with --deep: exit 0 even when some files' summaries failed (default: a degraded meaning tier exits 1)")
+  .option("--strict", "fail with exit code 1 if any structural parsing or extraction errors occur")
   .option(
     "--follow-submodules",
     "include initialized Git submodules recursively; persisted for later builds and automatic refreshes",
@@ -519,6 +520,7 @@ grouped(program.command("build"), GROUP.setup)
       reuse?: boolean;
       lsp?: boolean;
       allowPartial?: boolean;
+      strict?: boolean;
       synthConcurrency?: string;
       includeDir?: string[];
       onlyDir?: string[];
@@ -634,6 +636,7 @@ grouped(program.command("build"), GROUP.setup)
         concurrency,
         synthConcurrency,
         childConfig: cliConfig(),
+        strict: opts.strict,
         override: buildGlobalDir,
         includeDirs: opts.includeDir,
         followSubmodules: followSubmodulesWasExplicit ? opts.followSubmodules : undefined,
@@ -685,7 +688,16 @@ grouped(program.command("build"), GROUP.setup)
       throw err;
     });
     process.stderr.write("\n");
-    console.log(`✓ wiring: ${g.nodes} nodes (${fmt(g.byKind)}), ${g.edges} edges, ${g.cards} cards [${g.languages.join(", ")}]`);
+    const structuralFailed = Boolean(opts.strict && g.structuralErrors > 0);
+    if (structuralFailed) {
+      console.error(
+        `✗ wiring incomplete: ${g.structuralErrors} structural error(s), ` +
+          `${g.nodes} nodes, ${g.edges} edges, ${g.cards} cards.`,
+      );
+      process.exitCode = 1;
+    } else {
+      console.log(`✓ wiring: ${g.nodes} nodes (${fmt(g.byKind)}), ${g.edges} edges, ${g.cards} cards [${g.languages.join(", ")}]`);
+    }
     console.log(`  parsed: ${g.parsed} of ${g.files} files (${g.reused} replayed from cache)`);
     // Worth one line: this build started from a graph the user never built *here*.
     if (g.seededFrom) console.log(`  seeded: copied a starting graph from ${g.seededFrom} (git worktree)`);
@@ -696,17 +708,21 @@ grouped(program.command("build"), GROUP.setup)
     console.log(`  → ${g.contextDir}`);
     // The activation event. Everything here is a bucket or a fixed label: repo
     // scale rather than a file count, a language set rather than file names.
-    track(
-      "build_completed",
-      {
-        files_bucket: filesBucket(g.files),
-        langs: langsValue(g.languages),
-        mode: deep ? "deep" : "fast",
-        duration_bucket: durationBucket(Date.now() - buildStartedAt),
-        incremental: String(g.reused > 0),
-      },
-      { repo: buildRoot },
-    );
+    if (structuralFailed) {
+      track("build_failed", { stage: "graph", code: errorCode(new Error(g.errors[0])) }, { repo: buildRoot });
+    } else {
+      track(
+        "build_completed",
+        {
+          files_bucket: filesBucket(g.files),
+          langs: langsValue(g.languages),
+          mode: deep ? "deep" : "fast",
+          duration_bucket: durationBucket(Date.now() - buildStartedAt),
+          incremental: String(g.reused > 0),
+        },
+        { repo: buildRoot },
+      );
+    }
     for (const e of g.errors) console.error(`✗ ${e}`);
     // A language whose native grammar didn't load was parsed by its WASM stand-in:
     // say which, and the install that fixes it. Nothing when everything loaded.

@@ -12,6 +12,7 @@ import { brand, cmd, PACKAGE_FOR } from "../brand.js";
 import { nativeFallbackNotice } from "./native.js";
 import type { EngineConfig } from "../ai/providers.js";
 import { formatAsk } from "../ask/ask.js";
+import { errorCode, track } from "../telemetry/index.js";
 import type { Direction } from "./traverse.js";
 import {
   federateAsk,
@@ -31,6 +32,8 @@ export interface WorkspaceBuildOptions {
   concurrency?: number;
   /** Max concept synthesis batches in flight per child (default 4). */
   synthConcurrency?: number;
+  /** If true, fail the build if any child repository had structural graph errors. */
+  strict?: boolean;
   /** Provider/model/key config for child builds — WITHOUT any contextDir
    * override, so each child writes to its own `<child>/graft/`. */
   childConfig: EngineConfig;
@@ -55,6 +58,8 @@ export async function runWorkspaceBuild(root: string, opts: WorkspaceBuildOption
   // Native grammars load once per process, so the children share one answer:
   // collected here and printed once at the end, not once per repo.
   const fellBack = { languages: new Set<string>(), packages: new Set<string>() };
+  const failedChildren: string[] = [];
+  let firstStructuralError: string | undefined;
   const buildChild = async (childDir: string, childName: string): Promise<void> => {
     // Persisted BEFORE the child build itself runs, same as the single-repo
     // path in cli.ts, so this build and every later no-flag child build agree.
@@ -74,7 +79,20 @@ export async function runWorkspaceBuild(root: string, opts: WorkspaceBuildOption
     const engine = new Graft({ ...opts.childConfig, contextDir: undefined });
     if (opts.deep) await engine.init(childDir, { extensions: opts.extensions, synthConcurrency: opts.synthConcurrency });
     const g = await engine.graph(childDir, { llm: opts.deep, concurrency: opts.concurrency });
-    console.log(`✓ ${childName}/: ${g.nodes} nodes, ${g.edges} edges, ${g.cards} cards [${g.languages.join(", ")}]`);
+    if (g.structuralErrors > 0) {
+      failedChildren.push(childName);
+      firstStructuralError ??= g.errors[0];
+      if (opts.strict) {
+        console.error(
+          `✗ ${childName}/: wiring incomplete — ${g.structuralErrors} structural error(s), ` +
+            `${g.nodes} nodes, ${g.edges} edges, ${g.cards} cards.`,
+        );
+      } else {
+        console.log(`✓ ${childName}/: ${g.nodes} nodes, ${g.edges} edges, ${g.cards} cards [${g.languages.join(", ")}]`);
+      }
+    } else {
+      console.log(`✓ ${childName}/: ${g.nodes} nodes, ${g.edges} edges, ${g.cards} cards [${g.languages.join(", ")}]`);
+    }
     for (const e of g.errors) console.error(`✗ ${childName}/: ${e}`);
     for (const l of g.nativeFallback?.languages ?? []) fellBack.languages.add(l);
     for (const p of g.nativeFallback?.packages ?? []) fellBack.packages.add(p);
@@ -92,7 +110,20 @@ export async function runWorkspaceBuild(root: string, opts: WorkspaceBuildOption
   // Each child self-ignored during its own build; the parent's federation
   // index (graft/workspace.json) is written outside buildGraph, so ignore it here too.
   ensureGitignored(root, contextDirFor(root, opts.override));
-  console.log(`✓ workspace: ${children.length} repos federated → graft/workspace.json`);
+  if (opts.strict && failedChildren.length > 0) {
+    track(
+      "build_failed",
+      { stage: "graph", code: errorCode(new Error(firstStructuralError ?? "structural build failure")) },
+      { repo: root },
+    );
+    console.error(
+      `✗ workspace incomplete: ${failedChildren.length} of ${children.length} repo(s) had structural errors ` +
+        `(${failedChildren.join(", ")}); partial graphs were federated → graft/workspace.json`,
+    );
+    process.exitCode = 1;
+  } else {
+    console.log(`✓ workspace: ${children.length} repos federated → graft/workspace.json`);
+  }
   console.log(`  graft/ is git-ignored — each teammate runs \`${cmd("graft build")}\` to regenerate it locally.`);
   const notice = nativeFallbackNotice(
     { languages: [...fellBack.languages].sort(), packages: [...fellBack.packages].sort() },
