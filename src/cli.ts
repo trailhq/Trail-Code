@@ -892,7 +892,9 @@ async function runCheckCommand(
       if (!g.missing) console.log("\n" + formatGraphCheckReport(g));
     }
 
-    if (bothMissing || markdownFail || wiringFail) process.exit(1);
+    // exitCode, not exit(): exit() drops whatever of the JSON is still queued for a
+    // pipe, and a stale graph's pendingIds alone can run to hundreds of KB.
+    if (bothMissing || markdownFail || wiringFail) process.exitCode = 1;
 }
 
 // Under trail this is part of `status`; the old name still runs, unlisted.

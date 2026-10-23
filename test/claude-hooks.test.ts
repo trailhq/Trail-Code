@@ -1,11 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { underGraft, main, lastFileScopeHint, promptAskTimeout } from '../src/claude/hooks.js';
 import { readStats, readSession } from '../src/claude/state.js';
 import { runSync } from '../src/claude/sync-run.js';
+import { runStaleCount } from '../src/claude/stale-count-run.js';
 import { savingsLine } from '../src/context/savings.js';
 import { CI_ENV_VARS } from '../src/telemetry/gate.js';
 import { writeStats, emptyStats, acquireLock, resolveContextDir } from '../src/claude/state.js';
@@ -20,7 +21,7 @@ test('post-edit marks dirty and records lastFile', async () => {
   mkdirSync(join(d, 'graft', '.graph'), { recursive: true });
   writeFileSync(join(d, 'graft', '.graph', 'wiring.json'),
     JSON.stringify({ meta: { nodeCount: 0, edgeCount: 0, languages: [] }, nodes: [], edges: [] }));
-  // post-edit no longer runs `graft check` at all (removed: too slow on large repos) — just dirty + lastFile.
+  // post-edit runs no `graft check` in-process (#483) — just dirty + lastFile; the count is backgrounded.
   process.env.CLAUDE_PROJECT_DIR = d;
   const stdin = JSON.stringify({ tool_input: { file_path: join(d, 'src', 'auth.ts') } });
   await runWithStdin(stdin, () => main('post-edit'));
@@ -154,6 +155,112 @@ test('runSync stays dirty when build succeeds but wiring is unreadable', () => {
   assert.equal(s.dirty, true, 'unreadable wiring → stay dirty, retry next turn');
   assert.equal(s.syncedAt, null, 'not marked synced');
   assert.equal(acquireLock(d), true, 'lock released');
+});
+
+// ── post-edit's stale count, off the edit's critical path (#483) ──────────────
+
+/** Wait for a file a detached child writes; the spawn is fire-and-forget by design. */
+async function waitForFile(p: string, ms = 5000): Promise<boolean> {
+  for (const end = Date.now() + ms; Date.now() < end; await new Promise((r) => setTimeout(r, 25))) {
+    if (existsSync(p)) return true;
+  }
+  return false;
+}
+
+test('post-edit hands the stale count to a detached child and does not wait for it', async () => {
+  const d = mkdtempSync(join(tmpdir(), 'graft-hooks-'));
+  writeStats(d, { ...emptyStats(), staleCount: 7 });
+  const argsFile = join(d, 'runner-args.json');
+  const runner = join(d, 'runner-stub.cjs');
+  // Records its argv, then lingers: if post-edit waited on it, the hook would take >2s.
+  writeFileSync(runner,
+    `require('fs').writeFileSync(${JSON.stringify(argsFile)}, JSON.stringify(process.argv.slice(2)));\n` +
+    `setTimeout(() => {}, 2000);\n`);
+  process.env.CLAUDE_PROJECT_DIR = d;
+  process.env.GRAFT_TEST_STALE_COUNT_RUN = runner;
+  try {
+    const t0 = Date.now();
+    await runWithStdin(JSON.stringify({ tool_input: { file_path: join(d, 'src', 'auth.ts') } }), () => main('post-edit'));
+    assert.ok(Date.now() - t0 < 1500, 'the hook returned without waiting on the count');
+    const s = readStats(d)!;
+    assert.equal(s.dirty, true);
+    assert.equal(s.staleCount, 7, 'post-edit leaves the last count alone; the child replaces it');
+    assert.ok(await waitForFile(argsFile), 'the runner was spawned');
+    assert.deepEqual(JSON.parse(readFileSync(argsFile, 'utf8')), [d]);
+  } finally {
+    delete process.env.GRAFT_TEST_STALE_COUNT_RUN;
+    delete process.env.CLAUDE_PROJECT_DIR;
+  }
+});
+
+test('runStaleCount writes the count, recovering JSON from a non-zero exit, and releases its lock', () => {
+  const d = mkdtempSync(join(tmpdir(), 'graft-stale-'));
+  writeStats(d, { ...emptyStats(), dirty: true });
+  const stub = join(d, 'check-stub.cjs');
+  // `graft check` exits 1 when the graph is stale, with the JSON still on stdout.
+  writeFileSync(stub,
+    `process.stdout.write(JSON.stringify({ graph: { changed: ['a'], added: ['b', 'c'], removed: [] } }));\n` +
+    `process.exitCode = 1;\n`);
+  process.env.GRAFT_TEST_CLI = stub;
+  try {
+    runStaleCount(d);
+  } finally {
+    delete process.env.GRAFT_TEST_CLI;
+  }
+  assert.equal(readStats(d)!.staleCount, 3);
+  assert.equal(existsSync(join(resolveContextDir(d), '.cache', 'stale-check.lock')), false, 'lock released');
+});
+
+test('runStaleCount keeps the last count when the check gives no answer (never invents a 0)', () => {
+  const d = mkdtempSync(join(tmpdir(), 'graft-stale-'));
+  writeStats(d, { ...emptyStats(), dirty: true, staleCount: 4 });
+  runStaleCount(d, () => null);
+  assert.equal(readStats(d)!.staleCount, 4);
+});
+
+test('runStaleCount does not overwrite a sync that finished, or is running, since it started', () => {
+  const synced = mkdtempSync(join(tmpdir(), 'graft-stale-'));
+  writeStats(synced, { ...emptyStats(), dirty: true });
+  runStaleCount(synced, (dir) => {
+    // the end-of-turn sync lands while the check runs; dirty is left set to isolate the syncedAt guard
+    writeStats(dir, { ...emptyStats(), dirty: true, staleCount: 0, syncedAt: new Date().toISOString() });
+    return 5;
+  });
+  assert.equal(readStats(synced)!.staleCount, 0, 'a sync after the check started wins');
+
+  const syncing = mkdtempSync(join(tmpdir(), 'graft-stale-'));
+  writeStats(syncing, { ...emptyStats(), dirty: true, syncing: true });
+  runStaleCount(syncing, () => 5);
+  assert.equal(readStats(syncing)!.staleCount, 0, 'a running sync wins');
+
+  const clean = mkdtempSync(join(tmpdir(), 'graft-stale-'));
+  writeStats(clean, { ...emptyStats(), dirty: false });
+  runStaleCount(clean, () => 5);
+  assert.equal(readStats(clean)!.staleCount, 0, 'a clean graph has nothing stale');
+
+  const older = mkdtempSync(join(tmpdir(), 'graft-stale-'));
+  writeStats(older, { ...emptyStats(), dirty: true, syncedAt: new Date(Date.now() - 60000).toISOString() });
+  runStaleCount(older, () => 5);
+  assert.equal(readStats(older)!.staleCount, 5, 'a sync from before the check does not block the write');
+});
+
+test('runStaleCount runs one check at a time, and reclaims a lock left by a dead run', () => {
+  const d = mkdtempSync(join(tmpdir(), 'graft-stale-'));
+  writeStats(d, { ...emptyStats(), dirty: true });
+  const lock = join(resolveContextDir(d), '.cache', 'stale-check.lock');
+  mkdirSync(join(resolveContextDir(d), '.cache'), { recursive: true });
+  writeFileSync(lock, JSON.stringify({ pid: -1, at: new Date().toISOString() }));
+  let ran = false;
+  runStaleCount(d, () => { ran = true; return 5; });
+  assert.equal(ran, false, 'a live lock means a check is already running');
+  assert.ok(existsSync(lock), "another run's lock is not removed");
+
+  const old = new Date(Date.now() - 60000);
+  utimesSync(lock, old, old);
+  runStaleCount(d, () => { ran = true; return 5; });
+  assert.equal(ran, true, 'a lock older than the check timeout is reclaimed');
+  assert.equal(readStats(d)!.staleCount, 5);
+  assert.equal(existsSync(lock), false);
 });
 
 // ── lastFileScopeHint (the "you're working in backend/, weight it" hint) ──
@@ -757,11 +864,10 @@ test('prompt hook omits --dir when GRAFT_DIR is unset (byte-identical argv to be
   }
 });
 
-test('post-edit passes --dir <resolved> to graft check when GRAFT_DIR is set', async () => {
-  const d = mkdtempSync(join(tmpdir(), 'graft-postedit-dir-'));
+test('stale count passes --dir <resolved> to graft check when GRAFT_DIR is set', () => {
+  const d = mkdtempSync(join(tmpdir(), 'graft-stale-dir-'));
   mkdirSync(join(d, 'elsewhere', '.graph'), { recursive: true });
-  writeFileSync(join(d, 'elsewhere', '.graph', 'wiring.json'),
-    JSON.stringify({ meta: { nodeCount: 0, edgeCount: 0, languages: [] }, nodes: [], edges: [] }));
+  writeStats(d, { ...emptyStats(), dirty: true });
   const stub = join(d, 'check-stub.cjs');
   const argsFile = join(d, 'args-seen.json');
   writeFileSync(
@@ -770,19 +876,16 @@ test('post-edit passes --dir <resolved> to graft check when GRAFT_DIR is set', a
       `fs.writeFileSync(${JSON.stringify(argsFile)}, JSON.stringify(process.argv.slice(2)));\n` +
       `process.stdout.write(JSON.stringify({ graph: { changed: [], added: [], removed: [] } }));\n`,
   );
-  process.env.CLAUDE_PROJECT_DIR = d;
   process.env.GRAFT_TEST_CLI = stub;
   process.env.GRAFT_DIR = 'elsewhere';
   try {
-    const stdin = JSON.stringify({ tool_input: { file_path: join(d, 'src', 'auth.ts') } });
-    await runWithStdin(stdin, () => main('post-edit'));
+    runStaleCount(d); // exercises the real (non-injected) check path
     const argsSeen: string[] = JSON.parse(readFileSync(argsFile, 'utf8'));
     const dirIdx = argsSeen.indexOf('--dir');
     assert.ok(dirIdx !== -1, 'the check call carries --dir when GRAFT_DIR is set');
     assert.equal(argsSeen[dirIdx + 1], resolveContextDir(d));
   } finally {
     delete process.env.GRAFT_TEST_CLI;
-    delete process.env.CLAUDE_PROJECT_DIR;
     delete process.env.GRAFT_DIR;
   }
 });

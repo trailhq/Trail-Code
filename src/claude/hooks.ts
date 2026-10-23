@@ -1,5 +1,5 @@
 import { readFileSync, existsSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { join, basename, isAbsolute, relative, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { readWiring } from './stats.js';
@@ -9,7 +9,8 @@ import { liveLearnings } from '../notes/learning-fields.js';
 import { noteAuthor, teammatesOn } from '../notes/git-facts.js';
 import { indexFreshness, staleBanner } from '../context/check.js';
 import { dropStoredPrompts, patchStats, readSession, writeSession, resolveContextDir } from './state.js';
-import { emit, emitHook, graftJson, payloadSessionId, withContextDirArg } from './hook-io.js';
+import { emit, emitHook, payloadSessionId } from './hook-io.js';
+import { claudeScriptPath } from './paths.js';
 import { codexPostBashPart, postBashPart, sessionStartPart } from './skills-wiring.js';
 import { handlePrompt } from './prompt-hook.js';
 import { runUpkeep } from '../upkeep-run.js';
@@ -59,10 +60,19 @@ export function underGraft(dir: string, file: string): boolean {
   const posix = rel.replace(/^[/\\]+/, '').replace(/\\/g, '/');
   return posix.startsWith('graft/') || posix.startsWith('.trail/cache/');
 }
-function checkStaleCount(dir: string): number {
-  const r = graftJson(dir, withContextDirArg(dir, ['check', '.', '--json']));
-  const g = r?.graph ?? {};
-  return (g.changed?.length ?? 0) + (g.added?.length ?? 0) + (g.removed?.length ?? 0);
+/**
+ * Count stale nodes for the statusline in a detached child (stale-count-run.js)
+ * instead of blocking the edit on `graft check`, which on a mid-size repo takes
+ * longer than any budget a per-edit hook can afford (#483). The child writes the
+ * count back when it finishes. GRAFT_TEST_STALE_COUNT_RUN is a test seam, like
+ * GRAFT_TEST_SYNC_RUN in stop.ts.
+ */
+function staleCountInBackground(dir: string): void {
+  const runner = process.env.GRAFT_TEST_STALE_COUNT_RUN ?? claudeScriptPath('stale-count-run.js');
+  if (!existsSync(runner)) return;
+  try {
+    spawn(process.execPath, [runner, dir], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+  } catch { /* a missed count costs a statusline number, never the edit */ }
 }
 /**
  * The absolute path of the file a PostToolUse edit touched, across host edit-tool
@@ -90,7 +100,8 @@ export function editedFilePath(input: any, dir: string): string | null {
 async function handlePostEdit(input: any, dir: string): Promise<void> {
   const file = editedFilePath(input, dir);
   if (!file || underGraft(dir, file)) return;
-  patchStats(dir, { dirty: true, staleCount: checkStaleCount(dir), lastFile: basename(file) });
+  patchStats(dir, { dirty: true, lastFile: basename(file) });
+  staleCountInBackground(dir);
   const out: string[] = [];
   const w = readWiring(dir);
   if (w) { const br = formatBlastRadius(w, file); if (br) out.push(br); }
