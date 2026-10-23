@@ -16,7 +16,8 @@ import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Graft } from "./engine.js";
 import { resolveConfig, type EngineConfig } from "./ai/providers.js";
-import type { ProviderKind } from "./ai/llm/factory.js";
+import { providerNeedsApiKey, type ProviderKind } from "./ai/llm/factory.js";
+import { hasClaude } from "./init/claude-call.js";
 import { formatCheckReport } from "./context/check.js";
 import { formatGraphCheckReport } from "./graph/check.js";
 import { buildGraphIfMissing, runInit } from "./claude/init.js";
@@ -178,7 +179,7 @@ program
   )
   .version(currentVersion, "-v, --version")
   .option("--dir <path>", "context graph directory (default: <repo>/graft)")
-  .option("--provider <name>", "LLM wire format: openai | anthropic | litellm | orcarouter (env GRAFT_PROVIDER)")
+  .option("--provider <name>", "LLM wire format: openai | anthropic | litellm | orcarouter | claude-code (env GRAFT_PROVIDER)")
   .option("--model <id>", "model id for the LLM pass (env GRAFT_MODEL)")
   .option("--api-key <key>", "provider API key (env GRAFT_API_KEY)")
   .option("--base-url <url>", "OpenAI-compatible endpoint URL (env GRAFT_BASE_URL)");
@@ -610,12 +611,21 @@ grouped(program.command("build"), GROUP.setup)
     // --deep needs a key; without one, degrade to the $0 structural build.
     let deep = opts.deep;
     const resolved = resolveConfig(cliConfig());
-    if (deep && !resolved.apiKey) {
+    if (deep && resolved.provider === "claude-code" && !hasClaude()) {
+      deep = false;
+      console.error(
+        "⚠ GRAFT_PROVIDER is claude-code but Claude Code (claude) isn't installed, so falling back\n" +
+          "  to the structural build (no LLM summaries). Install Claude Code, log in, and re-run\n" +
+          `  \`${cmd("graft build --deep")}\` to add concept nodes and summaries.`,
+      );
+    }
+    if (deep && !resolved.apiKey && providerNeedsApiKey(resolved.provider)) {
       deep = false;
       console.error(
         "⚠ no API key set, so falling back to the structural build (no LLM summaries).\n" +
           "  Set GRAFT_API_KEY (and GRAFT_PROVIDER / GRAFT_BASE_URL / GRAFT_MODEL for your\n" +
-          `  provider) and re-run \`${cmd("graft build --deep")}\` to add concept nodes and summaries.`,
+          "  provider), or GRAFT_PROVIDER=claude-code to use your Claude Code login, and re-run\n" +
+          `  \`${cmd("graft build --deep")}\` to add concept nodes and summaries.`,
       );
     }
     if (deep && resolved.usedLegacyEnv) {
