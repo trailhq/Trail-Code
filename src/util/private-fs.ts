@@ -170,19 +170,35 @@ function stealStale(lock: string): boolean {
 /**
  * Lock `<path>.lock` (open with wx). Polls every 10 ms up to waitMs (default 200). Steals a lock
  * older than 10 s. On timeout returns { ok: false } and does NOT run fn: a fold that ran twice
- * would count every call twice, and a lost update is better than a double one.
+ * would count every call twice, and a lost update is better than a double one. EPERM or EBUSY on
+ * the open (Windows, while another process deletes the lock) counts as busy too.
  */
 export function withLock<T>(path: string, fn: () => T, waitMs = 200): Locked<T> {
   const lock = `${path}.lock`;
   mkdirSync(dirname(lock), { recursive: true, mode: 0o700 });
   const deadline = Date.now() + Math.max(0, waitMs);
   let fd = -1;
+  let held = false;
+  let backoff = 1;
   for (;;) {
     try {
       fd = openSync(lock, 'wx', 0o600);
       break;
     } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code === 'EEXIST') held = true;
+      else if (code === 'EPERM' || code === 'EBUSY') {
+        // Windows answers an open of a file another process is deleting with EPERM (or EBUSY): the lock is
+        // being let go, so this is a busy lock, not a stale one. Retry, backing off. If nothing was ever seen
+        // holding it by the deadline, the folder itself refuses us: that error is the real one.
+        if (Date.now() >= deadline) {
+          if (!held) throw e;
+          return { ok: false };
+        }
+        pause(Math.min(backoff, Math.max(1, deadline - Date.now())));
+        backoff = Math.min(backoff * 2, LOCK_POLL_MS);
+        continue;
+      } else throw e;
     }
     // The deadline is checked on every turn: a lock that can't be taken over (a dangling symlink, a
     // folder we can't move) must not spin forever.

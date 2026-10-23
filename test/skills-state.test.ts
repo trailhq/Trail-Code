@@ -5,9 +5,10 @@
  * corrected (spec 13), back to what it was after a hand edit; ledger status
  * lines for every change.
  */
-import { test } from "node:test";
+import { mock, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import fs, { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import { tmpRepo } from "./helpers.js";
 import {
@@ -106,6 +107,87 @@ test("updateSkillState gives up on a held lock and does not run fn", () => {
   assert.equal(outer.ok && outer.value, undefined);
   assert.equal(ran, false);
   assert.equal(getSkillState(ID, env)?.uses, 0);
+});
+
+/**
+ * Windows answers an open of a file another process is deleting with EPERM (or EBUSY). `refuse` makes the
+ * first `times` opens of `lock` throw `code`, the way a lock being let go does; every other open is real.
+ */
+function refuseLockOpen(lock: string, code: string, times = Infinity): () => number {
+  let refused = 0;
+  const real = fs.openSync;
+  mock.method(fs, "openSync", (...args: Parameters<typeof fs.openSync>) => {
+    if (args[0] === lock && refused < times) {
+      refused += 1;
+      throw Object.assign(new Error(`${code}: operation not permitted, open '${lock}'`), { code, syscall: "open", path: lock });
+    }
+    return real(...args);
+  });
+  syncBuiltinESMExports();
+  return () => refused;
+}
+function restoreFs(): void {
+  mock.restoreAll();
+  syncBuiltinESMExports();
+}
+
+for (const code of ["EPERM", "EBUSY"]) {
+  test(`a lock being let go (${code} on open, as on Windows) is waited for, not thrown: the use is counted once`, () => {
+    const { env } = sandbox();
+    seed(env);
+    const lock = `${skillsStatePath(env)}.lock`;
+    const refused = refuseLockOpen(lock, code, 3);
+    let done;
+    try {
+      done = updateSkillState(ID, (s) => ({ ...s!, uses: s!.uses + 1 }), env);
+    } finally {
+      restoreFs();
+    }
+    assert.equal(refused(), 3);
+    assert.equal(done?.uses, 1);
+    assert.equal(getSkillState(ID, env)?.uses, 1);
+    assert.equal(existsSync(lock), false, "the lock is let go");
+  });
+}
+
+test("a lock held, then refused with EPERM while its holder deletes it, gives up as busy by the deadline: fn never runs", () => {
+  const { env } = sandbox();
+  seed(env);
+  const lock = `${skillsStatePath(env)}.lock`;
+  writeFileSync(lock, "4242 held"); // fresh, so not taken over
+  // Every other open is refused: the holder is forever mid-delete, and in between the lock is there.
+  let n = 0;
+  const real = fs.openSync;
+  mock.method(fs, "openSync", (...args: Parameters<typeof fs.openSync>) => {
+    if (args[0] === lock && n++ % 2 === 1) throw Object.assign(new Error("EPERM"), { code: "EPERM" });
+    return real(...args);
+  });
+  syncBuiltinESMExports();
+  let ran = false;
+  let r;
+  try {
+    r = withLock(skillsStatePath(env), () => { ran = true; }, 60);
+  } finally {
+    restoreFs();
+  }
+  assert.deepEqual(r, { ok: false });
+  assert.equal(ran, false);
+  assert.ok(n > 2, `tried ${n} times`);
+});
+
+test("EPERM on every open with nothing ever holding the lock is a folder that refuses us: the error is thrown", () => {
+  const { env } = sandbox();
+  seed(env);
+  const lock = `${skillsStatePath(env)}.lock`;
+  const refused = refuseLockOpen(lock, "EPERM");
+  let ran = false;
+  try {
+    assert.throws(() => withLock(skillsStatePath(env), () => { ran = true; }, 30), { code: "EPERM" });
+  } finally {
+    restoreFs();
+  }
+  assert.equal(ran, false);
+  assert.ok(refused() > 1, "retried before giving up");
 });
 
 test("recordUse: a passed check makes a candidate active, once, with the use counted and a status line", () => {
