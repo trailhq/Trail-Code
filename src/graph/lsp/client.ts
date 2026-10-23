@@ -81,7 +81,7 @@ export class LspClient {
     private readonly callTimeoutMs = 15000,
   ) {
     const s = spawnSpec(command, args);
-    this.proc = spawn(s.command, s.args, { cwd: root, stdio: ["pipe", "pipe", "pipe"], env: s.env ?? process.env });
+    this.proc = spawn(s.command, s.args, { cwd: root, stdio: ["pipe", "pipe", "pipe"], env: s.env ?? process.env, windowsHide: true });
     // ENOENT (bad path) OR an immediate exit (e.g. a rustup shim whose component
     // isn't installed) must fail fast, not hang a request for the full timeout.
     this.proc.on("error", () => { this.spawnFailed = true; });

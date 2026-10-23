@@ -111,10 +111,10 @@ const QUERY = `query($owner: String!, $name: String!, $count: Int!) {
 
 /** Whether the repo has a GitHub remote and `gh` is installed and signed in. Nothing leaves the machine. */
 export function ghReady(repo: string, gh = "gh"): boolean {
-  const remotes = spawnSync("git", ["-C", repo, "remote", "-v"], { encoding: "utf8", timeout: 5000 });
+  const remotes = spawnSync("git", ["-C", repo, "remote", "-v"], { encoding: "utf8", timeout: 5000, windowsHide: true });
   if (remotes.status !== 0 || !/github/i.test(remotes.stdout)) return false;
   // The token never reaches trail: it's printed to nowhere, and only the exit code is read.
-  const auth = spawnSync(gh, ["auth", "token"], { cwd: repo, stdio: "ignore", timeout: 10_000, env: { ...process.env, GH_PROMPT_DISABLED: "1" } });
+  const auth = spawnSync(gh, ["auth", "token"], { cwd: repo, stdio: "ignore", timeout: 10_000, env: { ...process.env, GH_PROMPT_DISABLED: "1" }, windowsHide: true });
   return auth.status === 0;
 }
 
@@ -124,7 +124,7 @@ function fetchMergedPRs(repo: string, gh: string, timeoutMs: number): Promise<un
     const args = ["api", "graphql", "-F", "owner={owner}", "-F", "name={repo}", "-F", `count=${REVIEW_PRS}`, "-f", `query=${QUERY}`];
     let child;
     try {
-      child = spawn(gh, args, { cwd: repo, env: { ...process.env, GH_PROMPT_DISABLED: "1" }, stdio: ["ignore", "pipe", "ignore"] });
+      child = spawn(gh, args, { cwd: repo, env: { ...process.env, GH_PROMPT_DISABLED: "1" }, stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
     } catch {
       done(null);
       return;
@@ -445,7 +445,7 @@ function onItsFiles(touches: string[], f: ReviewFinding): string[] {
 /** How many commits touched each file in the last 60 days: what the team is working on now. */
 function recentEdits(repo: string): Map<string, number> {
   const counts = new Map<string, number>();
-  const r = spawnSync("git", ["-C", repo, "log", "--since=60.days", "--name-only", "--format="], { encoding: "utf8", timeout: 15_000, maxBuffer: 64 * 1024 * 1024 });
+  const r = spawnSync("git", ["-C", repo, "log", "--since=60.days", "--name-only", "--format="], { encoding: "utf8", timeout: 15_000, maxBuffer: 64 * 1024 * 1024, windowsHide: true });
   if (r.status !== 0) return counts;
   for (const f of r.stdout.split("\n")) if (f) counts.set(f, (counts.get(f) ?? 0) + 1);
   return counts;

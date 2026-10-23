@@ -88,6 +88,7 @@ function git(dir: string, args: string[], token?: string): { ok: boolean; out: s
         GIT_ASKPASS: "",
         HOME: dir,
       },
+      windowsHide: true,
     },
   );
   return {

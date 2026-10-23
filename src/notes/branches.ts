@@ -114,6 +114,7 @@ function git(repo: string, args: string[], timeout = 15_000): string | null {
       timeout,
       maxBuffer: 16 * 1024 * 1024,
       env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+      windowsHide: true,
     });
   } catch {
     return null;
@@ -172,6 +173,7 @@ function closedPrHeads(repo: string): ClosedHeads | null {
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 10_000,
       env: { ...process.env, GH_PROMPT_DISABLED: "1", GIT_TERMINAL_PROMPT: "0" },
+      windowsHide: true,
     });
   } catch {
     return null;
