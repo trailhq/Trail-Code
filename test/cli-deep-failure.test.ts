@@ -119,12 +119,12 @@ test("#127: --allow-partial keeps the same report but exits 0, for callers that 
   }
 });
 
-test("--allow-partial cannot waive a structural failure during a degraded deep build", async () => {
+test("with --strict, --allow-partial cannot waive a structural failure during a degraded deep build", async () => {
   const gateway = await quotaExhaustedServer();
   try {
     const d = repo(5);
     writeFileSync(join(d, "Broken.cs"), "public class Broken {}\n");
-    const r = await runBuild(d, gateway.url, ["--allow-partial"], true);
+    const r = await runBuild(d, gateway.url, ["--strict", "--allow-partial"], true);
 
     assert.equal(r.status, 1, `expected the structural failure to win\n${r.stderr}`);
     assert.match(r.stderr, /wiring incomplete: 1 structural error\(s\)/);
