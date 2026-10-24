@@ -114,6 +114,21 @@ test("blast: an edit inside one function reports that function's dependents, not
   assert.ok(!names.includes("area"), `area must not be reported: ${JSON.stringify(names)}`);
 });
 
+for (const [key, value] of [["diff.mnemonicPrefix", "true"], ["diff.dstPrefix", "after/"]]) {
+  test(`blast: ${key} preserves symbol-level seeds and dependents`, (t) => {
+    const d = builtRepo();
+    t.after(() => rmSync(d, { recursive: true, force: true }));
+    git(d, "config", key, value);
+    writeFileSync(join(d, "src", "math.ts"), MATH_EDITED);
+
+    const report = blastJson([d]);
+    assert.deepEqual(report.seeds.map((seed) => seed.name), ["add"]);
+    assert.ok(report.seeds.every((seed) => !seed.wholeFile));
+    assert.deepEqual(report.changed[0].ranges, [{ start: 2, end: 2 }]);
+    assert.deepEqual(new Set(report.impacted.map((item) => item.name)), new Set(["total", "report"]));
+  });
+}
+
 test("blast --depth: one hop stops at the direct caller", () => {
   const d = builtRepo();
   writeFileSync(join(d, "src", "math.ts"), MATH_EDITED);

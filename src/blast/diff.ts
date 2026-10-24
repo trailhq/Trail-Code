@@ -131,6 +131,9 @@ function diffFiles(dir: string, range: string[]): ChangedFile[] | null {
     "--unified=0",
     "--no-color",
     "--no-ext-diff",
+    // applyHunks expects a/ and b/, regardless of the user's diff.* preferences.
+    "--src-prefix=a/",
+    "--dst-prefix=b/",
     "--find-renames",
     ...range,
     "--",
