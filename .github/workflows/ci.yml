@@ -77,3 +77,39 @@ jobs:
 
       - name: Exercise every breadth grammar
         run: node --import tsx --test test/generic-node24.test.ts
+
+  windows-node26-install:
+    name: Windows Node 26 install regression
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '26'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test
+
+      - name: Pack and install the published artifact shape
+        shell: pwsh
+        run: |
+          $tarball = (npm pack --json | ConvertFrom-Json)[0].filename
+          $consumer = Join-Path $env:RUNNER_TEMP 'graft-packed-install'
+          New-Item -ItemType Directory -Force -Path $consumer | Out-Null
+          Push-Location $consumer
+          npm init --yes
+          npm install (Join-Path $env:GITHUB_WORKSPACE $tarball)
+          npx graft --version
+          Pop-Location

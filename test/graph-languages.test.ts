@@ -17,7 +17,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildGraph } from "../src/graph/build.js";
 import { buildRepoMap } from "../src/graph/map.js";
-import { languageLabelOf, languageOf } from "../src/graph/extract.js";
+import {
+  kotlinParserUnavailableMessage,
+  languageLabelOf,
+  languageOf,
+  swapKotlinGrammarLoaderForTest,
+} from "../src/graph/extract.js";
 import { readGraph, wiringPath } from "../src/graph/write.js";
 
 /** Every extension graft claims to index, one per grammar/label pairing. */
@@ -92,7 +97,11 @@ test("the build banner and repo map report every language they indexed", async (
   writeFileSync(join(d, "src", "a.swift"), "func swiftOnly() -> Int {\n  return 1\n}\n");
 
   const r = await buildGraph(d);
-  assert.deepEqual(r.languages, ["javascript", "jsx", "kotlin", "python", "swift", "tsx", "typescript"]);
+  const kotlinAvailable = !r.errors.some((error) => error.startsWith("Kotlin files were skipped"));
+  assert.deepEqual(
+    r.languages,
+    ["javascript", "jsx", ...(kotlinAvailable ? ["kotlin"] : []), "python", "swift", "tsx", "typescript"],
+  );
 
   // The reported symbol was queryable all along — that mismatch is what the issue was
   // about, so pin both halves together.
@@ -104,4 +113,38 @@ test("the build banner and repo map report every language they indexed", async (
 
   // `map` derives labels from paths independently, so it gets its own assertion.
   assert.deepEqual(buildRepoMap(graph!).totals.languages, r.languages);
+});
+
+test("Kotlin is indexed when its optional parser is available", async (t) => {
+  if (kotlinParserUnavailableMessage()) {
+    t.skip("tree-sitter-kotlin is unavailable in this runtime");
+    return;
+  }
+  const dir = mkdtempSync(join(tmpdir(), "graft-kotlin-available-"));
+  writeFileSync(join(dir, "app.kt"), "fun indexedKotlin(): Int = 1\n");
+  const result = await buildGraph(dir, { reuse: false });
+  assert.deepEqual(result.errors, []);
+  assert.deepEqual(result.languages, ["kotlin"]);
+  const graph = readGraph(wiringPath(result.contextDir))!;
+  assert.ok(graph.nodes.some((node) => node.name === "indexedKotlin"), "Kotlin function is indexed");
+});
+
+test("a missing Kotlin parser skips Kotlin only and leaves TypeScript indexed", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "graft-kotlin-optional-"));
+  writeFileSync(join(dir, "app.ts"), "export function stillIndexed() { return 1; }\n");
+  writeFileSync(join(dir, "app.kt"), "fun skippedKotlin(): Int = 1\n");
+  const restore = swapKotlinGrammarLoaderForTest(() => {
+    throw new Error("Cannot find module 'tree-sitter-kotlin'");
+  });
+  try {
+    const result = await buildGraph(dir, { reuse: false });
+    assert.equal(result.errors.length, 1, "one Kotlin availability warning");
+    assert.match(result.errors[0], /Kotlin files were skipped/);
+    assert.deepEqual(result.languages, ["typescript"]);
+    const graph = readGraph(wiringPath(result.contextDir))!;
+    assert.ok(graph.nodes.some((node) => node.name === "stillIndexed"), "TypeScript remains indexed");
+    assert.ok(!graph.nodes.some((node) => node.path === "app.kt"), "Kotlin contributes no partial nodes");
+  } finally {
+    restore();
+  }
 });
