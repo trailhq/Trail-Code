@@ -645,7 +645,16 @@ function walk(node: Parser.SyntaxNode, ctx: WalkCtx, out: NodeV1[], edges: RawEd
               : null
           : ctx.rSuperClass,
     };
-    walkNamedChildren(node.namedChildren, childCtx, out, edges, minted);
+    if (ctx.lang === "php" && node.type === "anonymous_class") {
+      // Constructor arguments execute in the enclosing scope, not on the
+      // anonymous instance. Only the body gets the new class/caller context.
+      const body = node.childForFieldName("body");
+      for (const child of node.namedChildren) {
+        walk(child, child.id === body?.id ? childCtx : ctx, out, edges, minted);
+      }
+    } else {
+      walkNamedChildren(node.namedChildren, childCtx, out, edges, minted);
+    }
     return;
   }
 
@@ -748,7 +757,7 @@ function walk(node: Parser.SyntaxNode, ctx: WalkCtx, out: NodeV1[], edges: RawEd
           implicitSelf: true,
         });
       } else {
-        const recvType = resolveRecvType(callee.receiver, ctx);
+        const recvType = resolveRecvType(callee.receiver, ctx, node);
         edges.push(recvType ? { ...callEdge, recvType } : callEdge);
       }
     }
@@ -2415,10 +2424,22 @@ function phpName(node: Parser.SyntaxNode): string | null {
 }
 
 /** `$obj->m()` receiver: `$this` normalizes to `this` (→ enclosing class); any
- * other variable is returned verbatim for a bindings lookup. */
+ * other variable is returned verbatim for a bindings lookup. One-hop
+ * `$this->prop` / `$this?->prop` uses the class-scope `this.prop` binding. */
 function phpObjReceiver(obj: Parser.SyntaxNode | null): string | undefined {
-  if (obj?.type !== "variable_name") return undefined;
-  return obj.text === "$this" ? "this" : obj.text;
+  if (obj?.type === "variable_name") return obj.text === "$this" ? "this" : obj.text;
+  if (obj?.type === "member_access_expression" || obj?.type === "nullsafe_member_access_expression") {
+    const innerObj = obj.childForFieldName("object");
+    const prop = obj.childForFieldName("name");
+    // Braced names are expressions (`$this->{CONSTANT}`), not literal fields.
+    if (
+      innerObj?.type === "variable_name" && innerObj.text === "$this" &&
+      prop?.type === "name" && !obj.children.some((c) => c.type === "{")
+    ) {
+      return `this.${prop.text}`;
+    }
+  }
+  return undefined;
 }
 
 /** `Cls::m()` receiver: `self`/`static`/`parent` normalize to `self` (→ enclosing

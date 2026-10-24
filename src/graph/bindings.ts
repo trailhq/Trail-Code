@@ -11,15 +11,20 @@
 import type Parser from "tree-sitter";
 import type { Language, WalkCtx } from "./extract.js";
 
-/** Variable/field → bare type name, keyed by scope. Scope keys mirror
- * extract.ts's own scope stack (`scope.join(".")`, `""` at module level) so a
- * lookup from extract.ts's walk finds exactly what was bound in the same
- * lexical position. */
+/** Variable/field → bare type name, keyed by scope. Lexical keys mirror
+ * extract.ts's own scope stack (`scope.join(".")`, `""` at module level).
+ * PHP uses AST identities instead: local scopes cannot collide on anonymous
+ * definition names, and properties use exact lookup at their declaring class. */
 export class FileBindings {
   private map = new Map<string, string>();
 
   set(scopePath: string, name: string, type: string): void {
     this.map.set(`${scopePath}|${name}`, type);
+  }
+
+  /** Exact lookup for bindings that must not fall back to an outer scope. */
+  lookupExact(scopePath: string, name: string): string | null {
+    return this.map.get(`${scopePath}|${name}`) ?? null;
   }
 
   /** Innermost-first: for scope ["a","b"] name "x", tries `a.b|x`, `a|x`, `|x`. */
@@ -196,15 +201,21 @@ function goReceiverTypeOf(node: Parser.SyntaxNode): string | null {
  * (`ctx.rSuperClass`, not `ctx.enclosingClass` — a super call must climb past
  * the current class's own same-named override, not find it); anything else is
  * a bindings-map lookup, normalizing `this.` to `self.` since both are stored
- * the same way. */
+ * the same way. PHP properties instead use the call node's nearest class
+ * identity, with no lexical fallback to a different class. */
 export function resolveRecvType(
   receiver: string | undefined,
   ctx: Pick<WalkCtx, "scope" | "enclosingClass" | "goReceiverVar" | "lang" | "bindings" | "rSuperClass">,
+  node: Parser.SyntaxNode,
 ): string | undefined {
   if (!receiver) return undefined;
   if (receiver === "self" || receiver === "cls" || receiver === "this") return ctx.enclosingClass ?? undefined;
   if (receiver === "super") return ctx.rSuperClass ?? undefined;
   if (receiver.startsWith("self.") || receiver.startsWith("this.")) {
+    if (ctx.lang === "php") {
+      const classScope = phpClassScope(node);
+      return classScope === null ? undefined : (ctx.bindings.lookupExact(classScope, receiver) ?? undefined);
+    }
     return (
       ctx.bindings.lookup(ctx.scope, receiver) ??
       ctx.bindings.lookup(ctx.scope, receiver.replace(/^this\./, "self.")) ??
@@ -212,8 +223,11 @@ export function resolveRecvType(
     );
   }
   // PHP static call `Foo::bar()`: the scope operand is a class name, so it *is*
-  // the receiver type. (Member calls pass a `$var` receiver, filtered by the `$`.)
-  if (ctx.lang === "php" && !receiver.startsWith("$")) return receiver;
+  // the receiver type. Member-call locals use AST scopes, not definition names.
+  if (ctx.lang === "php") {
+    if (!receiver.startsWith("$")) return receiver;
+    return ctx.bindings.lookup(phpLocalScope(node), receiver) ?? undefined;
+  }
   return (
     (ctx.lang === "go" && receiver === ctx.goReceiverVar ? ctx.enclosingClass : undefined) ??
     ctx.bindings.lookup(ctx.scope, receiver) ??
@@ -228,6 +242,12 @@ export function resolveRecvType(
 function isClassNode(node: Parser.SyntaxNode, lang: Language): boolean {
   if (lang === "python") return node.type === "class_definition";
   if (lang === "java") return JAVA_TYPE_DECLS.has(node.type);
+  if (lang === "php") {
+    return (
+      node.type === "class_declaration" || node.type === "anonymous_class" ||
+      node.type === "interface_declaration" || node.type === "trait_declaration" || node.type === "enum_declaration"
+    );
+  }
   if (lang === "typescript" || lang === "tsx") {
     return node.type === "class_declaration" || node.type === "abstract_class_declaration";
   }
@@ -306,7 +326,7 @@ function visit(
   else if (lang === "r") void 0;
   else if (lang === "java") handleJava(node, scope, classScope, bindings);
   else if (lang === "swift") handleSwift(node, scope, classScope, bindings);
-  else if (lang === "php") handlePhp(node, scope, bindings);
+  else if (lang === "php") handlePhp(node, bindings);
   else handleTs(node, scope, classScope, bindings, aliases);
 
   const name = defName(node, lang);
@@ -413,16 +433,54 @@ function swiftCtorTypeName(call: Parser.SyntaxNode | null | undefined): string |
   return /^[A-Z]/.test(fn.text) ? fn.text : null;
 }
 
-/** PHP variable->type bindings from the two confident, syntax-local clues:
- * a type-hinted parameter (`function f(Foo $x)`) and a `new` assignment
- * (`$x = new Foo()`). Keyed by the `$var` text (with the `$`) so a
- * `$var->method()` call site resolves through resolveRecvType's bindings
- * lookup, exactly like Python's annotated params and Go's receiver. */
-function handlePhp(node: Parser.SyntaxNode, scope: string[], bindings: FileBindings): void {
-  if (node.type === "simple_parameter") {
+/** Innermost-first PHP definition scopes. An anonymous class's arguments run
+ * in the enclosing scope; only its body introduces the new instance scope. */
+function phpScopes(node: Parser.SyntaxNode): Parser.SyntaxNode[] {
+  const scopes: Parser.SyntaxNode[] = [];
+  for (let child = node, parent = node.parent; parent; child = parent, parent = parent.parent) {
+    if (parent.type === "anonymous_class" && child.id !== parent.childForFieldName("body")?.id) continue;
+    if (defName(parent, "php") !== null) scopes.push(parent);
+  }
+  return scopes;
+}
+
+/** AST identity keeps sibling anonymous definitions' local bindings separate.
+ * Node ids are stable across traversals of the same parsed tree. */
+function phpLocalScope(node: Parser.SyntaxNode): string[] {
+  return phpScopes(node).reverse().map((scope) => `php-local:${scope.id}`);
+}
+
+/** Properties belong to the nearest class, with no outer-class fallback. */
+function phpClassScope(node: Parser.SyntaxNode): string | null {
+  const cls = phpScopes(node).find((scope) => isClassNode(scope, "php"));
+  return cls ? `php-class:${cls.id}` : null;
+}
+
+/** PHP variable->type bindings from type-hinted parameters and properties,
+ * plus `new` assignments. Locals use their `$var` text; properties use
+ * `this.prop` keyed by class identity so other methods can resolve `$this->prop`. */
+function handlePhp(node: Parser.SyntaxNode, bindings: FileBindings): void {
+  if (node.type === "simple_parameter" || node.type === "property_promotion_parameter") {
     const type = phpTypeName(node.childForFieldName("type"));
     const name = node.childForFieldName("name");
-    if (type && name?.type === "variable_name") bindings.set(scope.join("."), name.text, type);
+    if (type && name?.type === "variable_name") {
+      bindings.set(phpLocalScope(node).join("."), name.text, type);
+      // A promoted parameter is also a property; a plain parameter is not.
+      if (node.type === "property_promotion_parameter") {
+        const classScope = phpClassScope(node);
+        if (classScope !== null) bindings.set(classScope, `this.${name.text.slice(1)}`, type);
+      }
+    }
+    return;
+  }
+  if (node.type === "property_declaration") {
+    const classScope = phpClassScope(node);
+    const type = phpTypeName(node.childForFieldName("type"));
+    if (classScope === null || !type) return;
+    for (const element of node.namedChildren.filter((c) => c.type === "property_element")) {
+      const name = element.childForFieldName("name");
+      if (name?.type === "variable_name") bindings.set(classScope, `this.${name.text.slice(1)}`, type);
+    }
     return;
   }
   if (node.type === "assignment_expression") {
@@ -430,7 +488,7 @@ function handlePhp(node: Parser.SyntaxNode, scope: string[], bindings: FileBindi
     const right = node.childForFieldName("right");
     if (left?.type === "variable_name" && right?.type === "object_creation_expression") {
       const type = phpNewType(right);
-      if (type) bindings.set(scope.join("."), left.text, type);
+      if (type) bindings.set(phpLocalScope(node).join("."), left.text, type);
     }
   }
 }
