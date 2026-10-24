@@ -20,6 +20,7 @@ function show(repo: string, ref: string, path: string): string | null {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
       maxBuffer: 4 * 1024 * 1024,
+      windowsHide: true,
     });
   } catch {
     return null;
@@ -37,6 +38,7 @@ function learningPathsAt(repo: string, from: string): string[] {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
       maxBuffer: 4 * 1024 * 1024,
+      windowsHide: true,
     });
     return out.split("\n").filter(isLearningPath);
   } catch {

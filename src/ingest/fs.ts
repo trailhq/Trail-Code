@@ -194,6 +194,7 @@ function gitVisibleFiles(
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
       maxBuffer: 64 * 1024 * 1024,
+      windowsHide: true,
     },
   );
   if (result.status !== 0 || result.error || typeof result.stdout !== "string") {
@@ -298,6 +299,7 @@ function gitVisibleFilesShallow(root: string, includes?: ReadonlySet<string>): s
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
       maxBuffer: 64 * 1024 * 1024,
+      windowsHide: true,
     },
   );
   if (result.status !== 0 || result.error || typeof result.stdout !== "string") return null;
