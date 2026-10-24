@@ -226,3 +226,65 @@ test("A2: owner-keyed ownerMethod/classParents resolve identically to the old id
     "Widget's own render must win over Base's/Other's (owner-scoped), and Sub inherits Other's via classParents",
   );
 });
+
+// #305 — Python's service-class convention (business logic on classmethods,
+// invoked as `MyService.do_thing()`) resolved to nothing: the receiver is a class
+// name, not a variable, so the bindings lookup missed and no recvType was stamped.
+// `graft callers` then reported only the internal `cls.` call sites, which is worse
+// than empty — a method with four callers reads as having one.
+
+test("#305: a Python call bound by class name stamps the class as recvType", () => {
+  const src = [
+    "class SearchIndexService:",
+    "    @classmethod",
+    "    def variables_manquantes(cls):",
+    "        return cls.helper()",
+    "",
+    "def outside():",
+    "    return SearchIndexService.variables_manquantes()",
+    "",
+  ].join("\n");
+
+  const edges = extractFile("svc.py", src, "python").rawEdges;
+  const external = edges.find((e) => e.relation === "calls" && e.name === "variables_manquantes" && e.source === "svc.py#outside");
+
+  assert.ok(external, "the SomeClass.method() call site is extracted at all");
+  assert.equal(external?.recvType, "SearchIndexService");
+});
+
+test("#305: a lower_case Python receiver is still left untyped", () => {
+  // PEP 8 is the whole signal, so a variable receiver must keep falling through
+  // to the bindings table rather than being read as a type.
+  const src = ["def outside(service):", "    return service.variables_manquantes()", ""].join("\n");
+
+  const edges = extractFile("svc.py", src, "python").rawEdges;
+  const call = edges.find((e) => e.relation === "calls" && e.name === "variables_manquantes");
+
+  assert.ok(call, "the call is extracted");
+  assert.equal(call?.recvType, undefined);
+});
+
+test("#305: the class-bound call resolves to the classmethod, not a same-named function", () => {
+  const nodes = [
+    n("svc.py", "file"),
+    n("svc.py#SearchIndexService", "class"),
+    n("svc.py#SearchIndexService.variables_manquantes", "method"),
+    n("other.py", "file"),
+    n("other.py#variables_manquantes", "function"),
+    n("caller.py", "file"),
+    n("caller.py#outside", "function"),
+  ];
+
+  const edges = resolveEdges(nodes, [
+    {
+      source: "caller.py#outside",
+      relation: "calls",
+      name: "variables_manquantes",
+      viaMember: true,
+      recvType: "SearchIndexService",
+      file: "caller.py",
+    },
+  ]);
+
+  assert.equal(edges.find((e) => e.relation === "calls")?.target, "svc.py#SearchIndexService.variables_manquantes");
+});
