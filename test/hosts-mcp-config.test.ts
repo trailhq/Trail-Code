@@ -7,7 +7,7 @@ process.env.GRAFT_MCP_NPX = '1';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { registerMcpConfigs, serverEntry } from '../src/hosts/mcp-config.js';
+import { graftOnPath, registerMcpConfigs, serverEntry } from '../src/hosts/mcp-config.js';
 
 function fresh(): string { return mkdtempSync(join(tmpdir(), 'graft-mcpcfg-')); }
 
@@ -109,4 +109,14 @@ test('serverEntry prefers the installed binary and falls back to npx', () => {
 test('GRAFT_MCP_NPX overrides an installed binary', () => {
   process.env.GRAFT_MCP_NPX = '1';
   assert.equal(serverEntry({ onPath: true }).command, 'npx', 'the escape hatch wins');
+});
+
+test('graftOnPath resolves Windows npm shims through PATHEXT', () => {
+  const dir = fresh();
+  const env = { PATH: dir, PATHEXT: '.EXE;.CMD' };
+  assert.equal(graftOnPath('win32', env), false);
+  writeFileSync(join(dir, 'graft.CMD'), '');
+  assert.equal(graftOnPath('win32', env), true);
+  assert.equal(graftOnPath('win32', { PATH: dir }), true);
+  assert.equal(graftOnPath('linux', { PATH: dir }), false);
 });

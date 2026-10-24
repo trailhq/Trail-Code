@@ -8,8 +8,7 @@
  * `registerMcpConfigs()` walks that same list to do the writing.
  */
 import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
-import { dirname, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import type { PlannedWrite } from './plan.js';
 import { readJsonObject, type ConfigWrite } from './config-write.js';
@@ -53,9 +52,17 @@ const BIN_LAUNCH = { command: 'graft', args: ['mcp'] };
 const TRAIL_NPX_LAUNCH = { command: 'npx', args: ['-y', '@trailhq/trail-code', 'mcp'] };
 const TRAIL_BIN_LAUNCH = { command: 'trail', args: ['mcp'] };
 
-function graftOnPath(): boolean {
-  const r = spawnSync('graft', ['--version'], { stdio: 'ignore', timeout: 5000 });
-  return r.status === 0;
+export function graftOnPath(
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const extensions = platform === 'win32'
+    ? (env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean)
+    : [''];
+  return (env.PATH ?? '')
+    .split(delimiter)
+    .filter(Boolean)
+    .some((dir) => extensions.some((extension) => existsSync(join(dir, `graft${extension}`))));
 }
 
 /**
