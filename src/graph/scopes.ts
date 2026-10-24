@@ -21,8 +21,8 @@
  *  7. `label` = `prefix` (both "" for root); ordering is prefix-length desc,
  *     then lexicographic.
  */
-import { existsSync, readdirSync, readFileSync, type Dirent } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync, type Dirent } from "node:fs";
+import { join, resolve, sep } from "node:path";
 import { shouldSkipDir, walkDir } from "../ingest/fs.js";
 import { relPosix } from "../util/paths.js";
 import { readFollowNestedRepos, readFollowSubmodules, readIncludeDirs } from "../util/state.js";
@@ -336,8 +336,30 @@ export function discoverWorkspaceChildren(root: string): string[] {
     return [];
   }
   return entries
-    .filter((e) => e.isDirectory() && !shouldSkipDir(e.name, includes) && existsSync(join(absRoot, e.name, ".git")))
+    .filter(
+      (e) =>
+        isChildDirectory(absRoot, e) && !shouldSkipDir(e.name, includes) && existsSync(join(absRoot, e.name, ".git")),
+    )
     .map((e) => e.name);
+}
+
+/** A workspace child is a real directory, or a symlink to one: ticket workspaces
+ * are routinely assembled from worktrees plus symlinks to the repos a change
+ * touches, and `Dirent.isDirectory()` is false for a symlink. A symlinked child
+ * is followed one level, like `walkDir` follows a symlinked root. Dangling links
+ * and links that point back at the workspace root or one of its ancestors (a
+ * cycle) are not children. */
+function isChildDirectory(absRoot: string, e: Dirent): boolean {
+  if (e.isDirectory()) return true;
+  if (!e.isSymbolicLink()) return false;
+  try {
+    const target = realpathSync(join(absRoot, e.name));
+    const root = realpathSync(absRoot);
+    if (target === root || root.startsWith(target + sep)) return false;
+    return statSync(target).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 /** Every consumer's entry point to a graph's scopes: absent `meta.scopes` (old
