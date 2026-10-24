@@ -28,6 +28,7 @@ import {
 import type { NodeV1 } from '../graph/types.js';
 import { recordLookup } from '../cloud/lookup-activity.js';
 import { canonicalToolName } from './tool-names.js';
+import { resolveToolRoot, rootNote } from './root.js';
 import { cmd } from '../brand.js';
 
 export interface ToolDef {
@@ -35,6 +36,11 @@ export interface ToolDef {
   description: string;
   inputSchema: object;
 }
+
+const ROOT_ARGUMENT = {
+  type: 'string',
+  description: 'checkout path in the server’s Git repository (absolute or relative to the server root); defaults to the server root; cannot switch checkout with --dir',
+};
 
 const noGraph = (): string => `no graph found — run \`${cmd('graft build')}\` first`;
 
@@ -50,6 +56,7 @@ export const TOOLS: ToolDef[] = [
     inputSchema: {
       type: 'object',
       properties: {
+        root: ROOT_ARGUMENT,
         query: { type: 'string', description: 'what you want to understand, in plain words' },
         limit: { type: 'number', description: 'max results (default 5)' },
         full: {
@@ -71,6 +78,7 @@ export const TOOLS: ToolDef[] = [
     inputSchema: {
       type: 'object',
       properties: {
+        root: ROOT_ARGUMENT,
         file: { type: 'string', description: 'repo-relative path (or unique basename) of the file' },
       },
       required: ['file'],
@@ -79,7 +87,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: 'graft_check_freshness',
     description: 'Report whether the committed graph is in sync with the code (drift check).',
-    inputSchema: { type: 'object', properties: {} },
+    inputSchema: { type: 'object', properties: { root: ROOT_ARGUMENT } },
   },
   {
     name: 'graft_trace_calls',
@@ -88,6 +96,7 @@ export const TOOLS: ToolDef[] = [
     inputSchema: {
       type: 'object',
       properties: {
+        root: ROOT_ARGUMENT,
         symbol: { type: 'string', description: 'bare name, qualified (Class.method), or package-qualified (pkg.Fn); a file path also works' },
         direction: {
           type: 'string',
@@ -107,6 +116,7 @@ export const TOOLS: ToolDef[] = [
     inputSchema: {
       type: 'object',
       properties: {
+        root: ROOT_ARGUMENT,
         pattern: { type: 'string', description: 'regex pattern (or literal string with fixed: true)' },
         in: { type: 'string', description: 'narrow to files at or under this repo-relative path prefix, e.g. server/src' },
         ignore_case: { type: 'boolean', description: 'case-insensitive match' },
@@ -122,6 +132,7 @@ export const TOOLS: ToolDef[] = [
     inputSchema: {
       type: 'object',
       properties: {
+        root: ROOT_ARGUMENT,
         max_dirs: { type: 'number', description: 'max directory entries shown, rest counted into dropped (default 16)' },
       },
     },
@@ -222,7 +233,10 @@ export async function callTool(
   args: Record<string, unknown>,
   dirOverride?: string,
 ): Promise<{ text: string; isError: boolean }> {
+  let answeredRoot: string | undefined;
   try {
+    root = resolveToolRoot(root, args.root, dirOverride);
+    answeredRoot = root;
     const name = canonicalToolName(requestedName);
     const ws = readWorkspace(root, dirOverride);
     // Freshness first: an answer that cites file:line has to be about the code as
@@ -230,7 +244,6 @@ export async function callTool(
     // this agent). ~3ms when nothing moved; a structural, $0 rebuild when it did.
     // Same reason as the CLI's `noteQuery`: price this session's tokens once,
     // here, so the formatters downstream can put a dollar figure in the nudge.
-    setInputRate(sessionInputRate(root));
     let note: string | null = null;
     if (!NO_REFRESH_TOOLS.has(name)) {
       const r = ws
@@ -238,11 +251,16 @@ export async function callTool(
         : await ensureFreshGraph(root, { contextDir: dirOverride });
       note = refreshNote(r);
     }
+    // Pricing is process-global. Set it after the refresh await, directly
+    // before synchronous query formatting, so concurrent roots do not cross-talk.
+    setInputRate(sessionInputRate(root));
     const fed = ws ? await callWorkspaceTool(root, dirOverride, name, args) : null;
     const res = fed ?? (await callSingleTool(root, name, args, dirOverride));
-    return note ? { ...res, text: `${note}\n${res.text}` } : res;
+    const text = note ? `${note}\n${res.text}` : res.text;
+    return { ...res, text: `${text}\n${rootNote(root)}` };
   } catch (err) {
-    return { text: err instanceof Error ? err.message : String(err), isError: true };
+    const text = err instanceof Error ? err.message : String(err);
+    return { text: answeredRoot ? `${text}\n${rootNote(answeredRoot)}` : text, isError: true };
   }
 }
 
