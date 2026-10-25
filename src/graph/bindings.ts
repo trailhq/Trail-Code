@@ -189,6 +189,8 @@ function goReceiverTypeOf(node: Parser.SyntaxNode): string | null {
   return type?.type === "type_identifier" ? type.text : null;
 }
 
+type RecvCtx = Pick<WalkCtx, "scope" | "enclosingClass" | "goReceiverVar" | "lang" | "bindings" | "rSuperClass">;
+
 /** Resolves a call site's receiver text (from `calleeName`) to a bound type
  * name, given the enclosing walk state. `self`/`cls`/`this`/the Go receiver
  * var resolve directly to the enclosing class; `super` — R6's `super$` and
@@ -199,11 +201,12 @@ function goReceiverTypeOf(node: Parser.SyntaxNode): string | null {
  * the same way. */
 export function resolveRecvType(
   receiver: string | undefined,
-  ctx: Pick<WalkCtx, "scope" | "enclosingClass" | "goReceiverVar" | "lang" | "bindings" | "rSuperClass">,
+  ctx: RecvCtx,
 ): string | undefined {
   if (!receiver) return undefined;
   if (receiver === "self" || receiver === "cls" || receiver === "this") return ctx.enclosingClass ?? undefined;
   if (receiver === "super") return ctx.rSuperClass ?? undefined;
+  if (ctx.lang === "go" && receiver.includes(".")) return goFieldType(receiver, ctx);
   if (receiver.startsWith("self.") || receiver.startsWith("this.")) {
     return (
       ctx.bindings.lookup(ctx.scope, receiver) ??
@@ -223,6 +226,12 @@ export function resolveRecvType(
     (ctx.lang === "swift" && /^[A-Z]/.test(receiver) ? receiver : undefined) ??
     undefined
   );
+}
+
+function goFieldType(receiver: string, ctx: RecvCtx): string | undefined {
+  const [head, field] = receiver.split(".");
+  const owner = resolveRecvType(head, ctx);
+  return owner ? (ctx.bindings.lookup([owner], `self.${field}`) ?? undefined) : undefined;
 }
 
 function isClassNode(node: Parser.SyntaxNode, lang: Language): boolean {
@@ -693,11 +702,14 @@ function handleGo(node: Parser.SyntaxNode, scope: string[], bindings: FileBindin
   const scopePath = scope.join(".");
   if (node.type === "var_spec") {
     const name = node.childForFieldName("name");
-    let type = node.childForFieldName("type");
-    if (type?.type === "pointer_type") type = type.namedChildren.at(-1) ?? null;
-    if (name?.type === "identifier" && type?.type === "type_identifier") {
-      bindings.set(scopePath, name.text, type.text);
-    }
+    const type = goTypeName(node.childForFieldName("type"));
+    if (name?.type === "identifier" && type) bindings.set(scopePath, name.text, type);
+    return;
+  }
+  if (node.type === "field_declaration") {
+    const type = goTypeName(node.childForFieldName("type"));
+    if (!type || node.parent?.parent?.parent?.type !== "type_spec") return;
+    for (const name of node.childrenForFieldName("name")) bindings.set(scopePath, `self.${name.text}`, type);
     return;
   }
   if (node.type !== "short_var_declaration") return;
@@ -724,4 +736,9 @@ function handleGo(node: Parser.SyntaxNode, scope: string[], bindings: FileBindin
     }
     if (typeName) bindings.set(scopePath, nameNode.text, typeName);
   }
+}
+
+function goTypeName(type: Parser.SyntaxNode | null): string | null {
+  const base = type?.type === "pointer_type" ? type.namedChildren.at(-1) : type;
+  return base?.type === "type_identifier" ? base.text : null;
 }

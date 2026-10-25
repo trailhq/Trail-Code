@@ -1188,6 +1188,13 @@ function describeGo(node: Parser.SyntaxNode, _ctx: WalkCtx): DefDescriptor | nul
     };
   }
 
+  if (node.type === "method_elem") {
+    const name = node.childForFieldName("name")?.text;
+    const owner = goInterfaceName(node);
+    if (!name || !owner) return null;
+    return { name, kind: "method", headerEnd: node.endIndex, hashNode: node, owner };
+  }
+
   // `type Name <shape>` — one type_spec per name (grouped `type ( … )` yields several).
   if (node.type === "type_spec") {
     const name = node.childForFieldName("name")?.text;
@@ -1951,6 +1958,11 @@ function goReceiverType(node: Parser.SyntaxNode): string | null {
   return type?.type === "type_identifier" ? type.text : null;
 }
 
+function goInterfaceName(node: Parser.SyntaxNode): string | null {
+  const spec = node.parent?.parent;
+  return spec?.type === "type_spec" ? (spec.childForFieldName("name")?.text ?? null) : null;
+}
+
 /** Go visibility: a symbol is exported iff its own name starts with an uppercase
  * letter. For a receiver-qualified method name, the own name is the part after the dot. */
 function goExported(name: string): boolean {
@@ -2261,8 +2273,7 @@ if (lang === "kotlin") {
   if (lang === "go" && fn.type === "selector_expression") {
     // `pkg.Fn()` / `recv.Method()` — the called name is the trailing field.
     const p = fn.childForFieldName("field") ?? fn.namedChildren.at(-1);
-    const operand = fn.childForFieldName("operand");
-    const receiver = operand?.type === "identifier" ? operand.text : undefined;
+    const receiver = goReceiver(fn.childForFieldName("operand"));
     return p ? { name: p.text, viaMember: true, receiver } : null;
   }
   if ((lang === "typescript" || lang === "tsx") && fn.type === "member_expression") {
@@ -2430,6 +2441,14 @@ function phpScopeReceiver(scope: Parser.SyntaxNode | null): string | undefined {
   if (scope.type === "name") return text;
   if (scope.type === "qualified_name") return text.replace(/^.*\\/, "");
   return undefined;
+}
+
+function goReceiver(operand: Parser.SyntaxNode | null): string | undefined {
+  if (operand?.type === "identifier") return operand.text;
+  if (operand?.type !== "selector_expression") return undefined;
+  const head = operand.childForFieldName("operand");
+  const field = operand.childForFieldName("field");
+  return head?.type === "identifier" && field ? `${head.text}.${field.text}` : undefined;
 }
 
 /** ts `member_expression` node's receiver text: `this`, `this.x`, or a bare identifier. */
