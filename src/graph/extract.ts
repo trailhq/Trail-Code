@@ -2467,6 +2467,13 @@ if (lang === "kotlin") return node.type === "import_header";
   // PHP: one edge per imported symbol — the clause leaf inside a (possibly
   // grouped) `use A\B, C\D;` / `use A\{B, C};` declaration.
   if (lang === "php") return node.type === "namespace_use_clause";
+  if (lang === "typescript" || lang === "tsx") {
+    // A re-export makes this file depend on its source just like an import.
+    // Without this edge, reverse impact traversal stops at the barrel and never
+    // reaches files that import it.
+    return node.type === "import_statement" ||
+      (node.type === "export_statement" && node.childForFieldName("source") !== null);
+  }
   return node.type === "import_statement" || node.type === "import_from_statement";
 }
 
