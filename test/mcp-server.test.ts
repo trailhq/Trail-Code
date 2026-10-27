@@ -64,6 +64,37 @@ test('initialize → tools/list → tools/call round-trip', async () => {
   assert.match(call.result.content[0].text, /graft build/);
 });
 
+test('MCP server exits cleanly when its stdio host disconnects', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'graft-mcp-epipe-'));
+  const home = mkdtempSync(join(tmpdir(), 'graft-mcp-epipe-home-'));
+  const { TRAIL_HOME: _t, GRAFT_HOME: _g, ...env } = process.env;
+  const child = spawn(process.execPath, ['--import', 'tsx', 'src/cli.ts', 'mcp', dir], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: { ...env, HOME: home },
+  });
+  let stderr = '';
+  child.stderr.setEncoding('utf8').on('data', (chunk) => { stderr += chunk; });
+  await once(child, 'spawn');
+
+  // Buffer a real MCP reply request, then close the host's read end before the
+  // server can write the response. This goes through startMcpServer itself.
+  child.stdout.destroy();
+  child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} })}\n`);
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`MCP child did not exit: ${stderr}`)), 15_000);
+  });
+  try {
+    const [code, signal] = await Promise.race([once(child, 'exit'), timeout]) as [number | null, NodeJS.Signals | null];
+    assert.equal(code, 0, stderr);
+    assert.equal(signal, null, stderr);
+    assert.doesNotMatch(stderr, /EPIPE/);
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (child.exitCode === null && child.signalCode === null) child.kill();
+  }
+});
+
 const ALL_TOOLS = [
   'graft_find_code',
   'graft_file_api',

@@ -14,6 +14,7 @@ import { brand, inBrand } from '../brand.js';
 import { canonicalToolName, GRAFT_MCP_TOOL_NAMES } from './tool-names.js';
 import { WorkspaceConnector, type RemotePrompt, type RemoteTool } from './connector.js';
 import { KeptListing, within } from './kept-listing.js';
+import { handleMcpStdoutError } from './stdio.js';
 
 /**
  * MCP tool name → the command enum the telemetry contract knows. A tool absent
@@ -96,6 +97,7 @@ function advertised(root: string, dirOverride?: string): typeof TOOLS {
  * lookup misses. The caller already knows it.
  */
 export function startMcpServer(root: string, dirOverride?: string, version = '0', opts: { brainsOnly?: boolean } = {}): void {
+  process.stdout.on('error', handleMcpStdoutError);
   // `trail mcp --brains`: the one entry Claude Code gets once paired with a
   // workspace. It serves the workspace's tools and prompts and nothing of the
   // repo's, so it does none of the repo upkeep either: it starts in every
