@@ -36,6 +36,7 @@ import { ensureFreshChildren, ensureFreshGraph, refreshNote } from "./graph/refr
 import { isWorkspaceBuildRoot, readWorkspace } from "./graph/workspace.js";
 import { NOT_GIT_LINE, NOT_GIT_PAIR_REFUSAL, homeFolderRefusal, isGitWorkTree } from "./init-guard.js";
 import { hasGraftIndex, nearestGraftRoot } from "./graph/root.js";
+import { readFingerprint } from "./graph/fingerprint.js";
 import { unsupportedExtensions, supportedExtensions } from "./graph/source-files.js";
 import { discoverWorkspaceChildren } from "./graph/scopes.js";
 import {
@@ -650,6 +651,9 @@ grouped(program.command("build"), GROUP.setup)
       });
       return;
     }
+    // A plain rebuild keeps a prior --only-dir selection. Stop-hook sync invokes
+    // this command without flags, so the saved graph fingerprint is its source.
+    if (!onlyDirs) onlyDirs = readFingerprint(contextDirFor(buildRoot, buildGlobalDir))?.onlyDirs;
 
     // --deep: concept nodes first, then the wiring graph links cards up to them.
     let conceptErrors: string[] = [];
