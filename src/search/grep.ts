@@ -96,17 +96,20 @@ interface SymbolSpan {
   end: number;
 }
 
-/** The file's symbol nodes, sorted ascending by span start — the order
- * `enclosingSymbol` scans in to find the innermost containing span. */
-function symbolsOf(graph: GraphV1, path: string): SymbolSpan[] {
-  const out: SymbolSpan[] = [];
+/** Index symbols once by file path. Sorting each bucket preserves the order
+ * `enclosingSymbol` scans to find the innermost containing span. */
+function symbolsByPath(graph: GraphV1): Map<string, SymbolSpan[]> {
+  const byPath = new Map<string, SymbolSpan[]>();
   for (const n of graph.nodes) {
-    if (n.kind === "file" || n.path !== path) continue;
+    if (n.kind === "file") continue;
     const b = spanBounds(n.span);
-    if (b) out.push({ node: n, start: b.start, end: b.end });
+    if (!b) continue;
+    let symbols = byPath.get(n.path);
+    if (!symbols) byPath.set(n.path, (symbols = []));
+    symbols.push({ node: n, start: b.start, end: b.end });
   }
-  out.sort((a, b) => a.start - b.start);
-  return out;
+  for (const symbols of byPath.values()) symbols.sort((a, b) => a.start - b.start);
+  return byPath;
 }
 
 /** Innermost symbol containing `line`: among spans that contain it, the one
@@ -153,6 +156,7 @@ export function grepGraph(graph: GraphV1, repoRoot: string, pattern: string, opt
   const fileNodes = graph.nodes.filter(
     (n) => n.kind === "file" && (inPrefix === undefined || pathUnderPrefix(n.path, inPrefix)),
   );
+  const symbolsByFile = symbolsByPath(graph);
 
   const groups = new Map<string, GrepGroup>();
   let collected = 0;
@@ -173,7 +177,7 @@ export function grepGraph(graph: GraphV1, repoRoot: string, pattern: string, opt
       continue;
     }
 
-    const symbols = symbolsOf(graph, file.path);
+    const symbols = symbolsByFile.get(file.path) ?? [];
     const lines = text.split("\n");
 
     for (let i = 0; i < lines.length; i++) {

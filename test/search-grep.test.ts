@@ -124,6 +124,35 @@ test('grepGraph: groups are ordered by inDegree desc, then path asc', () => {
   assert.deepEqual(paths, [...paths].sort((a, b) => a.localeCompare(b)));
 });
 
+test('grepGraph: indexes symbol nodes once across all files', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'graft-grep-index-'));
+  mkdirSync(join(repo, 'src'));
+  const paths = ['src/a.ts', 'src/b.ts', 'src/c.ts'];
+  const nodes = paths.flatMap((path) => {
+    writeFileSync(join(repo, path), 'NEEDLE\n');
+    return [
+      fileNode(path, 1),
+      { ...fileNode(path, 1), id: `${path}#match`, name: 'match', kind: 'function' as const },
+    ];
+  });
+  const base = graphOf(nodes);
+  let fullScans = 0;
+  const countedNodes = new Proxy(base.nodes, {
+    get(target, property, receiver) {
+      if (property === Symbol.iterator) fullScans++;
+      return Reflect.get(target, property, receiver);
+    },
+  });
+  const graph = { ...base, nodes: countedNodes };
+
+  const result = grepGraph(graph, repo, 'NEEDLE');
+
+  assert.equal(result.totalHits, paths.length);
+  // One graph pass builds the symbol index; the other is the existing token
+  // savings lookup. Symbol lookup must not rescan every node for each file.
+  assert.equal(fullScans, 2);
+});
+
 test('grepGraph: innermost-symbol attribution — a hit inside a class method maps to the method, not the class', () => {
   const repo = needleRepo();
   const graph = loadBuiltGraph(repo);
