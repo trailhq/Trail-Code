@@ -4,7 +4,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { savingsFor, savingsLine, withSavings, toTokens, setInputRate } from '../src/context/savings.js';
+import { savingsFor, savingsLine, withSavings, toTokens, setInputRate, groupDigits } from '../src/context/savings.js';
 import { hasSavingsTally } from '../src/claude/tally.js';
 import type { GraphV1, NodeV1 } from '../src/graph/types.js';
 
@@ -49,7 +49,10 @@ test('savingsLine: reports saved tokens and percent when the output is smaller',
   assert.match(footer, /tokens saved ≈ [\d,]+ \(\d+%\)/);
   assert.match(footer, /2 file\(s\)/);
   const base = toTokens(8000);
-  assert.ok(footer.includes((base - toTokens(body.length)).toLocaleString()));
+  // Through the same pinned formatter the footer uses: rendered with the test
+  // machine's locale instead, this asserted `1.990` against a footer that says
+  // `1,990` — the mirror image of #338, and just as invisible on an en-US runner.
+  assert.ok(footer.includes(groupDigits(base - toTokens(body.length))));
   // The nudge rides along so the agent reports the turn total without SKILL.md.
   assert.match(footer, /end of your reply/i);
   assert.match(footer, /graft saved ~N tokens this turn/);

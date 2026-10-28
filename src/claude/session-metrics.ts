@@ -31,7 +31,7 @@
  */
 import { statSync } from 'node:fs';
 import { join } from 'node:path';
-import { sumSavingsFooters } from '../context/savings.js';
+import { groupDigits, sumSavingsFooters } from '../context/savings.js';
 import { dollarsSaved, formatDollars } from '../context/price.js';
 import { readSession, writeSession, sessionDir, listSessionIds, type SessionState } from './state.js';
 import type { AgentHost } from '../telemetry/contract.js';
@@ -202,7 +202,7 @@ export function formatSessionStats(s: SessionSummary | null): string {
     `  graft reads:   ${graft}`,
     `  source reads:  ${source}   (Read / Grep / Glob)`,
     `  mix:           ${mix}`,
-    `  tokens saved:  ~${saved.toLocaleString()}`,
+    `  tokens saved:  ~${groupDigits(saved)}`,
   ];
   // Omitted, not zeroed, when no turn has been billed yet: a host whose hooks
   // name no transcript can't know what a token costs here, and a made-up rate
