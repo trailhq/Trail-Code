@@ -21,6 +21,7 @@ import { INJECTED_POINTERS_CAP, notesForPrompt, relevantRetrieval, type AskJson 
 import { CHILD_TIMEOUT_MS, emitHook, graftJsonWithin, payloadSessionId, withContextDirArg } from './hook-io.js';
 import { promptPart } from './skills-wiring.js';
 import { recordSkillUse, skillOfPrompt } from './skill-use.js';
+import { settleVote } from './learning-vote.js';
 import { readSession, readStats, writeSession } from './state.js';
 import { readWiring } from './stats.js';
 import { ownText, PASTE_MARK } from '../trace/claude.js';
@@ -269,6 +270,8 @@ export async function handlePrompt(input: any, dir: string, opts: { budgetMs?: n
   const say = (txt: string, offer?: string | null) =>
     emitHook('UserPromptSubmit', { context: [skills.context, txt].filter(Boolean).join('\n\n'), notice: [skills.notice, news ?? offer].filter(Boolean).join('\n') || undefined });
   const prompt = promptWords(input?.prompt);
+  // The reply before asked whether a learning helped: this prompt is the answer, or moves on.
+  settleVote(dir, payloadSessionId(input), prompt);
   if (prompt.length < MIN_CUE_CHARS) return say('');
   const underTrail = brand() === 'trail';
   // Learnings first: matched by their words, before and whatever the ask does.
