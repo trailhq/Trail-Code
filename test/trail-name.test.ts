@@ -233,7 +233,7 @@ test("trail status puts the code map on one screen, and the workspace only once 
   assert.match(r.out, /^code map {4}✓ \d+ nodes · in sync with the code$/m);
   assert.doesNotMatch(r.out, /^workspace/m);
   const on = run("trail", ["status", d], home, process.cwd(), { TRAIL_CLOUD: "1" });
-  assert.match(on.out, /^workspace {3}not connected · Claude offers a link once there are learnings to share$/m);
+  assert.match(on.out, /^workspace {3}not signed in · run trail login to share learnings with your team$/m);
   const json = JSON.parse(run("trail", ["status", d, "--json"], home).out);
   assert.equal(json.workspace, null);
 });

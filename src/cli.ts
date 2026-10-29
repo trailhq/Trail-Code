@@ -2214,7 +2214,7 @@ grouped(program.command("uninstall"), GROUP.setup)
  */
 function loginCommand(name = "login"): Command {
   return new Command(name)
-    .description("Sign this laptop in to your Trail workspace, in the browser: every coding agent here gets its brand, skills and learnings")
+    .description("Sign this laptop in to Trail (team.trailhq.com), in the browser: every coding agent here gets your workspace's brand, skills and learnings")
     .argument("[dir]", "the repo to add", ".")
     .option("--code <code>", "a one-time sign-in code from Trail's web app (TRL-…): signs in with no browser step")
     .option("--workspace <slug>", "the workspace to sign in to, as its page names it (default: this repo's, if it has one)")
@@ -2253,9 +2253,9 @@ function loginCommand(name = "login"): Command {
         startWaiting();
         return;
       }
-      console.error(`· sign in and allow this laptop:\n  ${url}`);
+      console.error(`· sign in to Trail in your browser:\n  ${url}`);
       openBrowser(url);
-      console.error("· waiting for you to finish in the browser (ctrl-c stops; the next trail command picks it up too)");
+      console.error("· waiting for you to sign in · ctrl-c stops");
       const got = await waitForConnect({ waitMs: 10 * 60 * 1000 });
       if (got && "cloud" in got) {
         addAgentEntries();
@@ -2780,7 +2780,7 @@ function statusCommand(name = "status"): Command {
         row("learnings", parts.join(" · "));
       }
       if (!cloud) {
-        if (cloudEnabled()) row("workspace", "not connected · Claude offers a link once there are learnings to share");
+        if (cloudEnabled()) row("workspace", `not signed in · run ${cmd("graft login")} to share learnings with your team`);
       } else if (cloud.via === "connect") {
         row("workspace", `${cloud.workspace.name} · gets a summary of the repos you run ${cmd("graft init")} --connect in · ${cloud.workspace.url}`);
       } else
@@ -2796,7 +2796,6 @@ function statusCommand(name = "status"): Command {
 
 if (TRAIL) {
   for (const c of [teamCheckCommand(), teamCommand()]) program.addCommand(c.helpGroup(GROUP.memory));
-  // Signing in waits until it gives a team more than committing .trail/ does.
   // Signing in is how every coding agent here gets the team's workspace: always listed.
   program.addCommand(loginCommand().helpGroup(GROUP.cloud));
   for (const c of [workspaceCommand(), logoutCommand()]) program.addCommand(c.helpGroup(GROUP.cloud), { hidden: !cloudEnabled() });

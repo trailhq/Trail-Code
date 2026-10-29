@@ -17,6 +17,7 @@
 import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { trailHome } from "../notes/home.js";
+import { telemetryOn } from "../telemetry/gate.js";
 import { ensurePrivateDir, PRIVATE_FILE_MODE } from "../util/private-file.js";
 import { readJson, writeJsonAtomic } from "../util/state.js";
 
@@ -157,12 +158,16 @@ export function sameWorkspace(a: Cloud, b: Cloud): boolean {
 
 /**
  * Whether the workspace side of trail is on: the sign-in link at the end of a
- * reply, and `login`, `logout` and `workspace`. Committing `.trail/` already
- * shares learnings with a team, so it stays off until signing in gives more
- * than that. TRAIL_CLOUD=1 turns it on; a machine already connected keeps it.
+ * reply, and `logout` and `workspace`. On by default, so people find
+ * team.trailhq.com from the session they're in. Off wherever telemetry is off
+ * (DO_NOT_TRACK, CI, `trail telemetry disable`, a build with no key): the
+ * link's background wait tells team.trailhq.com this repo's name before anyone
+ * clicks. TRAIL_CLOUD=0 turns it off, TRAIL_CLOUD=1 on; a machine already
+ * connected keeps it.
  */
 export function cloudEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.TRAIL_CLOUD === "1" || readCloud(env) !== null;
+  if (env.TRAIL_CLOUD === "1" || readCloud(env) !== null) return true;
+  return env.TRAIL_CLOUD !== "0" && telemetryOn(undefined, env);
 }
 
 /** Owner-only: the file holds the workspace token. */
