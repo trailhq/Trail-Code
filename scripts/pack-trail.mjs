@@ -35,6 +35,9 @@ const trail = {
   name: '@trailhq/trail-code',
   description:
     "Your team's shared memory for coding agents: a code map on your machine, and the learnings, decisions and skills your whole team shares. Formerly graft.",
+  // The official MCP Registry accepts server.json only when the npm package it
+  // names carries this, and it belongs to @trailhq/trail-code alone.
+  mcpName: 'io.github.trailhq/trail-code',
   keywords: [...new Set(['trail', ...(pkg.keywords ?? [])])],
   bin: { trail: 'dist/bin/trail.js' },
   // Built already; nothing to compile in the published tree.
