@@ -490,6 +490,42 @@ export interface TeamView {
   url?: string;
 }
 
+/* shared sessions: the Trail team's own -------------------------------------- */
+
+/**
+ * Whether this workspace may send Trail a whole Claude Code session: only the
+ * Trail team's own, which trail-cloud decides. An error when Trail couldn't
+ * answer, or doesn't take sessions yet.
+ */
+export async function shareAllowed(c: Cloud, fetchImpl?: Fetch): Promise<boolean | ApiError> {
+  const r = await authed<{ ok?: boolean }>(c, "GET", "/api/cli/shared-sessions/allowed", undefined, { fetchImpl, timeoutMs: 10_000 });
+  if (!isError(r)) return r?.ok === true;
+  if (r.status === 403) return false;
+  if (r.status === 401) return { error: `this laptop's sign-in to ${c.workspace.name} has ended · run trail login`, status: 401 };
+  if (r.status === 404 || r.status === 405) return { error: "this Trail doesn't take shared sessions yet", status: r.status };
+  return r;
+}
+
+export interface SharedSession {
+  session_id: string;
+  /** `github.com/owner/name`, or "" outside a repo with a remote. */
+  repo: string;
+  trail_version: string;
+  title: string;
+  messages: number;
+  subagents: number;
+  /** The redacted JSONL's size before zipping. */
+  bytes: number;
+  /** How many secrets were taken out on this laptop. */
+  redacted: number;
+  /** The redacted JSONL, gzipped, in base64. */
+  transcript_gz: string;
+}
+
+export function shareSession(c: Cloud, body: SharedSession, fetchImpl?: Fetch): Promise<{ id: string; gz_bytes: number } | ApiError> {
+  return authed(c, "POST", "/api/cli/shared-sessions", body, { fetchImpl, timeoutMs: 120_000 });
+}
+
 export function fetchTeam(c: Cloud, opts: { repo?: string; days?: number } = {}, fetchImpl?: Fetch): Promise<TeamView | ApiError> {
   const q = new URLSearchParams({ days: String(opts.days ?? 7) });
   if (opts.repo) q.set("repo", opts.repo);
