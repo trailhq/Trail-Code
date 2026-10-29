@@ -26,7 +26,9 @@ import { trailHome } from '../notes/trail-home.js';
 import { keepsNotes } from '../notes/home.js';
 import { maybeSyncInBackground } from '../cloud/workspace-sync.js';
 import { brand } from '../brand.js';
-import { NOTE_ASKS_PER_SESSION, noteAsk, noteSignals } from './note-signals.js';
+import { NOTE_ASKS_PER_SESSION, askAnswer, noteAsk, noteSignals } from './note-signals.js';
+import { branchAddsLearning } from '../cloud/diff.js';
+import { track } from '../telemetry/track.js';
 import type { HookOut } from '../skills/types.js';
 
 /** The fields of a Stop payload this handler reads. */
@@ -136,16 +138,22 @@ function turnEnd(input: StopInput, dir: string): string | null {
  * the stop with the reason. Each sign is asked about once, and a session is
  * asked at most NOTE_ASKS_PER_SESSION times; a saved learning starts the signs
  * over. Never blocks twice in a row: Claude Code sets `stop_hook_active` on
- * the stop that follows a block. The caller writes it only as the Stop's one
- * answer, so a sign is marked asked only when it was. Never throws.
+ * the stop that follows a block; that stop sends `note_asked`, what was asked
+ * and whether a learning was saved in answer. The caller writes it only as the
+ * Stop's one answer, so a sign is marked asked only when it was. Never throws.
  */
 export function askForNote(input: { stop_hook_active?: unknown }, dir: string, id: string, transcript: string | null): HookOut {
   try {
-    if (!transcript || brand() !== 'trail' || input.stop_hook_active || !keepsNotes(dir)) return {};
+    if (!transcript || brand() !== 'trail' || !keepsNotes(dir)) return {};
     const s = readSession(dir, id);
     const asked = s.noteAsks ?? [];
+    if (input.stop_hook_active) {
+      const saved = asked.length ? askAnswer(readFileSync(transcript, 'utf8')) : null;
+      if (saved) track('note_asked', { kind: asked[asked.length - 1]!.split(':')[0], saved }, { repo: dir });
+      return {};
+    }
     if (asked.length >= NOTE_ASKS_PER_SESSION) return {};
-    const sign = noteSignals(readFileSync(transcript, 'utf8'), dir).find((x) => !asked.includes(x.key));
+    const sign = noteSignals(readFileSync(transcript, 'utf8'), dir, () => branchAddsLearning(dir)).find((x) => !asked.includes(x.key));
     if (!sign) return {};
     writeSession(dir, id, { ...s, noteAsks: [...asked, sign.key] });
     return { block: noteAsk(sign) };

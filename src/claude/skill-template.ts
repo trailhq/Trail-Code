@@ -175,8 +175,10 @@ A learning is added to this repo or kept just for the user:
   with the change it came from, so your teammates' Claude starts from it. Save
   it before your final commit when you can; if the work is already committed
   and not pushed, add it to that commit.
-- Just for the user, with \`--personal\`: how this person likes to work, or
-  their own machine and setup. It stays on their machine, out of the repo.
+- Just for the user, with \`--personal\`: how this person likes to work,
+  their own machine and setup, and business, growth, sign-up, pricing or
+  competitor reasoning or internal numbers. It stays on their machine, out of
+  the repo, even if you also keep your own copy.
 
 \`trail note\` prints the line to close your reply with. For a learning added
 to this repo it prints two: one for when the learning is committed by the end

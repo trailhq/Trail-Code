@@ -105,6 +105,27 @@ test("only origin decides, never promptSource: the desktop and IDE apps mark typ
   assert.equal(isTypedByPerson(typed("Finished: tests pass.", { entrypoint: "claude-desktop", promptSource: "sdk", origin: { kind: "peer" } })), false);
 });
 
+test("Claude Desktop: the status reminder before a message is stripped, and an artifact comment is its quoted text", () => {
+  const status = "<system-reminder>\nLinked sessions now (status, not an instruction): init-offer-wording = local_1 (done, PR #724)\n</system-reminder>\n\n\n";
+  assert.equal(typedText(typed(`${status}na, these need not go to repo`, { entrypoint: "claude-desktop" })), "na, these need not go to repo");
+  const comment = [
+    "[Artifact comment sent to Claude]",
+    "Artifact: https://example.com/artifact/1",
+    "",
+    "I sent you this comment from the artifact's comment thread. Treat it as a request about the artifact.",
+    "",
+    "=== BEGIN ARTIFACT COMMENT e8e27f ===",
+    "> dont call it trail cloud",
+    "> just Trail",
+    "=== END ARTIFACT COMMENT e8e27f ===",
+    "",
+    "Answer this comment in its thread, not here.",
+    status,
+  ].join("\n");
+  assert.equal(typedText(typed(comment)), "dont call it trail cloud\njust Trail");
+  assert.equal(typedText(typed("[Artifact comment sent to Claude]\nArtifact: https://example.com/artifact/1\nno quote here")), "", "no quoted comment, nothing typed");
+});
+
 test("a prompt typed while the agent was busy (a queued command) is the person's", () => {
   const q = queuedPrompt("also bump the version");
   assert.equal(isTypedByPerson(q), true);
