@@ -70,6 +70,7 @@ import { finishPair, PairRun, validPairCode } from "./cloud/pair.js";
 import { currentBranch, noteAuthor, teammatesOn } from "./notes/git-facts.js";
 import { listSkills } from "./skills/skills.js";
 import { registerSkillCommands } from "./skills/cli-skills.js";
+import { setSummaryView, summaryView } from "./claude/summary-view.js";
 import { gateNote, namesRepoSymbol, symbolCandidates, trackedFiles } from "./notes/note-gate.js";
 import { recordLookup } from "./cloud/lookup-activity.js";
 import { clearPending, cloudLines, loginLines, loginLink, sessionKey, startWaiting, WAIT_MS, waitForConnect } from "./cloud/nudge.js";
@@ -1172,6 +1173,17 @@ grouped(program.command("note", { hidden: !TRAIL }), GROUP.memory)
   .argument("[dir]", "repository root", ".")
   .action(async (dir: string, opts: NoteOptions) => {
     await runNoteCommand(resolve(dir), opts);
+  });
+
+// `trail summary one-line`: the learnings and blast radius the hooks add, one line each (summary-view.ts).
+grouped(program.command("summary", { hidden: !TRAIL }), GROUP.memory)
+  .description("How long the learnings and blast radius under each prompt and edit are: full (the default) or one-line")
+  .argument("[view]", "full or one-line; leave it out to see the one in force")
+  .action((view?: string) => {
+    if (view) setSummaryView(view);
+    const now = summaryView();
+    const fromEnv = process.env.TRAIL_SUMMARY === now ? " (from TRAIL_SUMMARY)" : "";
+    console.log(`${tag()} summary: ${now}${fromEnv}. The next prompt and edit use it; nothing to restart.`);
   });
 
 // `trail skills` (design 1.7): the skills Trail kept for you, held ones to keep, offers and the switch; and
