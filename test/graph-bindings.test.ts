@@ -110,3 +110,64 @@ test("py: aliased annotation resolves to original name", () => {
   const edges = callEdges("from r import APIRouter as AR\ndef f(r: AR):\n    r.get()\n", "python");
   assert.equal(edges.find((e) => e.name === "get")?.recvType, "APIRouter");
 });
+
+// A barrel file (`export { X } from "./x"`) defines nothing, so before re-exports
+// were treated as imports its node carried no outgoing edges at all and any
+// traversal arriving there stopped, never reaching the module holding the code.
+function importSpecs(src: string) {
+  return extractFile("index.ts", src, "typescript")
+    .rawEdges.filter((e) => e.relation === "imports")
+    .map((e) => e.specifier);
+}
+
+test("ts: a named re-export mints an import edge to the module it forwards to", () => {
+  assert.deepEqual(importSpecs('export { RegExpRouter } from "./router"\n'), ["./router"]);
+});
+
+test("ts: a star re-export mints the same edge", () => {
+  assert.deepEqual(importSpecs('export * from "./router"\n'), ["./router"]);
+});
+
+test("ts: a barrel of several re-exports mints one edge each", () => {
+  const src = 'export { A } from "./a"\nexport { B, C } from "./b"\n';
+  assert.deepEqual(importSpecs(src).sort(), ["./a", "./b"]);
+});
+
+test("ts: a plain export is not an import and its definitions survive the walk", () => {
+  const src = 'export const x = 1\nexport function helper() { return x }\n';
+  const out = extractFile("m.ts", src, "typescript");
+  assert.deepEqual(
+    out.rawEdges.filter((e) => e.relation === "imports"),
+    [],
+    "no source string, so no import edge",
+  );
+  assert.ok(
+    out.nodes.some((n) => n.name === "helper"),
+    "walk still descends into an export without a `from`, so the definition is indexed",
+  );
+});
+
+// `class LinearRouter<T> implements Router<T>` puts a `generic_type` in the
+// heritage clause, not a bare identifier. Accepting only the identifier left
+// honojs/hono with 2 implements edges in the whole repo and none of its five
+// routers connected to the interface they implement.
+function heritage(src: string) {
+  return extractFile("r.ts", src, "typescript")
+    .rawEdges.filter((e) => e.relation === "implements" || e.relation === "extends")
+    .map((e) => `${e.relation}:${e.name}`);
+}
+
+test("ts: a generic supertype keeps its edge, with the type arguments erased", () => {
+  assert.deepEqual(heritage("export class LinearRouter<T> implements Router<T> {}\n"), ["implements:Router"]);
+});
+
+test("ts: a generic base class keeps its edge too", () => {
+  assert.deepEqual(heritage("class A<T> extends Base<T, string> {}\n"), ["extends:Base"]);
+});
+
+test("ts: a plain supertype still works, and several are all captured", () => {
+  assert.deepEqual(
+    heritage("class A extends B implements C, D<E> {}\n").sort(),
+    ["extends:B", "implements:C", "implements:D"],
+  );
+});
