@@ -34,7 +34,7 @@ import type { Note } from '../notes/notes.js';
 import { repoPlace } from '../notes/home.js';
 import { readSettings } from '../skills/settings.js';
 import { nameTaken, personAtTerminal, type PersonCheck, type PersonDeps } from '../skills/store.js';
-import { countBucket, durationBucket } from '../telemetry/contract.js';
+import { countBucket, durationBucket, initKindCounts } from '../telemetry/contract.js';
 import { track } from '../telemetry/track.js';
 import { candidateId, pickFive } from './candidates.js';
 import { whyLine } from './claude-call.js';
@@ -46,7 +46,7 @@ import { lookBackDue, lookBackOff, markLookedBack, norm } from './look-back.js';
 import type { LookBackResult } from './look-back-mine.js';
 import type { LookBack } from './types.js';
 import { NAME_MODEL, nameItems, type Named } from './name-call.js';
-import { afterKeepLines, INIT_COPY, numbered, relayLines, repoNameOf, yesLine, type ScreenFacts } from './review-screen.js';
+import { afterKeepLines, guardDoes, INIT_COPY, numbered, relayLines, repoNameOf, yesLine, type ScreenFacts } from './review-screen.js';
 import { runScreen } from './review-tty.js';
 import type { InitCandidate, InitItem } from './types.js';
 
@@ -128,8 +128,6 @@ function memoryRows(repo: string, home?: string): MemoryCandidate[] {
   }
 }
 
-const GUARD_DESC: Record<string, string> = { 'timeout-missing': 'this Mac has no timeout', 'git-https-auth': 'push to this repo over SSH' };
-
 /**
  * A PR-review finding (D24) as a team row: its words are model text, so it is shown on the screen only, never
  * relayed. Only the findings tied to code that exists (#662's anchoredReviews), ticked: the team's start ticked.
@@ -199,7 +197,7 @@ function itemsOf(picked: Array<InitCandidate & { n: number }>, named: Named, env
       const nm = named.names[c.id];
       out.push({ ...c, title: nm?.title ?? c.plainName, description: nm?.description ?? c.skill?.compiled.description ?? '' });
     } else if (c.kind === 'guardrail') {
-      out.push({ ...c, title: c.plainName, description: GUARD_DESC[c.guardrail?.cls ?? ''] ?? '' });
+      out.push({ ...c, title: c.plainName, description: guardDoes(c) });
     } else if (c.kind === 'preference') {
       const line = prefLine(c, env);
       if (line) out.push({ ...c, title: line, description: '' });
@@ -320,7 +318,7 @@ export async function finishLookBack(repo: string, reads: LookBackReads,
     if (!looked) return;
     track('cold_start', {
       source: 'sessions', outcome, sessions_bucket: countBucket(lb.sessions.length), offered_bucket: countBucket(items.length),
-      picked_bucket: countBucket(picked), duration_bucket: durationBucket(Date.now() - reads.started), model: run.model,
+      picked_bucket: countBucket(picked), duration_bucket: durationBucket(Date.now() - reads.started), model: run.model, ...initKindCounts('offered', items),
     }, { repo });
   };
   /** #662's two keeps, each with its own answer: the review rows and the memory rows picked, none, or null (asked again). */

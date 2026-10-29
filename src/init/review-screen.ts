@@ -230,10 +230,19 @@ export function screenLines(items: InitItem[], state: { cursor: number; open: nu
   return out;
 }
 
-/** One relayed item: `{n}. {title} ({kind}) · {count} · {scope}`. */
+/** What keeping a guardrail makes Claude do, from its wall: '' for an item that isn't one. */
+export function guardDoes(item: Pick<InitItem, 'guardrail'>): string {
+  return WALLS.find((w) => w.cls === item.guardrail?.cls)?.guardrail?.does ?? '';
+}
+
+/**
+ * One relayed item: `{n}. {title} ({kind}) · {count} · {scope}`, a guardrail with what it makes Claude do after its
+ * kind. The kind is a noun, so the agent doesn't supply one of its own ("a skill" for a guardrail, 2026-10-29).
+ */
 export function relayItemLine(item: InitItem, repoName: string): string {
-  const kind = item.kind === 'preference' ? 'learning, your own words' : item.kind === 'guardrail' ? 'always follow' : item.kind === 'review' ? 'from pull requests' : item.kind === 'session' ? 'from your past sessions' : item.kind === 'claude' ? 'from what your Claude keeps' : item.kind;
-  return `${item.n}. ${quoted(item)} (${kind}) · ${countSentence(item, repoName).replace(/\.$/, '')} · ${scopeWords(item)}`;
+  const kind = item.kind === 'preference' ? 'learning, your own words' : item.kind === 'guardrail' ? 'always-follow learning' : item.kind === 'review' ? 'from pull requests' : item.kind === 'session' ? 'from your past sessions' : item.kind === 'claude' ? 'from what your Claude keeps' : item.kind;
+  const does = item.kind === 'guardrail' && guardDoes(item) ? ` · ${guardDoes(item)}` : '';
+  return `${item.n}. ${quoted(item)} (${kind})${does} · ${countSentence(item, repoName).replace(/\.$/, '')} · ${scopeWords(item)}`;
 }
 
 /**

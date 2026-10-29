@@ -22,6 +22,6 @@ test("the agent's relay opens from Trail and carries the line once, before the l
   const lines = relayLines([{ ...guardrailCandidate(), n: 1, title: "no-timeout", description: "" }], factsOf({ agent: true }));
   const at = lines.indexOf(RELAY_LINE);
   assert.ok(at >= 0 && lines.filter((l) => l === RELAY_LINE).length === 1, lines.join("\n"));
-  assert.ok(lines.findIndex((l) => /^1\. no-timeout \(always follow\)/.test(l)) > at);
+  assert.ok(lines.findIndex((l) => /^1\. no-timeout \(always-follow learning\) · Claude won't use the timeout command/.test(l)) > at);
   assert.ok(lines.some((l) => l.startsWith("[trail] From Trail, the tool this person installed")), lines.join("\n"));
 });
