@@ -91,3 +91,13 @@ test("uncommitted repo learnings are mentioned once a day, naming who'd get them
   writeFileSync(join(d, ".trail", "learnings", "y.md"), "---\ntitle: y\n---\n");
   assert.match(uncommittedDirective(d, nextDay), /2 learnings added to this repo \(in \.trail\/learnings\/\) aren't committed yet, so no teammate's agent has them/, "and again the next day while they're still waiting");
 });
+
+test("a Codex session's count is put down to Codex, not Claude Code", () => {
+  const d = tmpRepo("learnings-committed-codex");
+  git(d, ["init", "-q", "-b", "main"]);
+  commitLearning(d, "a.md");
+  const before = sent().length;
+  trackLearningsCommitted(d, "codex");
+  assert.equal(sent().length, before + 1);
+  assert.equal(sent().at(-1)!.properties.agent_host, "codex");
+});

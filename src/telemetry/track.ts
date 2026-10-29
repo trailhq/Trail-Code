@@ -48,16 +48,27 @@ export interface TrackContext {
   env?: NodeJS.ProcessEnv;
 }
 
+/** Variables Codex sets in the shell it runs commands in (as hosts/auto.ts reads them). */
+const CODEX_ENV = ['CODEX_THREAD_ID', 'CODEX_SESSION_ID', 'CODEX_SANDBOX', 'CODEX_SANDBOX_NETWORK_DISABLED'];
+
+/** Claude Code in the desktop app's Code tab, or anywhere else. */
+export function claudeHost(env: NodeJS.ProcessEnv = process.env): 'claude-desktop' | 'claude-code' {
+  return env.CLAUDE_CODE_ENTRYPOINT === 'claude-desktop' ? 'claude-desktop' : 'claude-code';
+}
+
 /**
- * Which agent graft is running under, from the surface plus one env probe.
+ * Which agent graft is running under, from the surface plus env probes.
  *
- * Only the PRESENCE of `CLAUDECODE` is read, never its value — the distinction
- * matters: a value could be anything a user's shell profile put there, presence
- * is a boolean. Anything unrecognised is `cli`, which is the honest answer.
+ * Only the PRESENCE of `CLAUDECODE` and Codex's variables is read, and
+ * `CLAUDE_CODE_ENTRYPOINT` only as equal or not to one fixed name — the
+ * distinction matters: a value could be anything a user's shell profile put
+ * there, and none of it travels. Anything unrecognised is `cli`, which is the
+ * honest answer.
  */
 export function detectHost(explicit?: AgentHost, env: NodeJS.ProcessEnv = process.env): AgentHost {
   if (explicit) return explicit;
-  if (env.CLAUDECODE !== undefined) return 'claude-code';
+  if (env.CLAUDECODE !== undefined || env.CLAUDE_CODE_ENTRYPOINT !== undefined) return claudeHost(env);
+  if (CODEX_ENV.some((k) => env[k] !== undefined)) return 'codex';
   return 'cli';
 }
 

@@ -32,7 +32,7 @@ import { cacheDir, readJson, writeJsonAtomic } from '../util/state.js';
 import { countBucket, type AgentHost } from '../telemetry/contract.js';
 import { detectHost } from '../trace/host.js';
 import type { HookOut } from '../skills/types.js';
-import { track } from '../telemetry/track.js';
+import { claudeHost, track } from '../telemetry/track.js';
 import { skillsDirective } from '../skills/skills.js';
 import { everyRepoLearnings } from '../notes/every-repo.js';
 import type { Note } from '../notes/notes.js';
@@ -217,10 +217,10 @@ export function withTouchLearnings(out: HookOut, input: any, dir: string): HookO
   return { ...out, context: [out.context, learned].filter(Boolean).join('\n\n') };
 }
 
-/** Who to put a tool use down to: Cursor and Copilot CLI run these hooks too. */
+/** Who to put a hook's events down to: Codex, Cursor and Copilot CLI run these hooks too. */
 function telemetryHost(input: unknown): AgentHost {
   const host = detectHost(input).host;
-  return host === 'cursor' || host === 'copilot' ? host : 'claude-code';
+  return host === 'codex' || host === 'cursor' || host === 'copilot' ? host : claudeHost();
 }
 
 /**
@@ -288,7 +288,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  * here, how many learnings it holds, and whether this machine shares the repo
  * with a workspace. Queued only, like every hook's telemetry.
  */
-export function trackRepoSeen(dir: string, now = Date.now()): void {
+export function trackRepoSeen(dir: string, now = Date.now(), host?: AgentHost): void {
   try {
     const place = repoPlace(dir);
     if (!place.git) return;
@@ -299,7 +299,7 @@ export function trackRepoSeen(dir: string, now = Date.now()): void {
     track(
       'repo_seen',
       { trail_committed: String(tracked.trim().length > 0), learnings_bucket: countBucket(learningFiles(place.checkout).length), workspace: String(inWorkspace(place.checkout)) },
-      { repo: place.checkout },
+      { repo: place.checkout, host },
     );
   } catch {
     // A missed sighting undercounts one repo for one day.
@@ -313,7 +313,7 @@ export function trackRepoSeen(dir: string, now = Date.now()): void {
  * activation count. `first_look` marks the first time this clone is seen, so
  * a clone of a repo that already had them isn't counted as new ones.
  */
-export function trackLearningsCommitted(dir: string): void {
+export function trackLearningsCommitted(dir: string, host?: AgentHost): void {
   try {
     const place = repoPlace(dir);
     if (!place.git) return;
@@ -329,7 +329,7 @@ export function trackLearningsCommitted(dir: string): void {
     track(
       'learnings_committed',
       { added_bucket: countBucket(count - (before ?? 0)), total_bucket: countBucket(count), first_look: String(before === undefined) },
-      { repo: place.checkout },
+      { repo: place.checkout, host },
     );
   } catch {
     // Not a repo with a HEAD yet, or git is slow: counted next session.
@@ -399,7 +399,7 @@ export const BRANCH_FETCH_CAP_MS = 3000;
  * minute; a fetch that runs out of time still reads the branches already here.
  * The sync only spawns a detached child.
  */
-function trailAtStart(dir: string): void {
+function trailAtStart(dir: string, host: AgentHost): void {
   if (brand() !== 'trail' || !keepsNotes(dir)) return;
   try {
     const top = repoPlace(dir);
@@ -408,8 +408,8 @@ function trailAtStart(dir: string): void {
     // Without it, the first prompt sees what the last refresh saw.
   }
   maybeSyncInBackground(dir);
-  trackRepoSeen(dir);
-  trackLearningsCommitted(dir);
+  trackRepoSeen(dir, Date.now(), host);
+  trackLearningsCommitted(dir, host);
 }
 
 /** What the session-start text says about learnings, read once. */
@@ -529,7 +529,7 @@ export async function main(event: string): Promise<void> {
     maybeFlushInBackground();
     // Once per repo: older versions kept the prompt in each session file.
     try { dropStoredPrompts(dir); } catch { /* tried again next session */ }
-    trailAtStart(dir);
+    trailAtStart(dir, telemetryHost(input));
     // A repo on trail, opened on a machine that has graft but not the trail command.
     // Only while its .mcp.json still names a trail server: once it doesn't, trail: true takes back the stand-in.
     if (repoWiredForTrail(dir)) fitTrailServerToMachine(homedir(), resolve(dir), { trail: trailOnPath() || !repoNamesTrailServer(dir), graft: commandOnPath('graft') });

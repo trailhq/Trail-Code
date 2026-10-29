@@ -181,9 +181,11 @@ export const COMMON_KEYS = [
  *  queries on the user's behalf without them typing a command. */
 export type Surface = 'cli' | 'mcp' | 'hook';
 
-/** Which editor/agent graft is running under. Derived from the surface and the
- *  wiring on disk — never from a hostname, a username, or an env var's value. */
-export type AgentHost = 'claude-code' | 'cursor' | 'copilot' | 'mcp' | 'cli';
+/** Which editor/agent graft is running under. Derived from the surface, the
+ *  hook payload and the wiring on disk — never from a hostname, a username, or
+ *  an env var's value beyond matching one fixed name. `claude-desktop` is
+ *  Claude Code inside the Claude desktop app's Code tab. */
+export type AgentHost = 'claude-code' | 'claude-desktop' | 'codex' | 'cursor' | 'copilot' | 'mcp' | 'cli';
 
 /**
  * The commands worth counting. A command absent here is simply not reported —
