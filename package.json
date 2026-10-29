@@ -61,7 +61,7 @@
     "gray-matter": "^4.0.3",
     "openai": "^7.8.0",
     "tree-sitter-wasm": "^2.0.4",
-    "vscode-jsonrpc": "^8.2.1",
+    "vscode-jsonrpc": "^10.0.0",
     "vscode-languageserver-protocol": "^3.18.2",
     "web-tree-sitter": "^0.27.1",
     "web-tree-sitter-depth": "npm:web-tree-sitter@0.22.2"
