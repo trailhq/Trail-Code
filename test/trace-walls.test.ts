@@ -109,6 +109,7 @@ test("the catalog: seven classes in table order, each with words, a fix and a gu
     title: "No timeout on this Mac", fileName: "no-timeout.md", check: "no-timeout", applies: "every repo",
     text: "This Mac has no `timeout`. Run long commands in the background, or use the Bash tool's own timeout.",
     does: "Claude won't use the timeout command, which this Mac doesn't have",
+    seen: 'Claude\'s commands failed with "timeout: command not found"',
   });
   assert.equal(g["git-https-auth"]?.fileName, "push-over-ssh.md");
   assert.equal(g["git-https-auth"]?.applies, "this repo");

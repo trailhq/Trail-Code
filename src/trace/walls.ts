@@ -43,8 +43,9 @@ export interface WallEntry {
   words: string;
   /** The human-written fix (4.10 table). ctx says which form applies (colima on PATH, the remote's ssh form). */
   fix(ctx: WallCtx): string;
-  /** A guardrail init may offer for it, or null. `does`: what keeping it makes Claude do, in words for the offer. */
-  guardrail: { title: string; text: string; does: string; fileName: string; check?: 'no-timeout'; applies: 'every repo' | 'this repo' } | null;
+  /** A guardrail init may offer for it, or null. `does`: what keeping it makes Claude do; `seen`: what went wrong, for
+   *  the offer's count line ("{seen} on 3 days."). */
+  guardrail: { title: string; text: string; does: string; seen: string; fileName: string; check?: 'no-timeout'; applies: 'every repo' | 'this repo' } | null;
 }
 
 /** Where a shell puts its name before its own error: `zsh:1: `, `bash: line 3: `, `bash: `, `(eval):1: `, `/bin/zsh:1: `. */
@@ -73,6 +74,7 @@ export const WALLS: readonly WallEntry[] = Object.freeze([
       title: 'No timeout on this Mac', fileName: 'no-timeout.md', check: 'no-timeout', applies: 'every repo',
       text: "This Mac has no `timeout`. Run long commands in the background, or use the Bash tool's own timeout.",
       does: "Claude won't use the timeout command, which this Mac doesn't have",
+      seen: 'Claude\'s commands failed with "timeout: command not found"',
     },
   },
   {
@@ -101,6 +103,7 @@ export const WALLS: readonly WallEntry[] = Object.freeze([
       title: 'Push over SSH in this repo', fileName: 'push-over-ssh.md', applies: 'this repo',
       text: "This repo's remote is HTTPS and git has no credentials for it here. Push over SSH, to the remote's git@ address.",
       does: 'Claude pushes this repo over SSH, since HTTPS asks for a username here',
+      seen: "Claude's git pushes over HTTPS asked for a username",
     },
   },
   {

@@ -135,9 +135,9 @@ test("an agent's init looks back without a model and relays: a claude stand-in o
     const out = said.join("\n");
     assert.match(out, /names are plain: to name them with Claude, run trail init --look-back in your own terminal/);
     assert.ok(said.includes(RELAY_LINE));
-    assert.match(out, /^1\. release-npm \(skill\) · Claude worked out how to publish shop to npm from scratch on 3 different days · just for you, in this repo$/m);
-    assert.match(out, /^2\. no-timeout \(always-follow learning\) · Claude won't use the timeout command, which this Mac doesn't have · Hit "timeout: command not found" on 2 days · just for you, in every repo$/m);
-    assert.match(out, /^3\. "always run the lint script before pushing" \(learning, your own words\) · You said this on 2 days · just for you, in this repo$/m, "the shortest of the person's lines");
+    assert.match(out, /^1\. release-npm \(skill, this repo only\)\n   Claude worked out how to publish shop to npm from scratch on 3 different days\.$/m);
+    assert.match(out, /^2\. no-timeout \(always-follow learning, every repo\)\n   Claude won't use the timeout command, which this Mac doesn't have\.\n   Claude's commands failed with "timeout: command not found" on 2 days\.$/m);
+    assert.match(out, /^3\. "always run the lint script before pushing" \(learning in your own words, this repo only\)\n   You said this on 2 days\.$/m, "the shortest of the person's lines");
     const rec = readInitRecord(repoPlace(w.repo, env).key, env);
     assert.deepEqual(rec.pending.map((p) => [p.n, p.kind]), [[1, "skill"], [2, "guardrail"], [3, "preference"]]);
     // For init --pair's page: the skill found, by name and day count, never its steps; nothing kept.

@@ -21,18 +21,22 @@ test("the screen, skills on: every line of 4.7, the cursor on the first item", (
     "✓ looked back at 23 Claude Code sessions about this repo, typed into on 21 days (Jul 3 to Oct 14) · 15 started in the parent folder",
     "· sent Claude the steps of 1 skill to name it (about 1.8k tokens), none of your messages",
     "",
+    "For your Claude only. Your teammates' Claude doesn't get these.",
+    "",
     "Skills",
-    "› [ ] 1  release-npm · publish to npm and check it with npm view",
-    "         Claude worked out how to publish acme-cli to npm from scratch on 21 different days. Your Claude Code how-to release.md describes it. · just for you, in this repo",
+    "› [ ] 1  release-npm (this repo only)",
+    "         Publish to npm and check it with npm view.",
+    "         Claude worked out how to publish acme-cli to npm from scratch on 21 different days. Your Claude Code how-to release.md describes it.",
     "Always follow",
-    "  [ ] 2  no-timeout · Claude won't use the timeout command, which this Mac doesn't have",
-    "         Hit \"timeout: command not found\" on 6 days. · just for you, in every repo",
+    "  [ ] 2  no-timeout (every repo)",
+    "         Claude won't use the timeout command, which this Mac doesn't have.",
+    "         Claude's commands failed with \"timeout: command not found\" on 6 days.",
     "Learnings",
-    "  [x] 3  \"explain it simply, one example first\"",
-    "         You said this on 12 days. · just for you, in every repo",
+    "  [x] 3  \"explain it simply, one example first\" (every repo)",
+    "         You said this on 12 days.",
     "",
     "↑↓ move · space tick · s see more · enter keep ticked · n keep nothing",
-    "w every repo or this repo · r add a learning to this repo (committed) · esc decide later",
+    "w every repo or this repo only · r share this learning with your team · esc decide later",
   ]);
   for (const l of lines) assert.doesNotMatch(l, WORDS, l);
 });
@@ -43,7 +47,7 @@ test("the screen, skills off: no Skills group, and the last line says how to tur
   assert.ok(!lines.includes("Skills"));
   assert.equal(lines[0], "✓ looked back at 23 Claude Code sessions about this repo, typed into on 21 days (Jul 3 to Oct 14)");
   assert.equal(lines[1], "· 2 already kept for every repo (they apply here too)");
-  assert.ok(lines.includes("› [x] 2  \"explain it simply, one example first\""));
+  assert.ok(lines.includes("› [x] 2  \"explain it simply, one example first\" (every repo)"));
   assert.ok(lines.includes("         You said it on Jul 3, Sep 9 and Oct 14."), "the open item's lines sit under it");
   assert.ok(lines.includes("this Mac has no timeout in any repo, so it stays every repo"));
   assert.equal(lines[lines.length - 1], "skills are off · trail skills on lets init also find repeated jobs and keep their steps");
@@ -56,9 +60,18 @@ test("the agent's relay (J02): from Trail, RELAY_LINE and KEEP_LINE word for wor
     "✓ looked back at 23 Claude Code sessions about this repo, typed into on 21 days (Jul 3 to Oct 14) · 15 started in the parent folder · names are plain: to name them with Claude, run trail init --look-back in your own terminal",
     "[trail] From Trail, the tool this person installed to keep commands that worked as skills. trail init found these in the past sessions of the person you are working with. Only they decide what Trail keeps, so the list is theirs to answer.",
     RELAY_LINE,
-    "1. release-npm (skill) · Claude worked out how to publish acme-cli to npm from scratch on 21 different days · just for you, in this repo",
-    "2. no-timeout (always-follow learning) · Claude won't use the timeout command, which this Mac doesn't have · Hit \"timeout: command not found\" on 6 days · just for you, in every repo",
-    "3. \"explain it simply, one example first\" (learning, your own words) · You said this on 12 days · just for you, in every repo",
+    "For your Claude only. Your teammates' Claude doesn't get these.",
+    "",
+    "1. release-npm (skill, this repo only)",
+    "   Claude worked out how to publish acme-cli to npm from scratch on 21 different days.",
+    "",
+    "2. no-timeout (always-follow learning, every repo)",
+    "   Claude won't use the timeout command, which this Mac doesn't have.",
+    "   Claude's commands failed with \"timeout: command not found\" on 6 days.",
+    "",
+    "3. \"explain it simply, one example first\" (learning in your own words, every repo)",
+    "   You said this on 12 days.",
+    "",
     "Show one in full: trail skills draft init-1 --print",
     KEEP_LINE,
     "Trail checks the numbers the person typed in this session before it keeps anything, so run trail keep only with the numbers they typed.",
@@ -75,7 +88,8 @@ test("the person's own script (no TTY, not an agent) gets the list without the a
   assert.ok(!lines.some((l) => l.startsWith("[trail]")));
   assert.ok(!lines.includes(KEEP_LINE), "trail keep needs an agent session's receipt");
   assert.equal(lines[lines.length - 1], "Pick in a terminal: trail init");
-  assert.ok(lines.includes("3. \"explain it simply, one example first\" (learning, your own words) · You said this on 12 days · just for you, in every repo"));
+  assert.ok(lines.includes("3. \"explain it simply, one example first\" (learning in your own words, every repo)"));
+  assert.ok(lines.includes("   You said this on 12 days."));
 });
 
 test("after a keep: kept, not kept, refused, offers on and off (J09), esc and n", () => {
