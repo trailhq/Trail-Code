@@ -1,0 +1,76 @@
+name: Downloads badge
+
+# Publishes the JSON the README's downloads badge reads, to gh-pages at
+# badges/npm-downloads.json. The count sums every npm name trail has shipped under
+# (.github/scripts/npm-downloads-badge.mjs), which shields' own npm badge can't do.
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  # A merge that changes the count publishes it straight away, so the badge never
+  # points at a file that isn't there yet.
+  push:
+    branches: [main]
+    paths:
+      - .github/scripts/npm-downloads-badge.mjs
+      - .github/workflows/npm-downloads-badge.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-downloads-badge
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "20"
+
+      - name: Count last month's downloads
+        run: node .github/scripts/npm-downloads-badge.mjs > npm-downloads.json
+
+      - name: Publish to gh-pages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # blast-pages.yml pushes to the same branch for every open PR, so a push can
+          # lose a race. Retry from a fresh clone, as that workflow does, and keep the
+          # loop flat so `set -e` still stops on a failed clone.
+          published=""
+          for i in 1 2 3 4 5; do
+            rm -rf pages
+            git clone --depth 1 --branch gh-pages "https://x-access-token:$GH_TOKEN@github.com/$REPO.git" pages
+            cd pages
+            mkdir -p badges
+            cp ../npm-downloads.json badges/npm-downloads.json
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add badges/npm-downloads.json
+            if ! git commit -m "badge: npm downloads"; then
+              echo "nothing changed"
+              published=1; cd ..; break
+            fi
+            if git push origin gh-pages; then
+              published=1; cd ..; break
+            fi
+            cd ..
+            echo "gh-pages push lost a race, retry $i" >&2
+            sleep $((i * 5))
+          done
+          if [ -z "$published" ]; then
+            echo "could not publish the badge after 5 attempts" >&2
+            exit 1
+          fi
