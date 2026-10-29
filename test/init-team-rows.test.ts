@@ -19,6 +19,9 @@ import { claudeProjectDir } from "../src/notes/session-cost.js";
 import { factsOf, REPO_KEY, threeItems } from "./init-screen-fixtures.js";
 import { tmpRepo } from "./helpers.js";
 
+const TEAM = "For your whole team. These go into this repo, and your teammates' Claude gets them once you commit.";
+const FOR_YOU = "For your Claude only. Your teammates' Claude doesn't get these.";
+
 const teamRow = (over: Partial<InitItem>): InitItem => ({
   id: "i-0000000001", kind: "review", key: "review:x", plainName: "", nameWords: [], count: { days: 2, from: "2026-10-10", to: "2026-10-10" },
   scope: "repo", applies: REPO_KEY, typed: false, ticked: true, evidence: [], rank: 1, n: 1, title: "Return a 500 when db.query fails in src/api",
@@ -30,21 +33,21 @@ test("one screen: the team rows first under their own heading and ticked, then t
   const look = threeItems().map((i, k) => ({ ...i, n: k + 3 }));
   const lines = screenLines([...team, ...look], { cursor: 0, open: null }, factsOf());
   const at = (l: string) => lines.indexOf(l);
-  assert.ok(at("Your teammates' Claude doesn't know these yet") > 0, lines.join("\n"));
+  assert.ok(at(TEAM) > 0, lines.join("\n"));
   assert.ok(lines.includes("› [x] 1  Return a 500 when db.query fails in src/api"));
-  assert.ok(lines.includes("         From PR #41, #38. · added to this repo"));
+  assert.ok(lines.includes("         From PR #41 and #38."));
   assert.ok(lines.includes("  [x] 2  Retries stay at 4 because the gateway times out"));
-  assert.ok(lines.includes("         From what your Claude keeps about this repo. · added to this repo"));
-  assert.equal(lines.filter((l) => l === "Your teammates' Claude doesn't know these yet").length, 1, "one heading for both sources");
-  assert.ok(at("Your teammates' Claude doesn't know these yet") < at("Skills") && at("Skills") < at("Learnings"));
-  assert.ok(lines.includes("  [ ] 3  release-npm · publish to npm and check it with npm view"), "nothing Claude drafted starts ticked");
-  assert.ok(lines.includes("  [x] 5  \"explain it simply, one example first\""));
+  assert.ok(lines.includes("         From what your Claude keeps about this repo."));
+  assert.equal(lines.filter((l) => l === TEAM).length, 1, "one heading for both sources");
+  assert.ok(at(TEAM) < at(FOR_YOU) && at(FOR_YOU) < at("Skills") && at("Skills") < at("Learnings"));
+  assert.ok(lines.includes("  [ ] 3  release-npm (this repo only)"), "nothing Claude drafted starts ticked");
+  assert.ok(lines.includes("  [x] 5  \"explain it simply, one example first\" (every repo)"));
 });
 
 test("a screen with only team rows (no look-back this time) has no found line", () => {
   const lines = screenLines([teamRow({})], { cursor: 0, open: null }, factsOf({ lookedBack: false }));
   assert.equal(lines[0], "");
-  assert.equal(lines[1], "Your teammates' Claude doesn't know these yet");
+  assert.equal(lines[1], TEAM);
   assert.ok(!lines.some((l) => /looked back|no past Claude Code sessions/.test(l)));
 });
 
@@ -136,7 +139,7 @@ test("at the person's terminal the team row is on the screen, ticked; enter keep
     const { reads } = beginLookBack(repo, { env, deps: atTerminal, plain: true });
     assert.equal(reads.memory.length, 1);
     const r = await finishLookBack(repo, reads, { yes: false, say: (l) => said.push(l), io: t.io });
-    assert.match(t.out(), /Your teammates' Claude doesn't know these yet\n› \[x\] 1 {2}Retries stay at 4 because the gateway times out at 30 s/);
+    assert.match(t.out(), /For your whole team\. These go into this repo, and your teammates' Claude gets them once you commit\.\n› \[x\] 1 {2}Retries stay at 4 because the gateway times out at 30 s/);
     assert.equal(r.team, 1);
     assert.equal(learningsIn(repo).length, 1);
     assert.ok(said.some((l) => /added to this repo's \.trail\/learnings/.test(l)), said.join("\n"));

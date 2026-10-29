@@ -15,6 +15,7 @@ import {
   errorCode,
   filesBucket,
   hookMsBucket,
+  initKindCounts,
   isTrackedCommand,
   langsValue,
   savedTokensBucket,
@@ -83,6 +84,18 @@ test('the contract lists exactly the twenty-five documented events', () => {
     'cold_start', 'first_run', 'guardrail', 'hook_ms', 'init_completed', 'install', 'learnings_committed', 'note_saved', 'query', 'repo_seen', 'session_summary',
     'skill_answer', 'skill_changed', 'skill_offered', 'skill_promoted', 'skill_saved', 'skill_stale', 'skill_used', 'skill_value', 'team_pull', 'wall_hit',
   ]);
+});
+
+// What init offered and what was kept, by kind (2026-10-29): exact small counts, so the share kept can be read per kind.
+test('cold_start counts init\'s offers and keeps by kind, exact to 5, and drops any other value', () => {
+  const items = [{ kind: 'skill' }, { kind: 'guardrail' }, { kind: 'preference' }, { kind: 'preference' }, { kind: 'review' }];
+  assert.deepEqual(initKindCounts('kept', items), { kept_skills: '1', kept_always_follow: '1', kept_learnings: '2' });
+  assert.deepEqual(initKindCounts('offered', Array(7).fill({ kind: 'preference' })), { offered_skills: '0', offered_always_follow: '0', offered_learnings: '6+' });
+  const home = sandbox('tel-cold-start-kinds');
+  const ev = track('cold_start', { source: 'keep', outcome: 'kept', ...initKindCounts('kept', items), offered_learnings: 'no-timeout' }, { home, env: OPEN });
+  assert.equal(ev?.properties.kept_always_follow, '1');
+  assert.equal(ev?.properties.kept_learnings, '2');
+  assert.equal(ev?.properties.offered_learnings, undefined, 'a value other than 0 to 5 or 6+ is dropped');
 });
 
 // --- the skills events (spec section 20): counts and closed sets, never content ---

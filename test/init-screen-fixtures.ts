@@ -53,7 +53,7 @@ export function prefCandidate(ref: { t: string; o: number; s: string } = { t: "/
 export function threeItems(): InitItem[] {
   return [
     { ...skillCandidate(), n: 1, title: "release-npm", description: "publish to npm and check it with npm view" },
-    { ...guardrailCandidate(), n: 2, title: "no-timeout", description: "this Mac has no timeout" },
+    { ...guardrailCandidate(), n: 2, title: "no-timeout", description: "Claude won't use the timeout command, which this Mac doesn't have" },
     { ...prefCandidate(), n: 3, title: "explain it simply, one example first", description: "" },
   ];
 }

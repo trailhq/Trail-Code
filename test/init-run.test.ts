@@ -135,9 +135,9 @@ test("an agent's init looks back without a model and relays: a claude stand-in o
     const out = said.join("\n");
     assert.match(out, /names are plain: to name them with Claude, run trail init --look-back in your own terminal/);
     assert.ok(said.includes(RELAY_LINE));
-    assert.match(out, /^1\. release-npm \(skill\) · Claude worked out how to publish shop to npm from scratch on 3 different days · just for you, in this repo$/m);
-    assert.match(out, /^2\. no-timeout \(always follow\) · Hit "timeout: command not found" on 2 days · just for you, in every repo$/m);
-    assert.match(out, /^3\. "always run the lint script before pushing" \(learning, your own words\) · You said this on 2 days · just for you, in this repo$/m, "the shortest of the person's lines");
+    assert.match(out, /^1\. release-npm \(skill, this repo only\)\n   Claude worked out how to publish shop to npm from scratch on 3 different days\.$/m);
+    assert.match(out, /^2\. no-timeout \(always-follow learning, every repo\)\n   Claude won't use the timeout command, which this Mac doesn't have\.\n   Claude's commands failed with "timeout: command not found" on 2 days\.$/m);
+    assert.match(out, /^3\. "always run the lint script before pushing" \(learning in your own words, this repo only\)\n   You said this on 2 days\.$/m, "the shortest of the person's lines");
     const rec = readInitRecord(repoPlace(w.repo, env).key, env);
     assert.deepEqual(rec.pending.map((p) => [p.n, p.kind]), [[1, "skill"], [2, "guardrail"], [3, "preference"]]);
     // For init --pair's page: the skill found, by name and day count, never its steps; nothing kept.
@@ -276,7 +276,7 @@ test("a Claude.ai export's facts about code share the screen, just for the perso
     const { reads, lines } = beginLookBack(w.repo, { env, deps: deps(true), plain: true, claudeExport: CLAUDE_AI });
     assert.deepEqual(lines.slice(-1), ["· init offers 2 of the 3 things Claude.ai knows about you, the ones about code, just for you"]);
     await finishLookBack(w.repo, reads, { yes: false, say: (l) => said.push(l), io: t.io });
-    assert.match(t.out(), /From what Claude\.ai knows about you\n› \[x\] 1 {2}They ship the shop with npm run release from the main branch\n {9}Claude\.ai knows this; Claude Code doesn't\. · just for you, in this repo/);
+    assert.match(t.out(), /For your Claude only\. Your teammates' Claude doesn't get these\.\n\nFrom what Claude\.ai knows about you\n› \[x\] 1 {2}They ship the shop with npm run release from the main branch \(this repo only\)\n {9}Claude\.ai knows this; Claude Code doesn't\.\n/);
     const inRepo = texts(join(w.repo, ".trail", "learnings"));
     assert.equal(inRepo.length, 1);
     assert.match(inRepo[0]!, /npm run release from the main branch/);

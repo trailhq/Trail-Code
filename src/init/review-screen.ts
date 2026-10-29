@@ -51,21 +51,22 @@ export const INIT_COPY: Record<string, string> = {
   guardrails: 'Always follow',
   preferences: 'Learnings',
   reviews: 'From PR reviews',
-  team: "Your teammates' Claude doesn't know these yet",
+  team: "For your whole team. These go into this repo, and your teammates' Claude gets them once you commit.",
+  forYou: "For your Claude only. Your teammates' Claude doesn't get these.",
   claudeAi: 'From what Claude.ai knows about you',
   keys1: '↑↓ move · space tick · s see more · enter keep ticked · n keep nothing',
-  keys2: 'w every repo or this repo · r add a learning to this repo (committed) · esc decide later',
+  keys2: 'w every repo or this repo only · r share this learning with your team · esc decide later',
   skillsOff: 'skills are off · trail skills on lets init also find repeated jobs and keep their steps',
   skillCount: 'Claude worked out how to {job} from scratch on {days} different days.',
-  guardCount: 'Hit {words} on {days} days.',
+  guardCount: '{seen} on {days} days.',
   prefCount: 'You said this on {days} days.',
   reviewCount: 'From PR {prs}.',
   sessionCount: 'From your past Claude sessions here.',
   claudeCount: 'From what your Claude keeps about this repo.',
   claudeAiCount: "Claude.ai knows this; Claude Code doesn't.",
-  personal: 'just for you, in this repo',
-  everyRepo: 'just for you, in every repo',
-  repo: 'added to this repo, committed',
+  personal: 'this repo only',
+  everyRepo: 'every repo',
+  repo: 'added to this repo: your team gets it once you commit',
   reviewRepo: 'added to this repo',
   agentLead: 'trail init found these in the past sessions of the person you are working with. Only they decide what Trail keeps, so the list is theirs to answer.',
   agentKeep: "Trail checks the numbers the person typed in this session before it keeps anything, so run trail keep only with the numbers they typed.",
@@ -137,9 +138,11 @@ export function jobPhrase(item: Pick<InitItem, 'key' | 'skill'>, repoName: strin
   }
 }
 
-/** Where an item goes, in words. */
+const isTeam = (item: Pick<InitItem, 'kind'>) => item.kind === 'review' || item.kind === 'session' || item.kind === 'claude';
+
+/** Where an item goes, beside its name. Who gets it is said once, above the list (INIT_COPY.forYou, .team). */
 export function scopeWords(item: Pick<InitItem, 'kind' | 'scope' | 'applies'>): string {
-  if (item.kind === 'review' || item.kind === 'session' || item.kind === 'claude') return INIT_COPY.reviewRepo!;
+  if (isTeam(item)) return INIT_COPY.reviewRepo!;
   if (item.scope === 'repo') return INIT_COPY.repo!;
   return item.applies === 'every repo' ? INIT_COPY.everyRepo! : INIT_COPY.personal!;
 }
@@ -149,7 +152,7 @@ export function countSentence(item: InitItem, repoName: string): string {
   const days = item.count.days;
   switch (item.kind) {
     case 'skill': return fill(INIT_COPY.skillCount!, { job: jobPhrase(item, repoName), days });
-    case 'guardrail': return fill(INIT_COPY.guardCount!, { words: WALLS.find((w) => w.cls === item.guardrail?.cls)?.words ?? 'this error', days });
+    case 'guardrail': return fill(INIT_COPY.guardCount!, { seen: WALLS.find((w) => w.cls === item.guardrail?.cls)?.guardrail?.seen ?? 'Claude ran into this error', days });
     case 'preference': return fill(INIT_COPY.prefCount!, { days });
     case 'claude': return INIT_COPY.claudeCount!;
     case 'claudeai': return INIT_COPY.claudeAiCount!;
@@ -157,7 +160,9 @@ export function countSentence(item: InitItem, repoName: string): string {
     default: {
       // #662's source words: the PRs, three at most.
       const prs = item.review?.prs ?? [];
-      return fill(INIT_COPY.reviewCount!, { prs: `${prs.slice(0, 3).map((p) => `#${p}`).join(', ')}${prs.length > 3 ? ` +${prs.length - 3}` : ''}` });
+      const shown = prs.slice(0, 3).map((p) => `#${p}`);
+      const list = prs.length > 3 ? `${shown.join(', ')} +${prs.length - 3}` : shown.length > 1 ? `${shown.slice(0, -1).join(', ')} and ${shown[shown.length - 1]}` : shown.join('');
+      return fill(INIT_COPY.reviewCount!, { prs: list });
     }
   }
 }
@@ -170,6 +175,8 @@ const plain = (t: string) => flatLine(t, 160);
 const spaced = (t: string) => Array.from(String(t ?? '').replace(/\r\n|[\n\r\u000b\u000c\u0085\u2028\u2029]/g, ' ')
   .replace(/[\u0000-\u0008\u000e-\u001f\u007f-\u009f\p{Cf}]/gu, '')).slice(0, 400).join('');
 const quoted = (item: InitItem) => (item.kind === 'preference' ? `"${plain(item.title).replace(/"/g, "'")}"` : plain(item.title));
+/** A phrase as a sentence of its own: capital first, full stop last. */
+const sentence = (t: string) => (t ? `${t.charAt(0).toUpperCase()}${t.slice(1)}${/[.!?]$/.test(t) ? '' : '.'}` : '');
 const KIND_ORDER: InitKind[] = ['skill', 'guardrail', 'preference', 'review', 'session', 'claude', 'claudeai'];
 /** The heading over each kind; #662's team rows, from reviews and from what Claude Code keeps (kind 'claude'), share one. */
 const GROUP: Record<InitKind, string> = { skill: 'skills', guardrail: 'guardrails', preference: 'preferences', review: 'team', session: 'team', claude: 'team', claudeai: 'claudeAi' };
@@ -212,18 +219,28 @@ export function screenLines(items: InitItem[], state: { cursor: number; open: nu
   }
   out.push('');
   let last: string | null = null;
+  let forYou = false;
   items.forEach((item, at) => {
     if (GROUP[item.kind] !== last) {
       last = GROUP[item.kind];
+      // Who gets them, once per section: the team's heading says it for theirs; the person's own start under forYou.
+      if (last === 'team' && at > 0) out.push('');
+      if (last !== 'team' && !forYou) {
+        out.push(...(at > 0 ? [''] : []), INIT_COPY.forYou!, '');
+        forYou = true;
+      }
       out.push(INIT_COPY[last]!);
     }
     const cur = at === state.cursor ? '›' : ' ';
-    const desc = item.description ? ` · ${plain(item.description)}` : '';
-    out.push(`${cur} [${item.ticked ? 'x' : ' '}] ${item.n}  ${quoted(item)}${desc}`);
-    const ev = item.evidence.map(plain).map((e) => ` ${e.charAt(0).toUpperCase()}${e.slice(1)}.`).join('');
+    // One sentence per line under the name: what it does, then where it came from (2026-10-29: the facts joined by ·
+    // on one line lost a first-time reader). Where it goes sits beside the name; who gets it is the heading's.
+    out.push(`${cur} [${item.ticked ? 'x' : ' '}] ${item.n}  ${quoted(item)}${isTeam(item) ? '' : ` (${scopeWords(item)})`}`);
+    const does = item.kind === 'guardrail' ? guardDoes(item) || item.description : item.description;
+    if (does) out.push(`         ${sentence(plain(does))}`);
+    const ev = item.evidence.map(plain).map((e) => ` ${sentence(e)}`).join('');
+    out.push(`         ${countSentence(item, facts.repoName)}${ev}`);
     const into = foldTarget(item, items);
-    const fold = into ? ` · ${fill(INIT_COPY.foldHint!, { n: into.n })}` : '';
-    out.push(`         ${countSentence(item, facts.repoName)}${ev} · ${scopeWords(item)}${fold}`);
+    if (into) out.push(`         ${sentence(fill(INIT_COPY.foldHint!, { n: into.n }))}`);
     if (state.open === at) for (const l of state.openLines ?? []) out.push(`         ${spaced(l)}`);
   });
   out.push('');
@@ -233,10 +250,24 @@ export function screenLines(items: InitItem[], state: { cursor: number; open: nu
   return out;
 }
 
-/** One relayed item: `{n}. {title} ({kind}) · {count} · {scope}`. */
+/** What keeping a guardrail makes Claude do, from its wall: '' for an item that isn't one. */
+export function guardDoes(item: Pick<InitItem, 'guardrail'>): string {
+  return WALLS.find((w) => w.cls === item.guardrail?.cls)?.guardrail?.does ?? '';
+}
+
+/**
+ * One relayed item, its lines joined: `{n}. {title} ({kind}, {where})`, then a guardrail's what it makes Claude do,
+ * then the count, one sentence per line. The kind is a noun, so the agent doesn't supply one of its own ("a skill" for
+ * a guardrail, 2026-10-29).
+ */
 export function relayItemLine(item: InitItem, repoName: string): string {
-  const kind = item.kind === 'preference' ? 'learning, your own words' : item.kind === 'guardrail' ? 'always follow' : item.kind === 'review' ? 'from pull requests' : item.kind === 'session' ? 'from your past sessions' : item.kind === 'claude' ? 'from what your Claude keeps' : item.kind;
-  return `${item.n}. ${quoted(item)} (${kind}) · ${countSentence(item, repoName).replace(/\.$/, '')} · ${scopeWords(item)}`;
+  const kind = item.kind === 'preference' ? 'learning in your own words' : item.kind === 'guardrail' ? 'always-follow learning' : item.kind === 'review' ? 'from pull requests' : item.kind === 'session' ? 'from your past sessions' : item.kind === 'claude' ? 'from what your Claude keeps' : item.kind;
+  const does = item.kind === 'guardrail' ? guardDoes(item) : '';
+  return [
+    `${item.n}. ${quoted(item)} (${kind}${isTeam(item) ? '' : `, ${scopeWords(item)}`})`,
+    ...(does ? [`   ${sentence(does)}`] : []),
+    `   ${countSentence(item, repoName)}`,
+  ].join('\n');
 }
 
 /**
@@ -244,7 +275,9 @@ export function relayItemLine(item: InitItem, repoName: string): string {
  * list rebuilt from the record reads as the one printed.
  */
 export function relayBlock(items: InitItem[], repoName: string, agent: boolean): string[] {
-  const list = items.map((i) => relayItemLine(i, repoName));
+  // Who gets them, once, then each item with a blank line between (2026-10-29).
+  const forYou = items.some((i) => !isTeam(i)) ? [INIT_COPY.forYou!, ''] : [];
+  const list = [...forYou, ...items.flatMap((i, k) => [...(k ? [''] : []), ...relayItemLine(i, repoName).split('\n')]), ''];
   const draft = items.some((i) => i.kind === 'skill') ? [DRAFT_LINE.replace('init-1', `init-${items.find((i) => i.kind === 'skill')!.n}`)] : [];
   if (!agent) return [...list, ...draft, INIT_COPY.pickInTerminal!];
   return [directive(null, INIT_COPY.agentLead!), RELAY_LINE, ...list, ...draft, KEEP_LINE, INIT_COPY.agentKeep!];
