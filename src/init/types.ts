@@ -10,7 +10,7 @@
 import type { CompiledSkill } from '../skills/types.js';
 import type { WallClass } from '../trace/types.js';
 
-export type InitKind = 'skill' | 'guardrail' | 'preference' | 'review' | 'session' | 'claude';
+export type InitKind = 'skill' | 'guardrail' | 'preference' | 'review' | 'session' | 'claude' | 'claudeai';
 
 /** A pointer to a typed line. The line itself is never stored (0 rule 6). */
 export interface TypedRef {

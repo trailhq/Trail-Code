@@ -52,6 +52,7 @@ export const INIT_COPY: Record<string, string> = {
   preferences: 'Learnings',
   reviews: 'From PR reviews',
   team: "Your teammates' Claude doesn't know these yet",
+  claudeAi: 'From your Claude.ai memory',
   keys1: '↑↓ move · space tick · s see more · enter keep ticked · n keep nothing',
   keys2: 'w every repo or this repo · r add a learning to this repo (committed) · esc decide later',
   skillsOff: 'skills are off · trail skills on lets init also find repeated jobs and keep their steps',
@@ -61,6 +62,7 @@ export const INIT_COPY: Record<string, string> = {
   reviewCount: 'From PR {prs}.',
   sessionCount: 'From your past Claude sessions here.',
   claudeCount: 'From what your Claude keeps about this repo.',
+  claudeAiCount: "Claude.ai remembers this; Claude Code doesn't.",
   personal: 'just for you, in this repo',
   everyRepo: 'just for you, in every repo',
   repo: 'added to this repo, committed',
@@ -150,6 +152,7 @@ export function countSentence(item: InitItem, repoName: string): string {
     case 'guardrail': return fill(INIT_COPY.guardCount!, { words: WALLS.find((w) => w.cls === item.guardrail?.cls)?.words ?? 'this error', days });
     case 'preference': return fill(INIT_COPY.prefCount!, { days });
     case 'claude': return INIT_COPY.claudeCount!;
+    case 'claudeai': return INIT_COPY.claudeAiCount!;
     case 'session': return INIT_COPY.sessionCount!;
     default: {
       // #662's source words: the PRs, three at most.
@@ -167,9 +170,9 @@ const plain = (t: string) => flatLine(t, 160);
 const spaced = (t: string) => Array.from(String(t ?? '').replace(/\r\n|[\n\r\u000b\u000c\u0085\u2028\u2029]/g, ' ')
   .replace(/[\u0000-\u0008\u000e-\u001f\u007f-\u009f\p{Cf}]/gu, '')).slice(0, 400).join('');
 const quoted = (item: InitItem) => (item.kind === 'preference' ? `"${plain(item.title).replace(/"/g, "'")}"` : plain(item.title));
-const KIND_ORDER: InitKind[] = ['skill', 'guardrail', 'preference', 'review', 'session', 'claude'];
+const KIND_ORDER: InitKind[] = ['skill', 'guardrail', 'preference', 'review', 'session', 'claude', 'claudeai'];
 /** The heading over each kind; #662's team rows, from reviews and from what Claude Code keeps (kind 'claude'), share one. */
-const GROUP: Record<InitKind, string> = { skill: 'skills', guardrail: 'guardrails', preference: 'preferences', review: 'team', session: 'team', claude: 'team' };
+const GROUP: Record<InitKind, string> = { skill: 'skills', guardrail: 'guardrails', preference: 'preferences', review: 'team', session: 'team', claude: 'team', claudeai: 'claudeAi' };
 
 /** Items numbered as the screen and the relay show them: by kind, then in pickFive's order within a kind. */
 export function numbered<T extends { kind: InitKind }>(picked: T[]): Array<T & { n: number }> {
