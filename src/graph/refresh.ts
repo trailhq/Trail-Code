@@ -37,7 +37,7 @@
  * session. So the first query there starts a full build in the background and
  * waits a while for it (`buildMissingMap`).
  */
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -49,6 +49,7 @@ import { CACHE_DIR } from "../context/node-file.js";
 import { buildGraph } from "./build.js";
 import { driftCount, isClean, probeDrift, readFingerprint, type Drift } from "./fingerprint.js";
 import { invalidateGraphCaches } from "./load.js";
+import type { RefreshRunArgs } from "./refresh-run.js";
 import { seedGraph, type SeedResult } from "./seed.js";
 import { wiringPath } from "./write.js";
 import { cmd, tag } from "../brand.js";
@@ -176,6 +177,8 @@ async function buildMissingMap(dir: string, outDir: string, opts: RefreshOptions
 export function releaseOnSignal(cache: string): () => void {
   const signals: NodeJS.Signals[] = ["SIGTERM", "SIGINT"];
   const onSignal = (sig: NodeJS.Signals) => {
+    // A rebuild child would otherwise go on writing without the lock.
+    rebuilding?.kill(sig);
     releaseLockIn(cache);
     for (const s of signals) process.removeListener(s, onSignal);
     process.kill(process.pid, sig);
@@ -184,6 +187,36 @@ export function releaseOnSignal(cache: string): () => void {
   return () => {
     for (const s of signals) process.removeListener(s, onSignal);
   };
+}
+
+/** The rebuild child in flight, for the signal handler above to end with us. */
+let rebuilding: ChildProcess | null = null;
+
+/**
+ * The query-time rebuild, in a short-lived child (`./refresh-run.ts`) when its
+ * compiled script ships next to this module, so the memory a big repo's rebuild
+ * takes goes back to the OS when it ends instead of staying with a long-lived MCP
+ * server. Run from source (the tests), there's no compiled script: it builds in
+ * process, as before. `GRAFT_TEST_REFRESH_RUN` points the child at a stub.
+ */
+async function rebuild(args: RefreshRunArgs): Promise<void> {
+  const run = process.env.GRAFT_TEST_REFRESH_RUN ?? fileURLToPath(new URL("./refresh-run.js", import.meta.url));
+  if (!existsSync(run)) {
+    await buildGraph(args.dir, { contextDir: args.contextDir, graphOnly: true, onlyDirs: args.onlyDirs });
+    return;
+  }
+  await new Promise<void>((done, fail) => {
+    const child = spawn(process.execPath, [run, JSON.stringify(args)], { stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
+    rebuilding = child;
+    let err = "";
+    child.stderr?.setEncoding("utf8").on("data", (c: string) => { err += c; });
+    child.on("error", (e) => { rebuilding = null; fail(e); });
+    child.on("close", (code, signal) => {
+      rebuilding = null;
+      if (code === 0) done();
+      else fail(new Error(err.trim().split("\n").pop() || `rebuild ended with ${signal ?? `exit ${code}`}`));
+    });
+  });
 }
 
 /** Wait out someone else's rebuild, then take the lock. False when we couldn't. */
@@ -295,7 +328,7 @@ export async function ensureFreshGraph(root: string, opts: RefreshOptions = {}):
       // here so an auto-rebuild keeps the same limited file set instead of silently
       // widening to the whole tree.
       const onlyDirs = readFingerprint(outDir)?.onlyDirs;
-      await buildGraph(dir, { contextDir: opts.contextDir, graphOnly: true, onlyDirs });
+      await rebuild({ dir, contextDir: opts.contextDir, onlyDirs });
       invalidateGraphCaches(outDir);
       return { refreshed: true, drift: drift ?? undefined, note: seedNote };
     } finally {
