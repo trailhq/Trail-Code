@@ -678,7 +678,7 @@ trail init --list-agents             # list known agent ids and exit
 trail build [dir]                    # build the graft map in graft/: wiring graph + per-file cards (no LLM, no key)
 trail build --deep                   # add the LLM layer: concept nodes + per-symbol summary/crux (cached)
 trail build --check                  # build nothing: fail (exit 1) if graft/ has drifted from the code, for CI
-trail build --deep -e .ts .py        # with --deep: only summarize these extensions
+trail build -e .ts .py               # only index these extensions (also limits --deep summaries)
 trail build --no-reuse               # re-parse every file instead of replaying unchanged ones from cache
 trail build --follow-submodules      # include initialized submodules; persist the choice for builds + MCP refresh
 trail build --no-follow-submodules   # exclude submodules again and persist that choice (the default)
@@ -713,6 +713,9 @@ trail mcp [dir]                      # run the MCP server by hand
 trail --dir <path>                   # use a context dir other than <repo>/graft
 trail --version, -v                  # print the installed version and exit
 ```
+
+Extension selections also apply to automatic refreshes. Run an explicit
+`trail build` without `-e` to index all supported extensions again.
 
 Method calls resolve through the receiver's type, using constructor assignments
 (`self.router = APIRouter()`) and type annotations, not just the call-site

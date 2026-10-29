@@ -34,7 +34,7 @@ import {
 } from "./extract-cache.js";
 import { writeFingerprint } from "./fingerprint.js";
 import { seedGraph, type SeedResult } from "./seed.js";
-import { filterByOnlyDirs, listSourceStats } from "./source-files.js";
+import { filterByOnlyDirs, listSourceStats, normalizeExtensions } from "./source-files.js";
 import { resolveEdges, type GoModule } from "./resolve.js";
 import { enrichGraph, type EnrichStats } from "./enrich.js";
 import { readGraph, writeGraph, wiringPath } from "./write.js";
@@ -128,6 +128,8 @@ function applyMinSubstanceGuard(scopes: ScopeV1[], nodes: NodeV1[]): ScopeV1[] {
 }
 
 export interface GraphBuildOptions {
+  /** Source extensions to include; absent or empty includes every supported language. */
+  extensions?: string[];
   /** Override the output dir (default: `<root>/.context`). */
   contextDir?: string;
   /** Replay unchanged files from the extraction cache instead of re-parsing them
@@ -224,7 +226,8 @@ export async function buildGraph(
   });
   const onlyDirs = opts.onlyDirs && opts.onlyDirs.length > 0 ? new Set(opts.onlyDirs) : undefined;
   const repoFiles = filterByOnlyDirs(walked, root, onlyDirs);
-  const files = listSourceStats(root, outDir, repoFiles);
+  const extensions = normalizeExtensions(opts.extensions);
+  const files = listSourceStats(root, outDir, repoFiles, undefined, extensions);
   const discoveredScopes = discoverScopes(root, repoFiles);
 
   const nodes: NodeV1[] = [];
@@ -370,6 +373,7 @@ export async function buildGraph(
       nodeCount: nodes.length,
       edgeCount: edges.length,
       languages: [...langs].sort(),
+      extensions,
       scopes,
     },
     nodes,
@@ -424,7 +428,7 @@ export async function buildGraph(
   // these source bytes." Nothing about the projections below — which is why it is
   // safe to write here, and why `graphOnly` builds (the query path, which stops
   // right after this line) are still recorded as fresh.
-  writeFingerprint(outDir, entries, opts.onlyDirs);
+  writeFingerprint(outDir, entries, opts.onlyDirs, extensions);
 
   // Tier-2 passive surface: project the nodes into per-file markdown cards, and
   // refresh the INDEX roster. Pure projection — no LLM, no network.
