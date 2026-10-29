@@ -135,18 +135,54 @@ export function landedIn(symbols: CodeSymbol[], ranges: Lines[], source: string,
   return out;
 }
 
+const HUNK = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/gm;
+
 /**
  * The lines a `git diff -U0` changes, on its new side. A hunk that only
  * deletes marks the lines on either side of where the text was.
  */
 export function changedLines(diff: string): Lines[] {
   const out: Lines[] = [];
-  for (const m of diff.matchAll(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/gm)) {
+  for (const m of diff.matchAll(HUNK)) {
     const start = Number(m[1]);
     const count = m[2] === undefined ? 1 : Number(m[2]);
     out.push(count === 0 ? { start: Math.max(1, start), end: start + 1 } : { start, end: start + count - 1 });
   }
   return out;
+}
+
+/** The line numbers a `git diff -U0` adds, on its new side: with no context, every new-side line of a hunk is one. */
+export function addedLines(diff: string): number[] {
+  const out: number[] = [];
+  for (const m of diff.matchAll(HUNK)) {
+    const start = Number(m[1]);
+    const count = m[2] === undefined ? 1 : Number(m[2]);
+    for (let i = 0; i < count; i++) out.push(start + i);
+  }
+  return out;
+}
+
+/** The text of the lines a branch added to `id`: inside the symbol, or for a top-level name, the line that declares it. */
+function addedTo(id: string, symbols: CodeSymbol[], added: number[], lines: string[]): string[] {
+  const inside = symbols.filter((s) => s.id === id);
+  const name = id.slice(id.indexOf("#") + 1);
+  return added
+    .filter((n) => (inside.length ? inside.some((s) => n >= s.start && n <= s.end) : declaredOn(lines[n - 1] ?? "") === name))
+    .map((n) => (lines[n - 1] ?? "").trim());
+}
+
+/** Shorter lines (`return null;`, `}`) turn up everywhere, so they never decide that a change landed. */
+const TELLING_CHARS = 12;
+
+/**
+ * Whether lines a branch added are on the default branch already: each of the
+ * three longest was added there too since the two parted (`git log -S`). That's
+ * a squash-merged branch left on the remote, which git's history still calls
+ * unmerged, even once the default branch has changed those lines again.
+ */
+export function landedSince(repo: string, fork: string, base: string, rel: string, added: string[]): boolean {
+  const telling = [...new Set(added)].filter((l) => l.length >= TELLING_CHARS).sort((a, b) => b.length - a.length).slice(0, 3);
+  return telling.length > 0 && telling.every((l) => !!git(repo, ["log", "-1", "--format=%h", `-S${l}`, `${fork}..${base}`, "--", rel])?.trim());
 }
 
 function lineAt(source: string, index: number): number {
@@ -194,7 +230,8 @@ export async function functionOverlaps(
   cache: BranchCache | null = readBranchCache(repo),
 ): Promise<FunctionOverlap[]> {
   const rel = relative(repo, file).split(sep).join("/");
-  if (!cache?.base || !rel || rel.startsWith("..") || rel.startsWith(".trail/")) return [];
+  const base = cache?.base;
+  if (!cache || !base || !rel || rel.startsWith("..") || rel.startsWith(".trail/")) return [];
   const others = cache.branches.filter((b) => b.author && b.author !== me && b.files.includes(rel));
   if (!others.length) return [];
   let source: string;
@@ -208,12 +245,21 @@ export async function functionOverlaps(
   const out: FunctionOverlap[] = [];
   for (const b of others) {
     const theirSource = git(repo, ["show", `${b.ref}:${rel}`]);
-    const diff = git(repo, ["diff", "-U0", `${cache.base}...${b.ref}`, "--", rel]);
+    const diff = git(repo, ["diff", "-U0", `${base}...${b.ref}`, "--", rel]);
     if (theirSource === null || !diff) continue;
-    const theirs = landedIn(await symbolsIn(rel, theirSource), changedLines(diff), theirSource, rel);
-    const symbols = [...mine].filter(([id]) => theirs.has(id)).map(([id, label]) => ({ id, label }));
+    const theirSymbols = await symbolsIn(rel, theirSource);
+    const theirs = landedIn(theirSymbols, changedLines(diff), theirSource, rel);
+    const shared = [...mine].filter(([id]) => theirs.has(id));
+    if (!shared.length) continue;
+    // Their change to it may be on the default branch already, merged under another commit.
+    const fork = git(repo, ["merge-base", base, b.ref])?.trim();
+    const lines = theirSource.split("\n");
+    const added = addedLines(diff);
+    const symbols = shared
+      .filter(([id]) => !fork || !landedSince(repo, fork, base, rel, addedTo(id, theirSymbols, added, lines)))
+      .map(([id, label]) => ({ id, label }));
     if (!symbols.length) continue;
-    const subject = cleanSubject(git(repo, ["log", "-1", "--format=%s", `${cache.base}..${b.ref}`, "--", rel]) ?? "");
+    const subject = cleanSubject(git(repo, ["log", "-1", "--format=%s", `${base}..${b.ref}`, "--", rel]) ?? "");
     out.push({ ref: b.ref, author: b.author, at: b.at, file: rel, symbols, subject });
   }
   return out.sort((a, b) => b.at - a.at);

@@ -85,14 +85,32 @@ test("a squash-merged branch left on the remote isn't open work, until someone p
   assert.ok(refreshBranches(anirudh).branches.some((b) => b.ref === "origin/kumar/backoff"), "new work on it: listed again");
 });
 
+test("a squash-merged branch isn't an overlap, even after main changed the same lines again and git can't tell it merged", async () => {
+  const { anirudh, kumar } = team();
+  kumarChangesBackoff(kumar);
+  git(kumar, "checkout", "-q", "main");
+  git(kumar, "merge", "-q", "--squash", "kumar/backoff");
+  git(kumar, "commit", "-qm", "fix(retry): cap the backoff at five seconds (#12)");
+  writeFileSync(join(kumar, "src", "retry.ts"), RETRY.replace("attempt * 100", "Math.min(attempt * 100, 10_000)"));
+  git(kumar, "commit", "-qam", "fix(retry): ten seconds after all");
+  git(kumar, "push", "-q", "origin", "main");
+  git(anirudh, "pull", "-q", "origin", "main");
+  assert.ok(refreshBranches(anirudh).branches.some((b) => b.ref === "origin/kumar/backoff"), "merging it now would conflict, so the refresh can't drop it");
+
+  const edit = anirudhEdits(anirudh, "10_000", "15_000");
+  assert.deepEqual(await functionOverlaps(anirudh, edit.file_path, edit, "Anirudh"), [], "the line it added to backoff() was added on main too");
+});
+
 test("a branch whose pull request closed on its tip isn't open work, and is again once it moves", () => {
   const { anirudh, kumar } = team();
   kumarChangesBackoff(kumar);
   const tip = git(kumar, "rev-parse", "HEAD").trim();
-  const cache = refreshBranches(anirudh, { closed: { "kumar/backoff": tip } });
+  const cache = refreshBranches(anirudh, { closed: { "kumar/backoff": tip }, open: ["maya/retry"] });
   assert.ok(!cache.branches.some((b) => b.ref === "origin/kumar/backoff"));
   assert.deepEqual(cache.closed, { "kumar/backoff": tip }, "kept for refreshes that don't ask GitHub");
-  assert.ok(!refreshBranches(anirudh).branches.some((b) => b.ref === "origin/kumar/backoff"), "the next refresh remembers it");
+  const next = refreshBranches(anirudh);
+  assert.ok(!next.branches.some((b) => b.ref === "origin/kumar/backoff"), "the next refresh remembers it");
+  assert.deepEqual(next.open, ["maya/retry"], "and which pull requests are open");
 
   writeFileSync(join(kumar, "README.md"), "reopened\n");
   git(kumar, "add", "-A");

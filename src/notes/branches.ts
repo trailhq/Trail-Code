@@ -69,6 +69,8 @@ export interface BranchCache {
   branches: PushedBranch[];
   /** Branches whose pull request was merged or closed, from GitHub, kept for refreshes that don't ask it. */
   closed?: ClosedHeads;
+  /** Branches with an open pull request, from the same answer; absent until GitHub has been asked. */
+  open?: string[];
   /** When a refresh is running, since when. */
   runningSince?: number;
 }
@@ -101,7 +103,8 @@ export function readBranchCache(repo: string): BranchCache | null {
         .slice(0, MAX_LEARNINGS),
     });
   }
-  return { ...raw, fetchedAt: typeof raw.fetchedAt === "number" ? raw.fetchedAt : 0, base: typeof raw.base === "string" ? raw.base : null, branches };
+  const open = Array.isArray(raw.open) ? (raw.open as unknown[]).filter((n): n is string => typeof n === "string") : undefined;
+  return { ...raw, fetchedAt: typeof raw.fetchedAt === "number" ? raw.fetchedAt : 0, base: typeof raw.base === "string" ? raw.base : null, branches, open };
 }
 
 function git(repo: string, args: string[], timeout = 15_000): string | null {
@@ -158,10 +161,10 @@ export function onBase(repo: string, base: string, ref: string): boolean {
 
 /**
  * Branches whose GitHub pull request was merged or closed, with the commit it
- * ended on, from `gh`. Null when origin isn't on GitHub, or gh is missing,
- * signed out or slow: then only `onBase` decides.
+ * ended on, and branches with one open, from `gh`. Null when origin isn't on
+ * GitHub, or gh is missing, signed out or slow: then only `onBase` decides.
  */
-function closedPrHeads(repo: string): ClosedHeads | null {
+function pullRequests(repo: string): { closed: ClosedHeads; open: string[] } | null {
   const origin = git(repo, ["remote", "get-url", "origin"])?.trim() ?? "";
   if (!/github\.com[:/]/.test(origin)) return null;
   let out: string;
@@ -185,7 +188,7 @@ function closedPrHeads(repo: string): ClosedHeads | null {
       if (!p.headRefName || !p.headRefOid || open.has(p.headRefName) || p.headRefName in closed) continue;
       if (p.state === "MERGED" || p.state === "CLOSED") closed[p.headRefName] = p.headRefOid;
     }
-    return closed;
+    return { closed, open: [...open].filter((n): n is string => !!n) };
   } catch {
     return null;
   }
@@ -197,17 +200,20 @@ function closedPrHeads(repo: string): ClosedHeads | null {
  * the refs already on this machine, for tests and for a repo that's offline.
  * `prs: true` also asks GitHub which pull requests closed, which only the
  * detached refresh does; everything else keeps what it last learned.
- * `closed` supplies that answer instead (tests).
+ * `closed` and `open` supply that answer instead (tests).
  */
 export function refreshBranches(
   repo: string,
-  opts: { fetch?: boolean; now?: number; fetchTimeoutMs?: number; prs?: boolean; closed?: ClosedHeads } = {},
+  opts: { fetch?: boolean; now?: number; fetchTimeoutMs?: number; prs?: boolean; closed?: ClosedHeads; open?: string[] } = {},
 ): BranchCache {
   const now = opts.now ?? Date.now();
   // TRAIL_NO_FETCH: tests, and anyone who'd rather fetch themselves.
   const online = opts.fetch !== false && !process.env.TRAIL_NO_FETCH;
   if (online) git(repo, ["fetch", "--quiet", "--prune", "origin"], opts.fetchTimeoutMs ?? 30_000);
-  const closed = opts.closed ?? (online && opts.prs ? closedPrHeads(repo) : null) ?? readBranchCache(repo)?.closed ?? {};
+  const prs = !opts.closed && online && opts.prs ? pullRequests(repo) : null;
+  const last = readBranchCache(repo);
+  const closed = opts.closed ?? prs?.closed ?? last?.closed ?? {};
+  const open = opts.open ?? prs?.open ?? last?.open;
   const base = defaultRef(repo);
   const branches: PushedBranch[] = [];
   if (base) {
@@ -235,7 +241,7 @@ export function refreshBranches(
       branches.push({ ref, author: firstName(author ?? ""), at, files: changed.slice(0, MAX_FILES), learnings });
     }
   }
-  const cache: BranchCache = { fetchedAt: Date.now(), stamp: refsStamp(repo), base, branches, closed };
+  const cache: BranchCache = { fetchedAt: Date.now(), stamp: refsStamp(repo), base, branches, closed, ...(open ? { open } : {}) };
   writeJsonAtomic(cachePath(repo), cache, true);
   return cache;
 }
@@ -306,6 +312,12 @@ export function maybeRefreshBranches(repo: string, now = Date.now(), maxAgeMs = 
   } catch {
     return false;
   }
+}
+
+/** Whether GitHub lists an open pull request for `ref`: `unknown` until it has been asked. */
+export function prState(cache: BranchCache | null, ref: string): "open" | "none" | "unknown" {
+  if (!cache?.open) return "unknown";
+  return cache.open.includes(ref.replace(/^origin\//, "")) ? "open" : "none";
 }
 
 export interface Overlap {

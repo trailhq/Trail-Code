@@ -44,6 +44,8 @@ export interface SessionState {
   injectedNotes?: string[];
   /** `<branch> <function id>` pairs: a teammate's open branch on a function the agent edited, already put in front of it this session. */
   injectedOverlaps?: string[];
+  /** The overlap warnings the agent was given this session: the teammate, their branch, its pull request, and whether a prompt since named either (overlap-telemetry.ts). */
+  shownOverlaps?: Array<{ who: string; branch: string; pr: 'open' | 'none' | 'unknown'; acted?: boolean }>;
   /** Weak-match nudges spent this session, capped so the line stays signal.
    * Optional for the same backwards-compatibility reason as above. */
   nudges?: number;

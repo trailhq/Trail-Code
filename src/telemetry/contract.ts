@@ -117,6 +117,11 @@ export const EVENTS: Record<string, ReadonlySet<string>> = {
   guardrail: new Set<string>(['class', 'outcome']),
   /** A failing command matched a known wall: which one, and whether the person had kept a lesson for it. */
   wall_hit: new Set<string>(['class', 'had_lesson']),
+  /** After an edit, the agent was told a teammate's pushed branch changes the
+   *  same function: whether GitHub lists an open pull request for it. */
+  overlap_warned: new Set<string>(['pr']),
+  /** Later that session, the person's prompt named that teammate or branch. */
+  overlap_acted: new Set<string>(['pr']),
   /** How long one hook took, as a bucket: which hook. */
   hook_ms: new Set<string>(['event', 'bucket']),
 };
@@ -144,6 +149,8 @@ export const VALUES: Record<string, Record<string, ReadonlySet<string>>> = {
     class: new Set(['no-timeout', 'prod-after-beta']),
     outcome: new Set(['hint', 'ask', 'deny', 'sure-fail', 'avoided']),
   },
+  overlap_warned: { pr: new Set(['open', 'none', 'unknown']) },
+  overlap_acted: { pr: new Set(['open', 'none', 'unknown']) },
   wall_hit: {
     class: new Set(['timeout-missing', 'zsh-no-match', 'git-https-auth', 'docker-rootless', 'npm-e401-eotp', 'claude-not-logged-in', 'enospc']),
     had_lesson: new Set(['true', 'false']),

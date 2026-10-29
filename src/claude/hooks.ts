@@ -41,6 +41,7 @@ import { trailNow } from '../skills/settings.js';
 import { recordSkillUse, skillOfToolUse } from './skill-use.js';
 import { keptContext, keptNotice } from './start-init.js';
 import { teamSignInLine } from '../cloud/team-file.js';
+import { overlapsShown } from './overlap-telemetry.js';
 
 export { lastFileScopeHint, promptAskTimeout } from './prompt-hook.js';
 
@@ -120,16 +121,18 @@ async function editOverlap(input: any, dir: string, file: string): Promise<strin
     const top = repoPlace(dir);
     if (!top.git) return null;
     const { functionOverlaps, editOverlapDirective } = await import('../notes/edit-overlap.js');
-    const found = await functionOverlaps(top.checkout, resolve(dir, file), input?.tool_input, noteAuthor(top.checkout));
+    const cache = readBranchCache(top.checkout);
+    const found = await functionOverlaps(top.checkout, resolve(dir, file), input?.tool_input, noteAuthor(top.checkout), cache);
     if (!found.length) return null;
-    const id = input?.session_id || 'default';
+    const id = payloadSessionId(input);
     const s = readSession(dir, id);
     const seen = new Set(s.injectedOverlaps ?? []);
     const fresh = found.filter((o) => o.symbols.some((x) => !seen.has(`${o.ref} ${x.id}`)));
     if (!fresh.length) return null;
     s.injectedOverlaps = [...seen, ...fresh.flatMap((o) => o.symbols.map((x) => `${o.ref} ${x.id}`))].slice(-INJECTED_OVERLAPS_CAP);
+    overlapsShown(s, fresh.slice(0, 2), cache);
     writeSession(dir, id, s);
-    const base = readBranchCache(top.checkout)?.base ?? 'origin/main';
+    const base = cache?.base ?? 'origin/main';
     return fresh.slice(0, 2).map((o) => editOverlapDirective(o, base, tag(), overlapMark())).join('\n\n');
   } catch {
     return null;
