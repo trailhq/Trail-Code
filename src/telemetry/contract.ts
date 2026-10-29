@@ -21,6 +21,11 @@
  * (or a suspicious user, since the repo is public) reads to verify the claim.
  */
 
+/** Init's own kinds as `cold_start` counts them: skill, guardrail (always follow), preference (learning). */
+export const INIT_KINDS = ['skills', 'always_follow', 'learnings'] as const;
+/** An exact count up to init's 5 items, then one label. */
+const SMALL_COUNTS = ['0', '1', '2', '3', '4', '5', '6+'] as const;
+
 /* -------------------------------------------------------------------------- */
 /* the event → allowed-property-keys map                                      */
 /* -------------------------------------------------------------------------- */
@@ -83,9 +88,11 @@ export const EVENTS: Record<string, ReadonlySet<string>> = {
    *  learnings: how it went, how many sessions or reviewed PRs there were,
    *  findings offered and saved, how many were left out for naming no code
    *  (`filtered`), and how many of those offered and saved were the team's,
-   *  as buckets, how long it took, and the model. The messages, the comments,
-   *  the notes and the findings never travel. */
-  cold_start: new Set<string>(['source', 'outcome', 'sessions_bucket', 'reviews_bucket', 'offered_bucket', 'filtered_bucket', 'picked_bucket', 'team_offered_bucket', 'team_picked_bucket', 'duration_bucket', 'model']),
+   *  as buckets, how long it took, and the model. The look-back's own items
+   *  offered (shown or relayed) and kept, by kind, as exact counts (init shows
+   *  at most 5). The messages, the comments, the notes and the findings never travel. */
+  cold_start: new Set<string>(['source', 'outcome', 'sessions_bucket', 'reviews_bucket', 'offered_bucket', 'filtered_bucket', 'picked_bucket', 'team_offered_bucket', 'team_picked_bucket', 'duration_bucket', 'model',
+    ...INIT_KINDS.flatMap((k) => [`offered_${k}`, `kept_${k}`])]),
   /** One closed agent session, summarised. `graft_reads` vs `source_reads` is
    *  the single number that says whether an agent prefers graft to grep; the two
    *  `*_turns` buckets are the follow-up question — of the turns that used graft,
@@ -136,6 +143,7 @@ export const HOOK_MS_BUCKETS = ['<50ms', '50-100ms', '100-300ms', '300ms-1s', '1
  */
 export const VALUES: Record<string, Record<string, ReadonlySet<string>>> = {
   learning_rated: { vote: new Set(['up', 'down', 'none']) },
+  cold_start: Object.fromEntries(INIT_KINDS.flatMap((k) => [`offered_${k}`, `kept_${k}`]).map((key) => [key, new Set(SMALL_COUNTS)])),
   skill_offered: { moment: new Set(['asked', 'repeated', 'repaired', 'correction', 'update', 'drift', 'retire', 'promote']) },
   skill_answer: { answer: new Set(['yes', 'no', 'show', 'none', 'off', 'retire']) },
   skill_changed: { op: new Set(['update', 'extend', 'split', 'replace', 'retire', 'adopted', 'restore-version']) },
@@ -302,6 +310,13 @@ export function countBucket(n: number): string {
   if (n < 50) return '20-49';
   if (n < 200) return '50-199';
   return '200+';
+}
+
+/** `{prefix}_skills`, `{prefix}_always_follow`, `{prefix}_learnings`: how many of each kind, exact to 5. */
+export function initKindCounts(prefix: 'offered' | 'kept', items: ReadonlyArray<{ kind: string }>): Record<string, string> {
+  const n = (kind: string) => items.filter((i) => i.kind === kind).length;
+  const small = (c: number) => (c > 5 ? '6+' : String(c));
+  return { [`${prefix}_skills`]: small(n('skill')), [`${prefix}_always_follow`]: small(n('guardrail')), [`${prefix}_learnings`]: small(n('preference')) };
 }
 
 /** One hook's wall-clock. The budgets are 50 ms (PreToolUse) and 300 ms (the

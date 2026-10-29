@@ -265,7 +265,7 @@ test('D87: what the person kept on trail init\'s screen is named once at the nex
       ] };
     }, { TRAIL_HOME: b.trail });
     const first = await startContext(session(b), at(17, 0));
-    assert.match(first.context, /\[trail\] From Trail, the tool this person installed[^\n]*tell them once, at the start of your first reply: "kept from trail init in your terminal: release-npm \(skill, undo: trail forget release-npm\) · no-timeout \(always follow, undo: trail forget no-timeout\)"/);
+    assert.match(first.context, /\[trail\] From Trail, the tool this person installed[^\n]*tell them once, at the start of your first reply: "kept from trail init in your terminal: release-npm \(skill, undo: trail forget release-npm\) · no-timeout \(always-follow learning, undo: trail forget no-timeout\)"/);
     assert.ok(readInitRecord(SHOP, { TRAIL_HOME: b.trail }).notice?.shownAt);
     assert.doesNotMatch((await startContext(session(b), at(17, 5))).context, /kept from trail init/, 'once');
   } finally {
