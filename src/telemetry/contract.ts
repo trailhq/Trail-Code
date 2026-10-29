@@ -50,7 +50,7 @@ export const EVENTS: Record<string, ReadonlySet<string>> = {
   /** A build threw. `stage`/`code` are enums; the message never travels. */
   build_failed: new Set<string>(['stage', 'code']),
   /** One query, from any surface. The DAU backbone and the dead-command detector. */
-  query: new Set<string>(['command', 'surface', 'hit', 'notes']),
+  query: new Set<string>(['command', 'surface', 'hit', 'notes', 'stale']),
   /** A trail command handing the agent a sign-in link to pass on. Queued the
    *  moment the link is printed, so a sign-in somebody walked away from is still
    *  counted — the settle below never fires for those. */

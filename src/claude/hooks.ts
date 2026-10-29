@@ -3,9 +3,10 @@ import { execFileSync } from 'node:child_process';
 import { join, basename, isAbsolute, relative, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { readWiring } from './stats.js';
-import { formatBlastRadius, formatOrientation, notesOnTouch, standingDirective, teamNotesDirective, type Touch } from './format.js';
+import { formatBlastRadius, formatOrientation, notesOnTouch, standingDirective, teamNotesDirective, TOUCH_NOTES_CAP, type Touch } from './format.js';
 import { commitLines, listNotes, setupCommitLine, standingLearnings } from '../notes/notes.js';
 import { liveLearnings } from '../notes/learning-fields.js';
+import { markStale } from '../notes/stale.js';
 import { noteAuthor, teammatesOn } from '../notes/git-facts.js';
 import { indexFreshness, staleBanner } from '../context/check.js';
 import { dropStoredPrompts, patchStats, readSession, writeSession, resolveContextDir } from './state.js';
@@ -183,7 +184,7 @@ export function learningsOnTouch(input: any, dir: string, before = false): strin
     if (!notes.length) return null;
     const id = payloadSessionId(input);
     const s = readSession(dir, id);
-    const text = notesOnTouch(notes, touch, s);
+    const text = notesOnTouch(notes, touch, s, TOUCH_NOTES_CAP, dir);
     if (text) writeSession(dir, id, s);
     return text;
   } catch {
@@ -434,7 +435,7 @@ function learningsAtStart(dir: string): StartLearnings {
   try {
     if (!keepsNotes(dir)) return { kept: false, count: 0, extra: standingDirective(every) };
     const skills = skillsDirective(dir);
-    const standing = brand() === 'trail' ? standingDirective(withEvery(standingLearnings(dir), every)) + uncommittedDirective(dir) : standingDirective(every);
+    const standing = brand() === 'trail' ? standingDirective(withEvery(markStale(standingLearnings(dir), dir), every)) + uncommittedDirective(dir) : standingDirective(every);
     return { kept: true, count: noteCounts(dir), extra: skills + standing };
   } catch {
     return { kept: false, count: 0, extra: standingDirective(every) };
