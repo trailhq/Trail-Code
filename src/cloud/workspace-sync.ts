@@ -33,6 +33,7 @@ import { LEARNINGS_DIR, learningFiles, readLearningFile } from "../notes/repo-tr
 import { parseNote, type Note } from "../notes/notes.js";
 import { liveLearnings } from "../notes/learning-fields.js";
 import { secretReason } from "../notes/secrets.js";
+import { goneTouches } from "../notes/stale.js";
 import { OWN_SKILLS, skillDirs } from "../skills/skills.js";
 import { matter } from "../util/front-matter.js";
 import { appendPrivateFile, ensurePrivateDir, PRIVATE_FILE_MODE, writePrivateFile } from "../util/private-file.js";
@@ -265,6 +266,8 @@ export function workspaceLearnings(checkout: string, opts: { tree?: boolean } = 
     touches: n.touches,
     body: n.body,
     hash: sha256(n.text),
+    // What it names that this checkout no longer has; a teammate's branch copy isn't judged (notes/stale.ts).
+    ...(n.ref ? {} : { missing: goneTouches(n, checkout) }),
   }));
   // A skill whose text holds a secret stays behind too, named like a learning is.
   for (const skill of skillItems(checkout)) {
@@ -300,8 +303,9 @@ export function learningsPayload(checkout: string): UploadedLearning[] | null {
   return workspaceLearnings(checkout)?.learnings ?? null;
 }
 
+/** What a sync sent, so an unchanged repo isn't sent again: each learning's text, and the code it names that's gone. */
 function fingerprint(learnings: UploadedLearning[]): string {
-  return sha256(JSON.stringify(learnings.map((l) => [l.path, l.hash]).sort()));
+  return sha256(JSON.stringify(learnings.map((l) => [l.path, l.hash, l.missing ?? null]).sort()));
 }
 
 interface SyncState {
@@ -621,7 +625,7 @@ export async function flushActivity(clouds: Cloud | Cloud[], fetchImpl?: typeof 
 /* in the background                                                          */
 /* -------------------------------------------------------------------------- */
 
-/** Whether the repo's learnings changed since they last went up, and a retry is due. Never while git can't read HEAD. */
+/** Whether the repo's learnings, or the code they name, changed since they last went up, and a retry is due. Never while git can't read HEAD. */
 export function syncIsDue(checkout: string, now = Date.now()): boolean {
   const state = readJson<SyncState>(statePath(checkout));
   if (state?.failedAt && now - state.failedAt < RETRY_MS) return false;

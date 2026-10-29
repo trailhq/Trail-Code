@@ -1,16 +1,18 @@
 /**
- * A learning may be stale when a file or symbol under its `touches:` is gone
- * from the checkout or the code map. It is marked where it's shown, so Claude
- * checks it before following it.
+ * A learning may be stale when a file under its `touches:` is gone from the
+ * checkout, or a `file#Symbol`'s file no longer has the symbol's name as a
+ * whole word. It is marked where it's shown, so Claude checks it before
+ * following it, and the same list goes to Trail Cloud at sync.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { learningsPayload, syncIsDue, syncRepo } from '../src/cloud/workspace-sync.js';
+import type { Cloud } from '../src/cloud/workspace.js';
 import { standingDirective } from '../src/claude/format.js';
-import { contextDirFor } from '../src/context/node-file.js';
-import type { NodeV1 } from '../src/graph/types.js';
-import { writeGraph } from '../src/graph/write.js';
 import { formatNoteHits, type Note } from '../src/notes/notes.js';
 import { goneTouches, markStale } from '../src/notes/stale.js';
 import { EVENTS } from '../src/telemetry/contract.js';
@@ -19,40 +21,31 @@ import { tmpRepo } from './helpers.js';
 const BODY = '## Decided\n- Retry with jitter.\n';
 const note = (touches: string[], extra: Partial<Note> = {}): Note => ({ path: '/r/.trail/learnings/a.md', id: 'l-1234abcd', title: 'Retry with jitter', author: 'Priya', date: '2026-10-07', touches, body: BODY, scope: 'repo', ...extra });
 
-/** A file node, or a symbol node: `Backoff.delay` is the method named `delay`, as the code map keeps it. */
-function node(path: string, sym?: string): NodeV1 {
-  const name = sym ? sym.split('.').pop()! : path;
-  return { id: sym ? `${path}#${sym}` : path, name, kind: sym ? 'function' : 'file', path, span: 'L1-L2', signature: null, exported: true, origin: 'ast', body_hash: '' };
-}
-
-/** A repo with src/retry.ts and README.md; its code map has `withJitter`, and `Backoff.delay` in another file. */
+/** A checkout with src/retry.ts (`withJitter`, `Backoff.delay`), a docs folder and README.md. */
 function repo(): string {
   const dir = tmpRepo('stale');
-  mkdirSync(join(dir, '.trail', 'learnings'), { recursive: true });
   mkdirSync(join(dir, 'src'));
-  writeFileSync(join(dir, 'src', 'retry.ts'), 'export function withJitter() {}\n');
+  mkdirSync(join(dir, 'docs'));
+  writeFileSync(join(dir, 'src', 'retry.ts'), 'export function withJitter() {}\nclass Backoff { delay() {} }\n// withJitterLegacy was removed\n');
   writeFileSync(join(dir, 'README.md'), '# r\n');
-  const nodes = [node('src/retry.ts'), node('src/retry.ts', 'withJitter'), node('src/moved.ts', 'Backoff.delay')];
-  writeGraph({ meta: { version: 1, nodeCount: nodes.length, edgeCount: 0, languages: ['typescript'] }, nodes, edges: [] }, contextDirFor(dir));
   return dir;
 }
 
-test('a touched file not in the checkout is gone; a doc the code map leaves out is not', () => {
+test('a touched file or folder the checkout has is there; one it lacks is gone', () => {
   const dir = repo();
-  assert.deepEqual(goneTouches(note(['src/retry.ts', 'README.md', 'src/gone.ts']), dir), ['src/gone.ts']);
+  assert.deepEqual(goneTouches(note(['src/retry.ts', 'README.md', 'docs', 'src/gone.ts']), dir), ['src/gone.ts']);
 });
 
-test('a touched symbol is gone when no symbol in the code map has its name; one that moved is not', () => {
+test("a touched symbol is gone when its file's text no longer has it as a whole word", () => {
   const dir = repo();
-  assert.deepEqual(goneTouches(note(['src/retry.ts#withJitter', 'src/retry.ts#withBackoff']), dir), ['src/retry.ts#withBackoff']);
-  assert.deepEqual(goneTouches(note(['src/retry.ts#Backoff.delay']), dir), [], 'delay is in the code map, in another file');
+  assert.deepEqual(goneTouches(note(['src/retry.ts#withJitter', 'src/retry.ts#withBackoff', 'src/retry.ts#Backoff.delay', 'src/retry.ts#Backoff.delay~2']), dir), ['src/retry.ts#withBackoff']);
+  assert.deepEqual(goneTouches(note(['src/retry.ts#Legacy', 'src/gone.ts#withJitter']), dir), ['src/retry.ts#Legacy', 'src/gone.ts#withJitter'], 'part of a longer word is not the word');
 });
 
-test("with no code map, only files are judged; a teammate's unmerged learning isn't judged", () => {
-  const dir = tmpRepo('stale-nomap');
-  writeFileSync(join(dir, 'a.ts'), '');
-  assert.deepEqual(goneTouches(note(['a.ts#anything', 'b.ts']), dir), ['b.ts']);
-  assert.deepEqual(goneTouches(note(['b.ts'], { ref: 'origin/kumar/jitter' }), dir), []);
+test("a teammate's unmerged learning isn't judged, nor a folder's symbol", () => {
+  const dir = repo();
+  assert.deepEqual(goneTouches(note(['src/gone.ts'], { ref: 'origin/kumar/jitter' }), dir), []);
+  assert.deepEqual(goneTouches(note(['docs#anything']), dir), []);
 });
 
 test('markStale sets and clears the mark, and ask shows it under the title', () => {
@@ -74,6 +67,34 @@ test("a gone file's gone symbol is named once", () => {
 test('the session-start list marks a stale standing learning', () => {
   const text = standingDirective([note(['src/gone.ts', 'src/a.ts', 'src/b.ts'], { standing: true, stale: ['src/gone.ts', 'src/a.ts', 'src/b.ts'] })]);
   assert.match(text, /\n {4}may be stale: src\/gone\.ts, src\/a\.ts and 1 more are gone from the code\./);
+});
+
+test('a sync sends each committed learning\'s missing touches, and goes again when that list changes', async () => {
+  process.env.TRAIL_HOME = mkdtempSync(join(tmpdir(), 'stale-sync-home-'));
+  const d = repo();
+  const git = (...args: string[]) => spawnSync('git', ['-c', 'commit.gpgsign=false', '-c', 'user.name=t', '-c', 'user.email=t@acme.test', ...args], { cwd: d, encoding: 'utf8' });
+  git('init', '-q');
+  git('remote', 'add', 'origin', 'https://github.com/acme/billing.git');
+  mkdirSync(join(d, '.trail', 'learnings'), { recursive: true });
+  writeFileSync(join(d, '.trail', 'learnings', '2026-10-07-jitter-t.md'), '---\ntitle: Retry with jitter\nauthor: t\ndate: 2026-10-07\ntouches:\n  - src/retry.ts#withJitter\n  - README.md\n---\n\n## Decided\n- Jitter.\n');
+  git('add', '-A');
+  git('commit', '-qm', 'learning');
+  assert.deepEqual(learningsPayload(d)!.map((l) => l.missing), [[]], 'checked, all there');
+
+  const bodies: any[] = [];
+  const fetchImpl = (async (_url: string, init: RequestInit) => {
+    const body = JSON.parse(String(init.body));
+    bodies.push(body);
+    return new Response(JSON.stringify({ repo: body.repo.key, learnings: body.learnings.length, added: 0 }), { status: 200 });
+  }) as typeof fetch;
+  const cloud: Cloud = { url: 'http://trail.test', token: 'trl_x', user: { name: 't', email: 't@acme.test' }, workspace: { id: 'w', name: 'Acme', slug: 'acme', url: 'http://trail.test/w/acme', invite_url: 'http://trail.test/join/x' }, repos: ['github.com/acme/billing'], linkedAt: 0 };
+  await syncRepo(d, cloud, { fetch: false, fetchImpl });
+  assert.deepEqual(bodies[0].learnings[0].missing, []);
+  assert.equal(syncIsDue(d), false);
+
+  rmSync(join(d, 'src', 'retry.ts'));
+  assert.equal(syncIsDue(d), true, 'the learning is unchanged, but the code it names went');
+  assert.deepEqual(learningsPayload(d)![0]!.missing, ['src/retry.ts#withJitter']);
 });
 
 test('query may carry how many shown learnings may be stale', () => {
