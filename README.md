@@ -107,6 +107,9 @@ npm install -g @trailhq/trail-code   # install the CLI, once
 trail init                      # in your repo: build the graft map, set up .trail/, wire your agents
 ```
 
+> [!TIP]
+> **`npm install -g` says EACCES?** Your Node's global folder needs sudo. Skip sudo, or every upgrade will need it too: run `mkdir -p ~/.npm-global && npm config set prefix ~/.npm-global`, add `~/.npm-global/bin` to your `PATH`, open a new terminal and install again. Trail needs Node 22.3 or newer (20.16 works too).
+
 That is the whole setup. `trail init` asks which of your coding agents to wire up, builds the graft map from your code, creates `.trail/` for the repo's learnings, and adds a statusline and hooks to Claude Code. It also reads your past Claude Code sessions in the repo, once, for what you told Claude more than once, and saves those as learnings. Your own Claude Code does that reading, in about a minute. Then work the way you always do. No daemon, no server, nothing to babysit: it is all files.
 
 Commit the setup so your teammates get it too. The graft map itself, in `graft/`, is a local cache like `node_modules` and is added to `.gitignore`, so it stays out of the commit:

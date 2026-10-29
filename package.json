@@ -52,7 +52,7 @@
     "postinstall": "node scripts/postinstall.mjs"
   },
   "engines": {
-    "node": ">=20"
+    "node": "^20.16.0 || >=22.3.0"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.133.0",
