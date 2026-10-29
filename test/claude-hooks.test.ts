@@ -97,7 +97,9 @@ test('runSync clears dirty/syncing, recomputes stats, releases lock', () => {
     JSON.stringify({ meta: { nodeCount: 2, edgeCount: 1, languages: ['typescript'] },
       nodes: [{ id: 'a', summary_state: 'ready' }, { id: 'b', summary_state: 'pending' }],
       edges: [{ from: 'a', to: 'b' }] }));
-  runSync(d, fakeBuild);
+  let owner: unknown;
+  runSync(d, (dir) => { owner = JSON.parse(readFileSync(join(dir, 'graft', '.cache', '.sync.lock'), 'utf8')).pid; fakeBuild(dir); });
+  assert.equal(owner, process.pid, 'the lock names the process running the build, not the one that took it');
   const s = readStats(d)!;
   assert.equal(s.dirty, false);
   assert.equal(s.syncing, false);

@@ -1,7 +1,9 @@
 import { execFileSync } from 'node:child_process';
+import { constants, setPriority } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { readWiring, computeStats } from './stats.js';
 import { patchStats, releaseLock, resolveContextDir } from './state.js';
+import { claimLock } from '../util/state.js';
 import { graftCliPath } from './paths.js';
 
 /** How long the end-of-turn rebuild may take before it is killed. */
@@ -20,6 +22,9 @@ function realBuild(dir: string, timeout = BUILD_TIMEOUT_MS): void {
 }
 
 export function runSync(dir: string, build: (d: string) => void = realBuild): void {
+  // Whoever took the lock has likely exited by now; the lock names this process
+  // instead, so it is not taken over while the build below still runs.
+  claimLock(dir);
   try {
     build(dir);
     const w = readWiring(dir);
@@ -40,7 +45,11 @@ export function main(): void {
   // An optional build timeout in ms: a repo's first build, started by a query
   // (graph/refresh.ts), parses every file and can outlast the end-of-turn budget.
   const timeout = Number(process.argv[3]);
-  if (dir) runSync(dir, timeout > 0 ? (d) => realBuild(d, timeout) : realBuild);
+  if (!dir) return;
+  // A background build: the person's own work goes first, and on an idle machine it is
+  // as fast as before. The `build` child inherits the priority.
+  try { setPriority(constants.priority.PRIORITY_LOW); } catch { /* runs at normal priority */ }
+  runSync(dir, timeout > 0 ? (d) => realBuild(d, timeout) : realBuild);
 }
 
 // Run only when executed directly (node dist/claude/sync-run.js <dir> [timeoutMs]), not on import.

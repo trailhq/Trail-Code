@@ -48,7 +48,7 @@ The events:
 | `install` | `global` (`true` for `npm i -g`, `false` for a project dependency) | The npm postinstall hook runs, once per machine per version |
 | `first_run` | none | Once, the first time a `trail` or `graft` command runs on a machine |
 | `init_completed` | `agents` (the ids you selected, sorted), `consent` | `trail init` finishes |
-| `build_completed` | `files_bucket`, `langs`, `mode` (`fast`/`deep`), `duration_bucket`, `incremental` | A build succeeds |
+| `build_completed` | `files_bucket`, `langs`, `mode` (`fast`/`deep`), `duration_bucket`, `incremental`, `overlap` (another build of the same repo was already running) | A build succeeds |
 | `build_failed` | `stage`, `code`, both fixed enums | A build throws |
 | `query` | `command`, `surface` (`cli`/`mcp`/`hook`), `hit` (`ask` only), `notes` (`0`/`1`/`2`, how many learnings `ask` showed; only in a repo that keeps learnings) | Any query command |
 | `brain_signup_opened` | `mode` (`terminal`/`agent`/`nudge`), and for a nudge `command` (`ask`/`note`/`check`) and `wording` (`share`/`learned`) | A trail command hands the agent a sign-in link to pass on (at most once a session) |

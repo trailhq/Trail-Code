@@ -45,8 +45,9 @@ export const EVENTS: Record<string, ReadonlySet<string>> = {
    *  how many decline telemetry at the picker. */
   init_completed: new Set<string>(['agents', 'consent']),
   /** A build finished. The activation event — an install that never reaches one
-   *  of these is the funnel leak we most want to see. */
-  build_completed: new Set<string>(['files_bucket', 'langs', 'mode', 'duration_bucket', 'incremental']),
+   *  of these is the funnel leak we most want to see. `overlap`: another build or
+   *  sync of the same map was already running when this one started. */
+  build_completed: new Set<string>(['files_bucket', 'langs', 'mode', 'duration_bucket', 'incremental', 'overlap']),
   /** A build threw. `stage`/`code` are enums; the message never travels. */
   build_failed: new Set<string>(['stage', 'code']),
   /** One query, from any surface. The DAU backbone and the dead-command detector. */
