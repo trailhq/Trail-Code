@@ -274,9 +274,9 @@ test("a Claude.ai export's facts about code share the screen, just for the perso
     const said: string[] = [];
     const t = fakeTty(["r", "\r"]);
     const { reads, lines } = beginLookBack(w.repo, { env, deps: deps(true), plain: true, claudeExport: CLAUDE_AI });
-    assert.deepEqual(lines.slice(-1), ["· init offers 2 of the 3 things Claude.ai remembers about you, the ones about code, just for you"]);
+    assert.deepEqual(lines.slice(-1), ["· init offers 2 of the 3 things Claude.ai knows about you, the ones about code, just for you"]);
     await finishLookBack(w.repo, reads, { yes: false, say: (l) => said.push(l), io: t.io });
-    assert.match(t.out(), /From your Claude\.ai memory\n› \[x\] 1 {2}They ship the shop with npm run release from the main branch\n {9}Claude\.ai remembers this; Claude Code doesn't\. · just for you, in this repo/);
+    assert.match(t.out(), /From what Claude\.ai knows about you\n› \[x\] 1 {2}They ship the shop with npm run release from the main branch\n {9}Claude\.ai knows this; Claude Code doesn't\. · just for you, in this repo/);
     const inRepo = texts(join(w.repo, ".trail", "learnings"));
     assert.equal(inRepo.length, 1);
     assert.match(inRepo[0]!, /npm run release from the main branch/);

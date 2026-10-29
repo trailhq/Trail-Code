@@ -79,8 +79,8 @@ test("init offers only the facts about code, never the private ones or a secret,
     ["Retries in src/retry.ts stay at 4 because the gateway times out after 30 seconds", false, "2026-10-12"],
   ]);
   assert.ok(candidates.every((c) => c.from === "claude.ai" && c.path.startsWith("claude.ai:")));
-  assert.equal(claudeAiLine(total, candidates.length), "· init offers 3 of the 7 things Claude.ai remembers about you, the ones about code, just for you");
-  assert.match(claudeAiLine(0, 0), /found no memories in that file/);
+  assert.equal(claudeAiLine(total, candidates.length), "· init offers 3 of the 7 things Claude.ai knows about you, the ones about code, just for you");
+  assert.match(claudeAiLine(0, 0), /found nothing in that file/);
 });
 
 test("a fact the repo's CLAUDE.md already says isn't offered, and one naming the repo's code comes first", () => {

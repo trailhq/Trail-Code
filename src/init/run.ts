@@ -139,9 +139,9 @@ function exportRows(repo: string, text: string): { total: number; candidates: Me
 
 /** What init says it read in a Claude.ai export, before the look-back's lines finish. */
 export function claudeAiLine(total: number, offered: number): string {
-  if (!total) return "· found no memories in that file: ask Claude.ai to write out your memories, and save its whole answer";
-  if (!offered) return `· none of the ${total} things Claude.ai remembers about you is about code and new here, so there's nothing to offer from it`;
-  return `· init offers ${offered} of the ${total} things Claude.ai remembers about you, the ones about code, just for you`;
+  if (!total) return "· found nothing in that file: ask Claude.ai to write out what it knows about you, and save its whole answer";
+  if (!offered) return `· none of the ${total} things Claude.ai knows about you is about code and new here, so there's nothing to offer from it`;
+  return `· init offers ${offered} of the ${total} things Claude.ai knows about you, the ones about code, just for you`;
 }
 
 /** #662's memory candidates, or none when they can't be read: init never stops for them. */
@@ -365,7 +365,7 @@ export async function finishLookBack(repo: string, reads: LookBackReads,
       const scopes = new Map((chosen ?? []).map((i) => [i.memory?.path, i.scope]));
       const keep = chosen === undefined ? undefined
         : async (c: MemoryCandidate[]) => (chosen === null ? null : c.filter((x) => scopes.has(x.path)).map((x) => ({ ...x, forTeam: scopes.get(x.path) === 'repo' })));
-      const r = await finishMemoryRead(repo, candidates, keep, kind === 'claudeai' ? 'claude_ai' : 'memory');
+      const r = await finishMemoryRead(repo, candidates, keep, kind === 'claudeai' ? 'claude_ai' : undefined);
       return { saved: r.saved, offered: candidates.length };
     };
     let fromReviews: TeamKept['fromReviews'] = null;

@@ -1818,7 +1818,7 @@ async function runInitCommand(dir: string, opts: InitOptions, progress?: InitPro
       }
       const fromClaudeAi = learned.teamKept?.fromClaudeAi;
       if (fromClaudeAi?.saved.length) {
-        console.error(`✓ kept ${fromClaudeAi.saved.length} thing${fromClaudeAi.saved.length === 1 ? "" : "s"} from your Claude.ai memory, just for you · in ~/.trail, never committed`);
+        console.error(`✓ kept ${fromClaudeAi.saved.length} thing${fromClaudeAi.saved.length === 1 ? "" : "s"} Claude.ai knows about you, just for you · in ~/.trail, never committed`);
         for (const note of fromClaudeAi.saved) console.error(`    just for you  · ${note.title}`);
       }
       sessionsRead = learned.read?.sessions ?? 0;
