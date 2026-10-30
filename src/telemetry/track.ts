@@ -30,7 +30,8 @@ import { brand } from '../brand.js';
 export interface QueuedEvent {
   event: string;
   properties: Record<string, string>;
-  /** ISO timestamp, so a batch flushed a day late still lands on the right day. */
+  /** When it happened, ISO. Sent as the `occurred_at` property; the wire
+   *  `timestamp` is the send time (see `buildBatch` in send.ts). */
   timestamp: string;
   /** The install id, used as PostHog's `distinct_id` at send time. */
   distinct_id: string;

@@ -90,17 +90,22 @@ An example event, in full:
 ```json
 {
   "event": "build_completed",
-  "timestamp": "2026-08-21T09:14:22.417Z",
+  "timestamp": "2026-08-22T08:03:51.102Z",
   "properties": {
     "app_version": "0.12.0", "os": "darwin", "arch": "arm64",
     "node_major": "20", "ci": "false", "agent_host": "claude-code", "cli_name": "trail",
     "repo_id": "6f2c1e90-...", "distinct_id": "b1f3a9c2-...",
     "files_bucket": "200-999", "langs": "go,ts", "mode": "deep",
     "duration_bucket": "30s-2m", "incremental": "true",
+    "occurred_at": "2026-08-21T09:14:22.417Z",
     "$process_person_profile": false
   }
 }
 ```
+
+`timestamp` is when the day's batch was sent; `occurred_at` is when the event
+happened. Events wait in the local queue for up to a day, so the two can be
+that far apart.
 
 Run `trail telemetry debug` to print the exact batch your machine would send. It
 sends nothing.
