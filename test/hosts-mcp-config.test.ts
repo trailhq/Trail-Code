@@ -80,6 +80,25 @@ test('grok gets a repo-local TOML MCP section', () => {
   assert.deepEqual(again.map((x) => x.action), ['unchanged']);
 });
 
+test('omp gets a repo-local .mcp.json entry, Claude Desktop format', () => {
+  const repo = fresh(); const home = fresh();
+  const w = registerMcpConfigs(repo, ['omp'], { home });
+  assert.deepEqual(w.map((x) => x.action), ['created']);
+  const cfg = JSON.parse(readFileSync(join(repo, '.mcp.json'), 'utf8'));
+  assert.deepEqual(cfg.mcpServers.graft, { command: 'npx', args: ['-y', '@nanonets/graft', 'mcp'] });
+  const again = registerMcpConfigs(repo, ['omp'], { home });
+  assert.deepEqual(again.map((x) => x.action), ['unchanged']);
+});
+
+test('omp merges into an existing .mcp.json, preserving other servers', () => {
+  const repo = fresh(); const home = fresh();
+  writeFileSync(join(repo, '.mcp.json'), JSON.stringify({ mcpServers: { other: { command: 'x' } } }));
+  registerMcpConfigs(repo, ['omp'], { home });
+  const cfg = JSON.parse(readFileSync(join(repo, '.mcp.json'), 'utf8'));
+  assert.ok(cfg.mcpServers.other, 'foreign server preserved');
+  assert.ok(cfg.mcpServers.graft);
+});
+
 test('JSON with non-object mcpServers value is skipped', () => {
   const repo = fresh(); const home = fresh();
   mkdirSync(join(repo, '.cursor'), { recursive: true });

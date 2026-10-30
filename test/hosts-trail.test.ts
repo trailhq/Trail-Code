@@ -103,7 +103,7 @@ test('trail init for every agent: trail-named files, trail commands, a trail ser
     assert.match(text, /\btrail (ask|grep)\b/, `${host.id} names trail's`);
   }
   const agents = readFileSync(join(repo, 'AGENTS.md'), 'utf8');
-  assert.equal(agents.split(TRAIL_MARKERS.start).length - 1, 1, 'one block, shared by three hosts');
+  assert.equal(agents.split(TRAIL_MARKERS.start).length - 1, 1, 'one block, shared by four hosts');
   assert.ok(!agents.includes(GRAFT_MARKERS.start));
   assert.match(readFileSync(join(repo, '.adal', 'skills', 'trail', 'SKILL.md'), 'utf8'), /^---\nname: trail\n/);
 
