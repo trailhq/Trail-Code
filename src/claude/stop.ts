@@ -27,6 +27,7 @@ import { keepsNotes } from '../notes/home.js';
 import { maybeSyncInBackground } from '../cloud/workspace-sync.js';
 import { brand } from '../brand.js';
 import { NOTE_ASKS_PER_SESSION, noteAsk, noteSignals } from './note-signals.js';
+import { markVoteAsked } from './learning-vote.js';
 import type { HookOut } from '../skills/types.js';
 
 /** The fields of a Stop payload this handler reads. */
@@ -109,8 +110,9 @@ function countTallyTurn(s: SessionState, read: TranscriptCatchUp | null, lastMes
 }
 
 /**
- * The turn's cost and tally, from one read of the transcript and one write of
- * the session. Returns the transcript's path when it is Claude Code's, for the
+ * The turn's cost and tally, and whether the reply asked if a learning helped
+ * (learning-vote.ts), from one read of the transcript and one write of the
+ * session. Returns the transcript's path when it is Claude Code's, for the
  * learning ask, or null when there was none to read.
  */
 function turnEnd(input: StopInput, dir: string): string | null {
@@ -120,7 +122,8 @@ function turnEnd(input: StopInput, dir: string): string | null {
     const read = readTurnEnd(input, s);
     const billed = sampleTurnCost(s, read);
     const counted = countTallyTurn(s, read, input.last_assistant_message);
-    if (billed || counted) writeSession(dir, id, s);
+    const asked = markVoteAsked(s, input.last_assistant_message);
+    if (billed || counted || asked) writeSession(dir, id, s);
     return read && typeof input.transcript_path === 'string' ? input.transcript_path : null;
   } catch {
     // A turn-end metric is never worth failing the graph sync over.

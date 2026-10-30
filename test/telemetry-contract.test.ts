@@ -78,10 +78,10 @@ test('every event carries the common properties, and no identifier beyond them',
 
 // Pinned rather than counted, so adding an event is a deliberate edit here and
 // a matching row in TELEMETRY.md, never something that arrives with a feature.
-test('the contract lists exactly the twenty-five documented events', () => {
+test('the contract lists exactly the twenty-six documented events', () => {
   assert.deepEqual(Object.keys(EVENTS).sort(), [
     'brain_signup_opened', 'brain_signup_settled', 'build_completed', 'build_failed',
-    'cold_start', 'first_run', 'guardrail', 'hook_ms', 'init_completed', 'install', 'learnings_committed', 'note_saved', 'query', 'repo_seen', 'session_summary',
+    'cold_start', 'first_run', 'guardrail', 'hook_ms', 'init_completed', 'install', 'learning_rated', 'learnings_committed', 'note_saved', 'query', 'repo_seen', 'session_summary',
     'skill_answer', 'skill_changed', 'skill_offered', 'skill_promoted', 'skill_saved', 'skill_stale', 'skill_used', 'skill_value', 'team_pull', 'wall_hit',
   ]);
 });
