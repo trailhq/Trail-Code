@@ -68,6 +68,12 @@ export const EVENTS: Record<string, ReadonlySet<string>> = {
    *  and the paths never travel. The supply side of the notes loop; the
    *  `notes` property on `query` is the demand side. */
   note_saved: new Set<string>(['has_cost', 'touches_bucket', 'scope']),
+  /** The Stop hook asked the agent to save a learning, read on the stop after:
+   *  the sign that raised it (`kind`), and whether a learning was saved in
+   *  answer (`saved`: in the repo, just for the person, or not). The share of
+   *  `kind=corrected` asks with a learning saved is how many corrections
+   *  become learnings. The transcript and the learning never travel. */
+  note_asked: new Set<string>(['kind', 'saved']),
   /** Once a day per repo, from the session-start hook, for a repo trail runs
    *  in: whether `.trail/` is committed there, how many learnings it holds,
    *  as a bucket, and whether this machine shares it with a workspace. With
@@ -139,6 +145,10 @@ export const HOOK_MS_BUCKETS = ['<50ms', '50-100ms', '100-300ms', '300ms-1s', '1
  */
 export const VALUES: Record<string, Record<string, ReadonlySet<string>>> = {
   cold_start: Object.fromEntries(INIT_KINDS.flatMap((k) => [`offered_${k}`, `kept_${k}`]).map((key) => [key, new Set(SMALL_COUNTS)])),
+  note_asked: {
+    kind: new Set(['fixed', 'corrected', 'undone', 'chose', 'overrode', 'shipped', 'explored']),
+    saved: new Set(['repo', 'personal', 'no']),
+  },
   skill_offered: { moment: new Set(['asked', 'repeated', 'repaired', 'correction', 'update', 'drift', 'retire', 'promote']) },
   skill_answer: { answer: new Set(['yes', 'no', 'show', 'none', 'off', 'retire']) },
   skill_changed: { op: new Set(['update', 'extend', 'split', 'replace', 'retire', 'adopted', 'restore-version']) },

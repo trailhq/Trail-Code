@@ -85,6 +85,13 @@ const NOT_TYPED = [
   /^\[Request interrupted/,
   /^This session is being continued/,
 ];
+/**
+ * A comment the person sent from an artifact (Claude Desktop): the harness's
+ * framing, then the comment quoted with "> " between BEGIN and END lines. Only
+ * the quoted comment is typed.
+ */
+const ARTIFACT_COMMENT = /^\[Artifact comment sent to Claude\]/;
+const ARTIFACT_QUOTE = /^=== BEGIN ARTIFACT COMMENT (\S+) ===\n([\s\S]*?)\n=== END ARTIFACT COMMENT \1 ===$/m;
 
 /** The text parts of a message's content, joined; images, tool parts and the rest left out. */
 export function textOf(content: unknown): string {
@@ -104,7 +111,8 @@ export function textOf(content: unknown): string {
  * pastes marked, and "" when what's left is harness text or nothing typed.
  */
 export function ownText(raw: string): string {
-  const t = raw.replace(WRAPPED, "").replace(PASTED, PASTE_MARK).trim();
+  let t = raw.replace(WRAPPED, "").replace(PASTED, PASTE_MARK).trim();
+  if (ARTIFACT_COMMENT.test(t)) t = (ARTIFACT_QUOTE.exec(t)?.[2] ?? "").replace(/^> ?/gm, "").trim();
   if (!t || NOT_TYPED.some((re) => re.test(t))) return "";
   if (!t.split(PASTE_MARK).join("").trim()) return "";
   return t;
