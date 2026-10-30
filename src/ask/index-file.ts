@@ -19,7 +19,7 @@
  * contribution is folded into the stored `df` at query time (see `ask.ts`),
  * which is why `df` here counts symbol/file nodes only.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { GraphV1 } from "../graph/types.js";
 import { CACHE_DIR } from "../context/node-file.js";
@@ -97,8 +97,14 @@ function bagLen(p: [string, number][]): number {
  */
 export function writeAskIndex(outDir: string, graph: GraphV1): string {
   const nodes = [...graph.nodes].sort((a, b) => a.id.localeCompare(b.id));
-  const docs: AskIndexDoc[] = [];
+  // Each doc is turned into its JSON text as soon as it is tokenized: holding
+  // every doc's `[token, count]` pairs and then stringifying the whole index
+  // cost ~400 MB on an 88k-node repo (assign), at the top of the build's peak.
+  // The pieces are written in `JSON.stringify(index)`'s own order, so the file
+  // is byte-identical to before.
+  const docs: string[] = [];
   const df = new Map<string, number>();
+  let bodyTotal = 0;
 
   for (const n of nodes) {
     const name = counts(tokenize(n.name));
@@ -106,28 +112,37 @@ export function writeAskIndex(outDir: string, graph: GraphV1): string {
     const body = counts(
       tokenize(`${n.signature ?? ""} ${n.summary ?? ""} ${n.body_text ?? ""}`),
     );
-    docs.push({ id: n.id, name: pairs(name), path: pairs(path), body: pairs(body) });
+    const doc: AskIndexDoc = { id: n.id, name: pairs(name), path: pairs(path), body: pairs(body) };
+    docs.push(JSON.stringify(doc));
+    bodyTotal += bagLen(doc.body);
 
     const bag = new Set<string>([...name.keys(), ...path.keys(), ...body.keys()]);
     for (const t of bag) df.set(t, (df.get(t) ?? 0) + 1);
   }
 
-  const avgBodyLen = docs.length
-    ? docs.reduce((a, d) => a + bagLen(d.body), 0) / docs.length
-    : 0;
-
-  const index: AskIndex = {
-    version: 1,
-    avgBodyLen,
-    df: pairs(df),
-    docCount: nodes.length,
-    docs,
-  };
+  const avgBodyLen = docs.length ? bodyTotal / docs.length : 0;
+  const head: Omit<AskIndex, "docs"> = { version: 1, avgBodyLen, df: pairs(df), docCount: nodes.length };
 
   const outPath = askIndexPath(outDir);
   mkdirSync(dirname(outPath), { recursive: true });
-  writeFileSync(outPath, JSON.stringify(index) + "\n");
+  const fd = openSync(outPath, "w");
+  try {
+    // `{...,"docCount":N}` with its closing brace swapped for the docs array.
+    let chunk = `${JSON.stringify(head).slice(0, -1)},"docs":[`;
+    docs.forEach((d, i) => {
+      chunk += i ? `,${d}` : d;
+      if (chunk.length >= 1 << 20) { writeAll(fd, chunk); chunk = ""; }
+    });
+    writeAll(fd, `${chunk}]}\n`);
+  } finally {
+    closeSync(fd);
+  }
   return outPath;
+}
+
+function writeAll(fd: number, text: string): void {
+  const buf = Buffer.from(text, "utf8");
+  for (let off = 0; off < buf.length; ) off += writeSync(fd, buf, off, buf.length - off);
 }
 
 /** Read the ask sidecar. Returns null on a missing file, unparseable JSON, an

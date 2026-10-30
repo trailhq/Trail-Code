@@ -422,6 +422,16 @@ const GRAPH_WEIGHT = 0.5;
  * what surfaces the config/helper a task depends on but didn't name. */
 const RESCUE_FLOOR = 0.15;
 
+/** A doc with none of the query's terms. Shared and never written to. */
+const NO_TERMS = new Map<string, number>();
+
+/** Sum of a token→count bag's counts: a document's field length. */
+function bagLength(bag: Iterable<[string, number]>): number {
+  let s = 0;
+  for (const [, c] of bag) s += c;
+  return s;
+}
+
 /** Term presence with plural folding — "packs" finds "pack" and vice versa, so
  * a natural-language plural doesn't read as a miss against identifier tokens. */
 function hasTerm(f: Map<string, number>, t: string): boolean {
@@ -559,23 +569,36 @@ function lexical(
   // (idf, avgdl, candidates, the per-scope partition below) then naturally
   // reflects only the filtered set with no other code needing to know about it.
   const graphNodes = inPrefix ? (graph?.nodes ?? []).filter((n) => pathUnderPrefix(n.path, inPrefix)) : (graph?.nodes ?? []);
+  // Scoring only ever looks a node's bags up by query term (`hasTerm`'s plural
+  // forms included), so a sidecar doc keeps just those terms, plus its body
+  // length for BM25. Copying every bag whole made ~263k Maps of ~5.8M entries
+  // per query on an 88k-node repo (assign): most of a 1.1 GB query. `--in`
+  // keeps whole bags, since its idf is computed from them below.
+  const lookedUp = new Set<string>();
+  for (const t of q.keys()) {
+    lookedUp.add(t);
+    lookedUp.add(`${t}s`);
+    if (t.endsWith("s")) lookedUp.add(t.slice(0, -1));
+  }
+  const bag = (pairs: [string, number][]): Map<string, number> => {
+    if (inPrefix) return new Map(pairs);
+    let m: Map<string, number> | undefined;
+    for (const [t, c] of pairs) if (lookedUp.has(t)) (m ??= new Map()).set(t, c);
+    return m ?? NO_TERMS;
+  };
   const symbolDocs = graphNodes.map((n) => {
     const d = docById?.get(n.id);
-    if (d) return { n, name: new Map(d.name), path: new Map(d.path), body: new Map(d.body) };
-    return {
-      n,
-      name: counts(tokenize(n.name)),
-      path: counts(tokenize(n.path)),
-      // The body (indexed at build) joins the signature + summary as the low-weight
-      // body field, so a term that appears only in the code — not the name/signature
-      // — still makes the node findable. IDF (from these same bags) keeps a word
-      // common across many bodies from dominating. `body_text` is absent on every
-      // node loaded from a wiring.json written after the slim-serialization change
-      // (it's stripped there — see `write.ts`) as well as on file nodes and
-      // pre-body_text graphs; `?? ""` degrades gracefully to signature+summary
-      // only, it never crashes on the missing field.
-      body: counts(tokenize(`${n.signature ?? ""} ${n.summary ?? ""} ${n.body_text ?? ""}`)),
-    };
+    if (d) return { n, name: bag(d.name), path: bag(d.path), body: bag(d.body), bodyLen: bagLength(d.body) };
+    // The body (indexed at build) joins the signature + summary as the low-weight
+    // body field, so a term that appears only in the code — not the name/signature
+    // — still makes the node findable. IDF (from these same bags) keeps a word
+    // common across many bodies from dominating. `body_text` is absent on every
+    // node loaded from a wiring.json written after the slim-serialization change
+    // (it's stripped there — see `write.ts`) as well as on file nodes and
+    // pre-body_text graphs; `?? ""` degrades gracefully to signature+summary
+    // only, it never crashes on the missing field.
+    const body = counts(tokenize(`${n.signature ?? ""} ${n.summary ?? ""} ${n.body_text ?? ""}`));
+    return { n, name: counts(tokenize(n.name)), path: counts(tokenize(n.path)), body, bodyLen: bagLength(body) };
   });
 
   const conceptBags = conceptDocs.map((d) => new Set([...d.name.keys(), ...d.body.keys()]));
@@ -634,11 +657,6 @@ function lexical(
 
   // ── Symbols (wiring graph): lexical score per node, keyed by id ──
   const byId = new Map((graph?.nodes ?? []).map((n) => [n.id, n]));
-  const bodyLen = (m: Map<string, number>) => {
-    let s = 0;
-    for (const v of m.values()) s += v;
-    return s;
-  };
   const docsById = new Map(symbolDocs.map((d) => [d.n.id, d]));
   const symbolHits: AskHit[] = [];
   const baselineSymbolHits: AskHit[] = [];
@@ -683,7 +701,7 @@ function lexical(
   const avgBodyLen = askIndex && !inPrefix
     ? askIndex.avgBodyLen
     : symbolDocs.length
-      ? symbolDocs.reduce((a, d) => a + bodyLen(d.body), 0) / symbolDocs.length
+      ? symbolDocs.reduce((a, d) => a + d.bodyLen, 0) / symbolDocs.length
       : 0;
   // Populated only for bounded file ranking. The baseline path pays no allocation
   // or matched-term tracking cost, and their scalar lexical path remains exact.
@@ -733,12 +751,12 @@ function lexical(
           // combined order had to fall back on rank. Only the PARTITION is
           // per-scope now; the statistics are global.
           const out = new Map<string, number>();
-          for (const { n, name, path, body } of docs) {
+          for (const { n, name, path, body, bodyLen } of docs) {
             const factor = testFactor(n.path);
             const total =
               (score(q, name, idf) * 3 +
                 score(q, path, idf) * 2 +
-                bm25(q, body, idf, bodyLen(body), avgBodyLen)) *
+                bm25(q, body, idf, bodyLen, avgBodyLen)) *
               factor;
             if (total > 0) {
               out.set(n.id, total);
@@ -914,14 +932,14 @@ function lexical(
   // now defined once above and shared with the multi-scope branch.
   const lex = new Map<string, number>(); // node id → lexical score (>0 only)
   let maxLex = 0;
-  for (const { n, name, path, body } of symbolDocs) {
+  for (const { n, name, path, body, bodyLen } of symbolDocs) {
     // Name and path are short identifiers → plain idf-weighted overlap; the body
     // is length-normalized via BM25 so long definitions don't win on bulk.
     const factor = testFactor(n.path);
     const total =
       (score(q, name, idf) * 3 +
         score(q, path, idf) * 2 +
-        bm25(q, body, idf, bodyLen(body), avgBodyLen)) *
+        bm25(q, body, idf, bodyLen, avgBodyLen)) *
       factor;
     if (total > 0) {
       lex.set(n.id, total);
