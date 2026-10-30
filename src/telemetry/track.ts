@@ -51,6 +51,10 @@ export interface TrackContext {
 /** Variables Codex sets in the shell it runs commands in (as hosts/auto.ts reads them). */
 const CODEX_ENV = ['CODEX_THREAD_ID', 'CODEX_SESSION_ID', 'CODEX_SANDBOX', 'CODEX_SANDBOX_NETWORK_DISABLED'];
 
+/** Set by a hook for itself and the trail commands it starts: the agent its payload came from. */
+export const HOST_ENV = 'TRAIL_AGENT_HOST';
+const AGENT_HOSTS: readonly string[] = ['claude-code', 'claude-desktop', 'codex', 'cursor', 'copilot', 'mcp', 'cli'];
+
 /** Claude Code in the desktop app's Code tab, or anywhere else. */
 export function claudeHost(env: NodeJS.ProcessEnv = process.env): 'claude-desktop' | 'claude-code' {
   return env.CLAUDE_CODE_ENTRYPOINT === 'claude-desktop' ? 'claude-desktop' : 'claude-code';
@@ -60,13 +64,15 @@ export function claudeHost(env: NodeJS.ProcessEnv = process.env): 'claude-deskto
  * Which agent graft is running under, from the surface plus env probes.
  *
  * Only the PRESENCE of `CLAUDECODE` and Codex's variables is read, and
- * `CLAUDE_CODE_ENTRYPOINT` only as equal or not to one fixed name — the
- * distinction matters: a value could be anything a user's shell profile put
- * there, and none of it travels. Anything unrecognised is `cli`, which is the
- * honest answer.
+ * `CLAUDE_CODE_ENTRYPOINT` and `TRAIL_AGENT_HOST` only as equal or not to
+ * fixed names — the distinction matters: a value could be anything a user's
+ * shell profile put there, and none of it travels. Anything unrecognised is
+ * `cli`, which is the honest answer.
  */
 export function detectHost(explicit?: AgentHost, env: NodeJS.ProcessEnv = process.env): AgentHost {
   if (explicit) return explicit;
+  const fromHook = env[HOST_ENV];
+  if (fromHook && AGENT_HOSTS.includes(fromHook)) return fromHook as AgentHost;
   if (env.CLAUDECODE !== undefined || env.CLAUDE_CODE_ENTRYPOINT !== undefined) return claudeHost(env);
   if (CODEX_ENV.some((k) => env[k] !== undefined)) return 'codex';
   return 'cli';

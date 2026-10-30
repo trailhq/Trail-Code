@@ -5,13 +5,13 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BRAND_ENV } from '../src/brand.js';
 import { notesOnTouch } from '../src/claude/format.js';
-import { main, withTouchLearnings } from '../src/claude/hooks.js';
+import { learningsOnTouch, main, withTouchLearnings } from '../src/claude/hooks.js';
 import type { SessionState } from '../src/claude/state.js';
 import { writeNote, type Note } from '../src/notes/notes.js';
 
@@ -78,6 +78,27 @@ test('the Read hook puts a committed learning in front of the agent', async () =
   assert.equal(await hook('tool-savings', { session_id: 't1', tool_name: 'Read', tool_input: { file_path: join(d, 'tool', 'workspace.py') }, tool_response: 'x' }), '', 'once a session');
   assert.equal(await hook('tool-savings', { session_id: 't2', tool_name: 'Bash', tool_input: { command: 'trail skeleton tool/workspace.py' }, tool_response: 'x' }), '', "trail's own output already carries it");
   assert.match(await hook('tool-savings', { session_id: 't3', tool_name: 'Bash', tool_input: { command: 'sed -n 1,80p tool/workspace.py' }, tool_response: 'x' }), /Take workspace/);
+});
+
+test('in a Claude Desktop worktree session, editing a file in the worktree brings its learning', () => {
+  // Desktop runs each session in .claude/worktrees/<name>/ while CLAUDE_PROJECT_DIR stays the main checkout.
+  process.env.TRAIL_HOME = mkdtempSync(join(tmpdir(), 'touch-home-'));
+  process.env[BRAND_ENV] = 'trail';
+  const d = mkdtempSync(join(tmpdir(), 'touch-repo-'));
+  const git = (...args: string[]) => spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...args], { cwd: d });
+  git('init', '-q');
+  mkdirSync(join(d, 'tool'), { recursive: true });
+  writeFileSync(join(d, 'tool', 'workspace.py'), 'x = 1\n');
+  git('add', '-A');
+  git('commit', '-qm', 'init');
+  const wt = join(d, '.claude', 'worktrees', 'fix-a1b2c3');
+  git('worktree', 'add', '-q', wt);
+  mkdirSync(join(d, 'graft', '.cache', 'session'), { recursive: true });
+  writeNote(d, { title: 'Take workspace from server-held data', body: BODY, author: 'Priya', date: '2026-10-07', touches: ['tool/workspace.py'] }, 'repo');
+
+  const edit = { session_id: 'w1', tool_name: 'Edit', tool_input: { file_path: join(wt, 'tool', 'workspace.py') } };
+  assert.match(learningsOnTouch(edit, d, true) ?? '', /Take workspace from server-held data/);
+  assert.equal(learningsOnTouch({ ...edit, tool_name: 'Read' }, d), null, 'once a session, as in the main checkout');
 });
 
 test("a Bash call's learnings join the skills part's context in one answer, and a block stays the whole answer", () => {
