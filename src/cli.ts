@@ -157,7 +157,7 @@ function grouped(c: Command, heading: string): Command {
  * centrally — and because a command that calls `process.exit` should simply
  * report nothing, which falls out of never emitting until postAction.
  */
-let queryNote: { repo?: string; hit?: "yes" | "no"; command?: string; notes?: string } = {};
+let queryNote: { repo?: string; hit?: "yes" | "no"; command?: string; notes?: string; stale?: string } = {};
 
 /** Record the repo a query ran against, and pass it straight through so call
  *  sites stay one line. */
@@ -332,7 +332,7 @@ program.hook("postAction", (_parent, action) => {
   // `trail build --check` is graft's `check`, and counts as it always has.
   const name = queryNote.command ?? action.name();
   if (!isTrackedCommand(name)) return;
-  track("query", { command: name, surface: "cli", hit: queryNote.hit, notes: queryNote.notes }, { repo: queryNote.repo });
+  track("query", { command: name, surface: "cli", hit: queryNote.hit, notes: queryNote.notes, stale: queryNote.stale }, { repo: queryNote.repo });
 });
 
 /** `graft ask`, `graft build`: a command as graft spells it, whatever ran it. */
@@ -823,6 +823,8 @@ grouped(program.command("ask"), GROUP.find)
     if (TRAIL) afterAsk(r, dir);
     // How many notes reached the agent: the demand side of `trail note`.
     if (r.notesChecked) queryNote.notes = String(Math.min(r.notes?.length ?? 0, 2));
+    // And how many of those may be stale: they name code that's gone (notes/stale.ts).
+    if (r.notesChecked) queryNote.stale = String(Math.min(r.notes?.filter((h) => h.note.stale?.length).length ?? 0, 2));
     if (opts.json) {
       console.log(JSON.stringify(r, null, 2));
     } else {

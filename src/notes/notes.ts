@@ -66,6 +66,9 @@ export interface Note extends LearningFields {
    * this checkout. `path` is then `<ref>:.trail/learnings/<name>`, readable
    * with `git show`, and the whole body travels with the note. */
   ref?: string;
+  /** The `touches` whose code is gone, so the learning may be stale. Set by
+   * `markStale` (stale.ts) on the learnings about to be shown. */
+  stale?: string[];
 }
 
 /** Which kind of learning to write: for the repo (the default) or for this person only. */
@@ -392,6 +395,7 @@ export function formatNoteHits(hits: NoteHit[]): string[] {
     const author = flatLine(note.author, 80);
     const who = `${author ? `${author}'s learning` : "a learning"}${note.teammate ? ", a teammate's" : ""}`;
     lines.push(`from ${who}${isAlwaysFollow(note) ? " · always follow" : ""} · ${flatLine(shortDate(note.date), 40)} · ${flatLine(note.title)}`);
+    if (note.stale?.length) lines.push(`  may be stale  ${staleLine(note)}`);
     const cost = costLabel(note.cost);
     for (const s of SECTIONS) {
       const lead = sectionLead(note.body, s.heading);
@@ -408,6 +412,18 @@ export function formatNoteHits(hits: NoteHit[]): string[] {
     lines.push("");
   }
   return lines;
+}
+
+/**
+ * What to say about a learning `markStale` (stale.ts) flagged: which code it
+ * names is gone, and to check it before following it. The names come from the
+ * learning's own file, so each is flattened and at most two are named.
+ */
+export function staleLine(note: Note): string {
+  // A gone file's own gone symbol names it already: `a.ts#f`, not `a.ts, a.ts#f`.
+  const gone = (note.stale ?? []).filter((t, _, all) => !all.some((o) => o.startsWith(`${t}#`)));
+  const named = gone.slice(0, 2).map((t) => flatLine(t, 120)).join(", ") + (gone.length > 2 ? ` and ${gone.length - 2} more` : "");
+  return `${named} ${gone.length === 1 ? "is" : "are"} gone from the code. Check it against the code before you follow it; if it no longer holds, save what's true now with trail note --replaces ${note.id}`;
 }
 
 /** The line an agent closes its reply with after saving a learning just for the user. */

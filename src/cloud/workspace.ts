@@ -405,6 +405,8 @@ export interface UploadedLearning {
   touches: string[];
   body: string;
   hash: string;
+  /** The `touches` this checkout no longer has (notes/stale.ts); [] when all are there. Left out for a teammate's branch copy and for skills. */
+  missing?: string[];
   /** A skill's description: what it does and when to use it. */
   why?: string;
   /** A skill's other files: everything git tracks in its folder besides SKILL.md. */

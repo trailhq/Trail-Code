@@ -50,7 +50,7 @@ The events:
 | `init_completed` | `agents` (the ids you selected, sorted), `consent` | `trail init` finishes |
 | `build_completed` | `files_bucket`, `langs`, `mode` (`fast`/`deep`), `duration_bucket`, `incremental` | A build succeeds |
 | `build_failed` | `stage`, `code`, both fixed enums | A build throws |
-| `query` | `command`, `surface` (`cli`/`mcp`/`hook`), `hit` (`ask` only), `notes` (`0`/`1`/`2`, how many learnings `ask` showed; only in a repo that keeps learnings) | Any query command |
+| `query` | `command`, `surface` (`cli`/`mcp`/`hook`), `hit` (`ask` only), `notes` (`0`/`1`/`2`, how many learnings `ask` showed; only in a repo that keeps learnings), `stale` (`0`/`1`/`2`, how many of those may be stale: a file or symbol the learning lists under `touches:` is gone from the code) | Any query command |
 | `brain_signup_opened` | `mode` (`terminal`/`agent`/`nudge`), and for a nudge `command` (`ask`/`note`/`check`) and `wording` (`share`/`learned`) | A trail command hands the agent a sign-in link to pass on (at most once a session) |
 | `brain_signup_settled` | `outcome` (`linked`/`timed_out`/`bad_callback`/`stopped`, and for an agent-run push `agent_link_opened`/`still_waiting`/`expired`/`unsupported`), `mode` (`terminal`/`agent`/`nudge`), `duration_bucket` | That handoff ends, one way or the other: for an agent-run push, each of its runs; for a nudge, each background wait for the sign-in (`linked`/`timed_out`/`expired`/`unsupported`) |
 | `note_saved` | `has_cost` (`true`/`false`), `touches_bucket` (how many files the learning is about, bucketed), `scope` (`repo`/`personal`) | `trail note` saves a learning, in the repo's `.trail/` or on this machine. The title, the text and the paths are never sent |
