@@ -124,6 +124,16 @@ export const EVENTS: Record<string, ReadonlySet<string>> = {
   guardrail: new Set<string>(['class', 'outcome']),
   /** A failing command matched a known wall: which one, and whether the person had kept a lesson for it. */
   wall_hit: new Set<string>(['class', 'had_lesson']),
+  /** After an edit, the agent was told a pushed branch, a teammate's or the
+   *  person's own other one, changes the same function: whether GitHub lists
+   *  an open pull request for it, and whose it is. */
+  overlap_warned: new Set<string>(['pr', 'whose']),
+  /** Later that session, the person's prompt named that teammate or branch. */
+  overlap_acted: new Set<string>(['pr', 'whose']),
+  /** Learnings reached the agent because it opened, edited or named a file
+   *  they list: how, and whether the file was a worktree's copy while the
+   *  session's project is the main checkout. */
+  learnings_on_touch: new Set<string>(['via', 'worktree']),
   /** How long one hook took, as a bucket: which hook. */
   hook_ms: new Set<string>(['event', 'bucket']),
 };
@@ -148,10 +158,13 @@ export const VALUES: Record<string, Record<string, ReadonlySet<string>>> = {
   team_pull: { outcome: new Set(['updated', 'unchanged', 'diverged', 'failed']) },
   skill_used: { outcome: new Set(['checked', 'failed', 'unchecked']) },
   skill_stale: { reason: new Set(['failed', 'corrected', 'missing', 'unused', 'unfollowed']) },
+  learnings_on_touch: { via: new Set(['read', 'edit', 'command']), worktree: new Set(['true', 'false']) },
   guardrail: {
     class: new Set(['no-timeout', 'prod-after-beta']),
     outcome: new Set(['hint', 'ask', 'deny', 'sure-fail', 'avoided']),
   },
+  overlap_warned: { pr: new Set(['open', 'none', 'unknown']), whose: new Set(['mine', 'teammate']) },
+  overlap_acted: { pr: new Set(['open', 'none', 'unknown']), whose: new Set(['mine', 'teammate']) },
   wall_hit: {
     class: new Set(['timeout-missing', 'zsh-no-match', 'git-https-auth', 'docker-rootless', 'npm-e401-eotp', 'claude-not-logged-in', 'enospc']),
     had_lesson: new Set(['true', 'false']),

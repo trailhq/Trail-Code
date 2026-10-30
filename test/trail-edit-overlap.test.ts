@@ -85,14 +85,32 @@ test("a squash-merged branch left on the remote isn't open work, until someone p
   assert.ok(refreshBranches(anirudh).branches.some((b) => b.ref === "origin/kumar/backoff"), "new work on it: listed again");
 });
 
+test("a squash-merged branch isn't an overlap, even after main changed the same lines again and git can't tell it merged", async () => {
+  const { anirudh, kumar } = team();
+  kumarChangesBackoff(kumar);
+  git(kumar, "checkout", "-q", "main");
+  git(kumar, "merge", "-q", "--squash", "kumar/backoff");
+  git(kumar, "commit", "-qm", "fix(retry): cap the backoff at five seconds (#12)");
+  writeFileSync(join(kumar, "src", "retry.ts"), RETRY.replace("attempt * 100", "Math.min(attempt * 100, 10_000)"));
+  git(kumar, "commit", "-qam", "fix(retry): ten seconds after all");
+  git(kumar, "push", "-q", "origin", "main");
+  git(anirudh, "pull", "-q", "origin", "main");
+  assert.ok(refreshBranches(anirudh).branches.some((b) => b.ref === "origin/kumar/backoff"), "merging it now would conflict, so the refresh can't drop it");
+
+  const edit = anirudhEdits(anirudh, "10_000", "15_000");
+  assert.deepEqual(await functionOverlaps(anirudh, edit.file_path, edit, "Anirudh"), [], "the line it added to backoff() was added on main too");
+});
+
 test("a branch whose pull request closed on its tip isn't open work, and is again once it moves", () => {
   const { anirudh, kumar } = team();
   kumarChangesBackoff(kumar);
   const tip = git(kumar, "rev-parse", "HEAD").trim();
-  const cache = refreshBranches(anirudh, { closed: { "kumar/backoff": tip } });
+  const cache = refreshBranches(anirudh, { closed: { "kumar/backoff": tip }, open: ["maya/retry"] });
   assert.ok(!cache.branches.some((b) => b.ref === "origin/kumar/backoff"));
   assert.deepEqual(cache.closed, { "kumar/backoff": tip }, "kept for refreshes that don't ask GitHub");
-  assert.ok(!refreshBranches(anirudh).branches.some((b) => b.ref === "origin/kumar/backoff"), "the next refresh remembers it");
+  const next = refreshBranches(anirudh);
+  assert.ok(!next.branches.some((b) => b.ref === "origin/kumar/backoff"), "the next refresh remembers it");
+  assert.deepEqual(next.open, ["maya/retry"], "and which pull requests are open");
 
   writeFileSync(join(kumar, "README.md"), "reopened\n");
   git(kumar, "add", "-A");
@@ -117,41 +135,75 @@ test("an edit to the function a teammate's branch changes is an overlap; one to 
   assert.equal(found[0]!.file, "src/retry.ts");
   assert.deepEqual(found[0]!.symbols.map((s) => s.label), ["backoff()"]);
   assert.equal(found[0]!.subject, "fix(retry): cap the backoff at five seconds");
+  assert.equal(found[0]!.mine, false);
   refreshBranches(kumar);
-  assert.deepEqual(await functionOverlaps(kumar, join(kumar, "src", "retry.ts"), { new_string: "Math.min" }, "Kumar"), [], "your own branch isn't overlap");
+  assert.deepEqual(await functionOverlaps(kumar, join(kumar, "src", "retry.ts"), { new_string: "Math.min" }, "Kumar"), [], "the branch you're on isn't overlap");
 });
 
-test("after the edit, the hook tells the agent about it once a session", async () => {
+test("a comment added above a function is a change to it, though the edit is anchored on the function above's closing brace", async () => {
+  const { anirudh, kumar } = team();
+  kumarChangesBackoff(kumar);
+  refreshBranches(anirudh);
+  const edit = anirudhEdits(anirudh, "}\n\nexport function backoff(", "}\n\n/** How long to wait before the next attempt. */\nexport function backoff(");
+  const found = await functionOverlaps(anirudh, edit.file_path, edit, "Anirudh");
+  assert.deepEqual(found.map((o) => o.symbols.map((s) => s.label)), [["backoff()"]]);
+});
+
+test("your own other open branch on the same function is an overlap too, as from a parallel session", async () => {
+  const { kumar } = team();
+  kumarChangesBackoff(kumar);
+  git(kumar, "checkout", "-q", "-b", "kumar/tidy", "main");
+  refreshBranches(kumar);
+  writeFileSync(join(kumar, "src", "retry.ts"), RETRY.replace("attempt * 100", "attempt * 120"));
+  const found = await functionOverlaps(kumar, join(kumar, "src", "retry.ts"), { new_string: "attempt * 120" }, "Kumar");
+  assert.deepEqual(found.map((o) => [o.ref, o.mine]), [["origin/kumar/backoff", true]]);
+});
+
+/** Runs the post-edit hook as Claude Code would, with `project` as the session's project, and returns what it printed. */
+async function postEdit(project: string, session: string, toolInput: object): Promise<string> {
   const { main } = await import("../src/claude/hooks.js");
+  process.env.CLAUDE_PROJECT_DIR = project;
+  let out = "";
+  const write = process.stdout.write;
+  const pass = write.bind(process.stdout);
+  // The hook writes strings; the test runner's own reports (bytes, on Node 20) pass through.
+  process.stdout.write = ((chunk: unknown, ...rest: unknown[]) => (typeof chunk === "string" ? ((out += chunk), true) : (pass as (...a: unknown[]) => boolean)(chunk, ...rest))) as typeof process.stdout.write;
+  process.env.GRAFT_TEST_STDIN = JSON.stringify({ session_id: session, tool_name: "Edit", tool_input: toolInput });
+  try {
+    await main("post-edit");
+  } finally {
+    process.stdout.write = write;
+    delete process.env.GRAFT_TEST_STDIN;
+  }
+  return out;
+}
+
+test("after the edit, the hook tells the agent about it once a session", async () => {
   const { anirudh, kumar } = team();
   kumarChangesBackoff(kumar);
   refreshBranches(anirudh);
   const edit = anirudhEdits(anirudh, "attempt * 100", "attempt * 150");
-  process.env.CLAUDE_PROJECT_DIR = anirudh;
-  const run = async (): Promise<string> => {
-    let out = "";
-    const write = process.stdout.write;
-    const pass = write.bind(process.stdout);
-    // The hook writes strings; the test runner's own reports (bytes, on Node 20) pass through.
-    process.stdout.write = ((chunk: unknown, ...rest: unknown[]) => (typeof chunk === "string" ? ((out += chunk), true) : (pass as (...a: unknown[]) => boolean)(chunk, ...rest))) as typeof process.stdout.write;
-    process.env.GRAFT_TEST_STDIN = JSON.stringify({ session_id: "s1", tool_name: "Edit", tool_input: edit });
-    try {
-      await main("post-edit");
-    } finally {
-      process.stdout.write = write;
-      delete process.env.GRAFT_TEST_STDIN;
-    }
-    return out;
-  };
-  const first = JSON.parse(await run()).hookSpecificOutput.additionalContext as string;
+  const first = JSON.parse(await postEdit(anirudh, "s1", edit)).hookSpecificOutput.additionalContext as string;
   assert.match(first, /Kumar's open branch kumar\/backoff also changes backoff\(\) in src\/retry\.ts/);
   assert.match(first, /🔀 trail · /);
-  assert.equal(await run(), "", "not again for the same branch and function");
+  assert.equal(await postEdit(anirudh, "s1", edit), "", "not again for the same branch and function");
+});
+
+test("in a worktree session, where the project is the main checkout, an edit to the worktree's copy is still compared", async () => {
+  const { anirudh, kumar } = team();
+  kumarChangesBackoff(kumar);
+  refreshBranches(anirudh);
+  const tree = join(anirudh, ".claude", "worktrees", "retry-fix");
+  git(anirudh, "worktree", "add", "-q", "-b", "anirudh/retry-fix", tree, "main");
+  const file = join(tree, "src", "retry.ts");
+  writeFileSync(file, RETRY.replace("attempt * 100", "attempt * 150"));
+  const out = await postEdit(anirudh, "wt1", { file_path: file, old_string: "attempt * 100", new_string: "attempt * 150" });
+  assert.match(JSON.parse(out).hookSpecificOutput.additionalContext, /Kumar's open branch kumar\/backoff also changes backoff\(\) in src\/retry\.ts/);
 });
 
 test("the agent is told who, what and where to look, and to say it in trail's words", () => {
   const text = editOverlapDirective(
-    { ref: "origin/kumar/backoff", author: "Kumar", at: 0, file: "src/retry.ts", symbols: [{ id: "src/retry.ts#backoff", label: "backoff()" }], subject: "fix(retry): cap the backoff" },
+    { ref: "origin/kumar/backoff", author: "Kumar", at: 0, file: "src/retry.ts", symbols: [{ id: "src/retry.ts#backoff", label: "backoff()" }], subject: "fix(retry): cap the backoff", mine: false },
     "origin/main",
     "[trail]",
     "🔀 trail",
@@ -161,6 +213,15 @@ test("the agent is told who, what and where to look, and to say it in trail's wo
   assert.match(text, /`git diff origin\/main\.\.\.origin\/kumar\/backoff -- src\/retry\.ts`/);
   assert.match(text, /start with "🔀 trail · "/);
   assert.match(text, /whether it clashes with yours/);
+
+  const mine = editOverlapDirective(
+    { ref: "origin/anirudh/retry", author: "Anirudh", at: 0, file: "src/retry.ts", symbols: [{ id: "src/retry.ts#backoff", label: "backoff()" }], subject: "", mine: true },
+    "origin/main",
+    "[trail]",
+    "🔀 trail",
+  );
+  assert.match(mine, /^\[trail\] Your other open branch anirudh\/retry also changes backoff\(\)/);
+  assert.match(mine, /"🔀 trail · Your branch anirudh\/retry also changes backoff\(\)\./);
 });
 
 test("a top-level constant both change is an overlap, though the graph has no node for it; imports aren't", async () => {
@@ -200,4 +261,10 @@ test("edited lines are where each edit's new text sits now; a Write is the whole
   assert.deepEqual(editedLines({ edits: [{ new_string: "c\nb" }] }, source), [{ start: 3, end: 4 }]);
   assert.deepEqual(editedLines({ content: source }, source), [{ start: 1, end: 5 }]);
   assert.deepEqual(editedLines({ old_string: "b\n", new_string: "" }, source), [], "a deletion leaves nothing to find");
+});
+
+test("edited lines leave out the lines an edit kept from the old text to anchor it", () => {
+  const source = "}\n\n// What f returns.\nfunc f() {\n\treturn 1\n}\n";
+  assert.deepEqual(editedLines({ old_string: "}\n\nfunc f() {", new_string: "}\n\n// What f returns.\nfunc f() {" }, source), [{ start: 3, end: 3 }]);
+  assert.deepEqual(editedLines({ old_string: "func f() {\n\tx := 2\n\treturn 1", new_string: "func f() {\n\treturn 1" }, source), [{ start: 4, end: 5 }], "a deletion between kept lines marks the two");
 });

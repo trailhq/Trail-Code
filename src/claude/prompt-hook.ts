@@ -24,6 +24,7 @@ import { recordSkillUse, skillOfPrompt } from './skill-use.js';
 import { readSession, readStats, writeSession } from './state.js';
 import { readWiring } from './stats.js';
 import { ownText, PASTE_MARK } from '../trace/claude.js';
+import { overlapActed } from './overlap-telemetry.js';
 
 /** Prompts shorter than this never trigger the graph ask — they are almost always
  * conversational ("yes go ahead", "thanks") and the coverage gate can't judge
@@ -262,6 +263,8 @@ export async function handlePrompt(input: any, dir: string, opts: { budgetMs?: n
   const deadline = Date.now() + (opts.budgetMs ?? PROMPT_BUDGET_MS);
   // `/name` for one of the repo's skills is a run of it; the name only goes.
   recordSkillUse(skillOfPrompt(input?.prompt), input, dir);
+  // A prompt naming the teammate or branch an overlap warning named: the person acted on it.
+  overlapActed(dir, payloadSessionId(input), input?.prompt);
   const skills = await promptPart(input, dir);
   if (skills.block) return void emitHook('UserPromptSubmit', { block: skills.block });
   // That this machine just connected reaches the person on the next prompt, whatever it is.

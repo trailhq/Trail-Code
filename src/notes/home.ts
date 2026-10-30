@@ -31,7 +31,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { readJson, writeJsonAtomic } from "../util/state.js";
@@ -108,6 +108,26 @@ function mainCheckout(checkout: string, dirs: GitDirs | null): string {
   if (!dirs || dirs.gitDir === dirs.commonDir) return checkout;
   if (basename(dirname(dirs.gitDir)) !== "worktrees" || basename(dirs.commonDir) !== ".git") return checkout;
   return dirname(dirs.commonDir);
+}
+
+/**
+ * The other checkout of `checkout`'s repo that `file` is in, when it's in one:
+ * a Claude Desktop worktree session has the main checkout as its project while
+ * Claude works on the worktree's copy. Null for a file in `checkout` itself,
+ * outside git, or in another repo (a submodule included). The shared git dirs
+ * are compared by real path, since git records a worktree's by its real path.
+ */
+export function otherCheckout(checkout: string, file: string): string | null {
+  const top = checkoutRoot(dirname(file));
+  const root = checkoutRoot(checkout);
+  if (!top || !root || top === root) return null;
+  const mine = gitDirs(root);
+  const theirs = gitDirs(top);
+  try {
+    return mine && theirs && realpathSync(mine.commonDir) === realpathSync(theirs.commonDir) ? top : null;
+  } catch {
+    return null;
+  }
 }
 
 /** origin's url from a git config file's text, else the first remote's, else null. */
