@@ -1843,7 +1843,7 @@ async function runInitCommand(dir: string, opts: InitOptions, progress?: InitPro
       if (TRAIL && !tops.includes(".trail/")) tops.push(".trail/");
       // Only what git sees as new or changed: a teammate's init over committed files has nothing to commit.
       const changedTops = tops.filter((t) => {
-        const r = spawnSync("git", ["status", "--porcelain", "--", t], { cwd: repo, encoding: "utf8" });
+        const r = spawnSync("git", ["status", "--porcelain", "--", t], { cwd: repo, encoding: "utf8", windowsHide: true });
         return r.status !== 0 || r.stdout.trim().length > 0;
       });
       tops.splice(0, tops.length, ...changedTops);

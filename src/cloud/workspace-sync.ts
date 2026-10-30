@@ -136,6 +136,7 @@ function trackedAmong(root: string, paths: string[]): Set<string> {
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 15_000,
       maxBuffer: 16 * 1024 * 1024,
+      windowsHide: true,
     });
     return new Set(out.split("\0").filter(Boolean));
   } catch {
@@ -317,7 +318,7 @@ interface SyncState {
 /** The checkout's branch, or "" when git can't say (detached HEAD, no git). */
 function currentBranch(checkout: string): string {
   try {
-    const b = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: checkout, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5000 }).trim();
+    const b = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: checkout, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5000, windowsHide: true }).trim();
     return b === "HEAD" ? "" : b;
   } catch {
     return "";

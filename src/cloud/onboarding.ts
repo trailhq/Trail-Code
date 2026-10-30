@@ -534,6 +534,7 @@ function git(repo: string, args: string[], timeout = 15_000): string | null {
       timeout,
       maxBuffer: 16 * 1024 * 1024,
       env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+      windowsHide: true,
     });
   } catch {
     return null;
@@ -598,7 +599,7 @@ function fetchQuietly(repo: string): void {
   try {
     const env: NodeJS.ProcessEnv = { ...process.env, GIT_TERMINAL_PROMPT: "0" };
     if (!env.GIT_SSH_COMMAND && !git(repo, ["config", "core.sshCommand"])?.trim()) env.GIT_SSH_COMMAND = "ssh -o BatchMode=yes";
-    execFileSync("git", ["fetch", "--quiet", "--prune", "origin"], { cwd: repo, stdio: "ignore", timeout: 20_000, env });
+    execFileSync("git", ["fetch", "--quiet", "--prune", "origin"], { cwd: repo, stdio: "ignore", timeout: 20_000, env, windowsHide: true });
   } catch {
     /* offline, or no origin: the refs already here */
   }

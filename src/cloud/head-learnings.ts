@@ -23,6 +23,7 @@ function git(checkout: string, args: string[], input?: string): Buffer | null {
       timeout: 15_000,
       maxBuffer: 64 * 1024 * 1024,
       env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+      windowsHide: true,
     });
   } catch {
     return null;

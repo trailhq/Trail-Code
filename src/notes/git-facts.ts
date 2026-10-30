@@ -9,7 +9,7 @@ import { userInfo } from "node:os";
 /** git's stdout, trimmed unless `raw` (porcelain status starts lines with a meaningful space). */
 function git(repo: string, args: string[], raw = false): string | null {
   try {
-    const out = execFileSync("git", args, { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+    const out = execFileSync("git", args, { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
     return raw ? out : out.trim();
   } catch {
     return null;

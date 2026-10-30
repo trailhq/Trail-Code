@@ -45,6 +45,7 @@ export function ignoredCode(root: string, limit = 20): string[] {
     cwd: root,
     encoding: "utf8",
     timeout: 3000,
+    windowsHide: true,
   });
   if (r.status !== 0 || typeof r.stdout !== "string") return [];
   const exts = new Set(supportedExtensions());
