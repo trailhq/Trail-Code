@@ -100,7 +100,7 @@ function press(st: State, key: Key, repoKey: string, env: NodeJS.ProcessEnv): Sc
       }
       return null;
     case 'w':
-      if (!item || item.kind === 'review' || item.kind === 'session' || item.kind === 'claude') return null;
+      if (!item || item.kind === 'review' || item.kind === 'session' || item.kind === 'claude' || item.kind === 'claudeai') return null;
       if (item.kind === 'guardrail' && item.guardrail?.check === 'no-timeout') {
         st.note = INIT_COPY.wNoTimeout!;
         return null;
@@ -110,7 +110,7 @@ function press(st: State, key: Key, repoKey: string, env: NodeJS.ProcessEnv): Sc
       return null;
     case 'r':
       if (!item) return null;
-      if (item.kind !== 'preference') {
+      if (item.kind !== 'preference' && item.kind !== 'claudeai') {
         st.note = INIT_COPY.rLater!;
         return null;
       }

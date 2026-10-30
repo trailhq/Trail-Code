@@ -1206,6 +1206,10 @@ grouped(program.command("init"), GROUP.setup)
   .option("--server <url>", "the Trail that gave the code (default: Trail cloud, https://team.trailhq.com)")
   .option("--plain", "look back without asking Claude to name what it finds")
   .option("--look-back", "look back at your past sessions again, for what isn't kept or closed yet")
+  .option(
+    "--claude-memory <file>",
+    "a memory export from Claude.ai (ask it to write out your memories, save its answer; - reads stdin): init offers the parts about code, just for you",
+  )
   .action(async (dir: string, opts: InitOptions) => {
     if (opts.connect !== undefined && opts.pair !== undefined) {
       console.error("✗ --connect and --pair are two ways in: use the one your Trail page gave you");
@@ -1416,7 +1420,7 @@ function printLines(lines: string[]): void {
 }
 
 /** `graft init`'s flags, as commander hands them over. */
-interface InitOptions { build?: boolean; agents?: string[]; allAgents?: boolean; listAgents?: boolean; mcp?: boolean; hooks?: boolean; statusline?: boolean; dryRun?: boolean; yes?: boolean; global?: boolean; verbose?: boolean; connect?: string; pair?: string; server?: string; plain?: boolean; lookBack?: boolean }
+interface InitOptions { build?: boolean; agents?: string[]; allAgents?: boolean; listAgents?: boolean; mcp?: boolean; hooks?: boolean; statusline?: boolean; dryRun?: boolean; yes?: boolean; global?: boolean; verbose?: boolean; connect?: string; pair?: string; server?: string; plain?: boolean; lookBack?: boolean; claudeMemory?: string }
 
 /** What `init --connect` and `--pair` hear from a run of init, as it happens: the stages the web page ticks off. */
 interface InitProgress {
@@ -1470,6 +1474,16 @@ const AGENT_ALIASES: Record<string, string> = { codex: "agents", opencode: "agen
  * The `init --pair` run Trail's page is following, while it runs: a crash then
  * tells the page the run stopped (see the end of this file).
  */
+/** A Claude.ai memory export's text, from a file or stdin (`-`); undefined, said, when it can't be read: init goes on. */
+async function readClaudeExport(file: string): Promise<string | undefined> {
+  try {
+    return file === "-" ? await readStdin() : readFileSync(resolve(file), "utf8");
+  } catch {
+    console.error(`· couldn't read ${file}, so nothing from your Claude.ai memory this time`);
+    return undefined;
+  }
+}
+
 let livePair: PairRun | null = null;
 
 /** `graft init`. */
@@ -1658,7 +1672,10 @@ async function runInitCommand(dir: string, opts: InitOptions, progress?: InitPro
     // up at the end. Nothing is kept without a tick (see src/init/review.ts).
     const tty = Boolean(process.stdin.isTTY && process.stderr.isTTY);
     // Past Claude sessions are on this laptop only where Claude Code is.
-    const lookBack = TRAIL && wantClaude && (!laptop || laptop.includes("claude")) ? beginLookBack(repo, { plain: opts.plain === true, again: opts.lookBack === true, pair: pair !== null }) : null;
+    const claudeExport = opts.claudeMemory === undefined ? undefined : await readClaudeExport(opts.claudeMemory);
+    const lookBack = TRAIL && wantClaude && (!laptop || laptop.includes("claude"))
+      ? beginLookBack(repo, { plain: opts.plain === true, again: opts.lookBack === true, pair: pair !== null, ...(claudeExport !== undefined ? { claudeExport } : {}) })
+      : null;
     for (const line of lookBack?.lines ?? []) console.error(line);
     if (pair) {
       const sessions = lookBack?.reads.sessions;
@@ -1798,6 +1815,11 @@ async function runInitCommand(dir: string, opts: InitOptions, progress?: InitPro
       if (fromMemory?.saved.length) {
         console.error(`✓ kept ${fromMemory.saved.length} of the ${fromMemory.offered} notes your Claude keeps about this repo`);
         for (const note of fromMemory.saved) console.error(`    ${note.scope === "personal" ? "just for you " : "for your team"} · ${note.title}`);
+      }
+      const fromClaudeAi = learned.teamKept?.fromClaudeAi;
+      if (fromClaudeAi?.saved.length) {
+        console.error(`✓ kept ${fromClaudeAi.saved.length} thing${fromClaudeAi.saved.length === 1 ? "" : "s"} Claude.ai knows about you, just for you · in ~/.trail, never committed`);
+        for (const note of fromClaudeAi.saved) console.error(`    just for you  · ${note.title}`);
       }
       sessionsRead = learned.read?.sessions ?? 0;
       skillsFound = learned.skills ?? [];
