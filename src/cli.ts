@@ -30,7 +30,7 @@ import { asksForTrail, brand, cmd, graftNotice, PACKAGE_FOR, setBrand, strandedR
 import { branchDiff } from "./cloud/diff.js";
 import { openBrowser } from "./util/browser.js";
 import { committedAtBase, learningsAtBase, teammateEdits, withBaseLearnings } from "./check/learning-edits.js";
-import { contextDirFor } from "./context/node-file.js";
+import { CACHE_DIR, contextDirFor } from "./context/node-file.js";
 import { loadGraphCached } from "./graph/load.js";
 import { ensureFreshChildren, ensureFreshGraph, refreshNote } from "./graph/refresh.js";
 import { isWorkspaceBuildRoot, readWorkspace } from "./graph/workspace.js";
@@ -56,7 +56,7 @@ import { upsertCodexToml } from "./hosts/mcp-config.js";
 import { homedir } from "node:os";
 import { formatUpgradeReport, formatVersionReport, getNpmViewVersion, readCurrentVersion, readPackageName, runUpgrade } from "./cli-meta.js";
 import { nativeFallbackNotice } from "./graph/native.js";
-import { patchBuildConfig, type BuildConfig } from "./util/state.js";
+import { lockHeldByOther, patchBuildConfig, type BuildConfig } from "./util/state.js";
 import { normalizePathPrefix } from "./util/paths.js";
 import { latestSession, formatSessionStats, sessionInputRate } from "./claude/session-metrics.js";
 import { listSessionIds, readSession, sessionDir } from "./claude/state.js";
@@ -638,6 +638,8 @@ grouped(program.command("build"), GROUP.setup)
     // Workspace parent: build each child into its OWN graft/ + a workspace index.
     const buildRoot = resolve(dir);
     const buildGlobalDir = program.opts<GlobalOpts>().dir;
+    // Another build or sync of this map already running as this one starts.
+    const overlap = lockHeldByOther(join(contextDirFor(buildRoot, buildGlobalDir), CACHE_DIR));
     if (isWorkspaceBuildRoot(buildRoot, buildGlobalDir)) {
       await runWorkspaceBuild(buildRoot, {
         deep: !!deep,
@@ -715,6 +717,7 @@ grouped(program.command("build"), GROUP.setup)
         mode: deep ? "deep" : "fast",
         duration_bucket: durationBucket(Date.now() - buildStartedAt),
         incremental: String(g.reused > 0),
+        overlap: String(overlap),
       },
       { repo: buildRoot },
     );

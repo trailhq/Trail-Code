@@ -1,12 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, existsSync, mkdirSync, readdirSync, utimesSync } from 'node:fs';
+import { mkdtempSync, existsSync, mkdirSync, readdirSync, utimesSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   emptyStats, readStats, writeStats, patchStats,
   readSession, writeSession, acquireLock, releaseLock, cacheDir, LOCK_STALE_MS, writeJsonAtomic,
 } from '../src/claude/state.js';
+import { LOCK_MAX_MS, lockHeldByOther, lockHeldIn } from '../src/util/state.js';
 
 function fresh(): string { return mkdtempSync(join(tmpdir(), 'graft-state-')); }
 
@@ -41,13 +43,51 @@ test('lock is exclusive then releasable', () => {
   assert.equal(acquireLock(d), true, 'reacquire after release');
 });
 
-test('acquireLock reclaims a stale lock', () => {
-  const d = fresh();
-  assert.equal(acquireLock(d), true);
+/** A lock held by `pid`, last written `ageMs` ago. */
+function lockOf(d: string, pid: number, ageMs: number): string {
+  mkdirSync(cacheDir(d), { recursive: true });
   const p = join(cacheDir(d), '.sync.lock');
-  const old = (Date.now() - LOCK_STALE_MS - 1000) / 1000;
-  utimesSync(p, old, old);
+  writeFileSync(p, JSON.stringify({ pid, at: new Date().toISOString() }));
+  const t = (Date.now() - ageMs) / 1000;
+  utimesSync(p, t, t);
+  return p;
+}
+/** The pid of a process that has already exited. */
+function deadPid(): number { return spawnSync(process.execPath, ['-e', '']).pid!; }
+
+test('acquireLock reclaims a stale lock whose owner is gone', () => {
+  const d = fresh();
+  lockOf(d, deadPid(), LOCK_STALE_MS + 1000);
+  assert.equal(lockHeldIn(cacheDir(d)), false);
   assert.equal(acquireLock(d), true, 'stale lock reclaimed');
+});
+
+test('a lock older than five minutes stays with an owner that is still running', () => {
+  // A first build on a slow laptop runs past LOCK_STALE_MS; taking its lock started a
+  // second full build beside it.
+  const d = fresh();
+  lockOf(d, process.pid, LOCK_STALE_MS + 1000);
+  assert.equal(lockHeldIn(cacheDir(d)), true);
+  assert.equal(acquireLock(d), false, 'the build still running keeps its lock');
+});
+
+test('past LOCK_MAX_MS a lock is reclaimed even with a live pid', () => {
+  // The pid may be a new process that got a dead owner's number.
+  const d = fresh();
+  lockOf(d, process.pid, LOCK_MAX_MS + 1000);
+  assert.equal(acquireLock(d), true);
+});
+
+test('lockHeldByOther: another live process, not this one or its parent', () => {
+  const d = fresh();
+  assert.equal(lockHeldByOther(cacheDir(d)), false, 'no lock');
+  lockOf(d, process.pid, 0);
+  assert.equal(lockHeldByOther(cacheDir(d)), false, 'our own lock');
+  lockOf(d, process.ppid, 0);
+  assert.equal(lockHeldByOther(cacheDir(d)), false, 'our parent: sync-run holding it for its build');
+  const other = spawnSync(process.execPath, ['-e', '']); // gone, but its fresh lock is still another's
+  lockOf(d, other.pid!, 0);
+  assert.equal(lockHeldByOther(cacheDir(d)), true);
 });
 
 test('writeJsonAtomic leaves no scratch file behind when the write fails', () => {
