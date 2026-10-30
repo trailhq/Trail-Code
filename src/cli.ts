@@ -121,7 +121,7 @@ import {
   track,
   trackFirstRunIfNew,
 } from "./telemetry/index.js";
-import { bundleSession, listLines, MAX_GZ_BYTES, pickSession, previewLines, redactedCount, sessionsHere, shortId, sizeLabel } from "./cloud/share-session.js";
+import { bundleSession, listLines, MAX_GZ_BYTES, pickSession, previewLines, redactedCount, sessionsHere, shortId, sizeLabel, whoIAm } from "./cloud/share-session.js";
 
 const program = new Command();
 const currentVersion = readCurrentVersion(import.meta.url);
@@ -2412,7 +2412,7 @@ function shareSessionCommand(name = "share-session"): Command {
         process.exitCode = 1;
         return;
       }
-      const bundle = bundleSession(session);
+      const bundle = bundleSession(session, whoIAm([cloud.user.name, cloud.user.email]));
       if (bundle.gz.length > MAX_GZ_BYTES) {
         console.error(`✗ this session is too big to send: ${sizeLabel(bundle.gz.length)} zipped, and Trail takes up to ${sizeLabel(MAX_GZ_BYTES)}`);
         process.exitCode = 1;

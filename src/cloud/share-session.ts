@@ -15,8 +15,10 @@
  * the browser's) are left out: they hold no words and are most of the bytes.
  * So are thinking signatures, opaque bytes of Anthropic's.
  */
+import { spawnSync } from "node:child_process";
 import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { homedir, userInfo } from "node:os";
+import { basename, join } from "node:path";
 import { gzipSync } from "node:zlib";
 import { flatLine } from "../notes/flatten.js";
 import { sessionProjectDir } from "../notes/session-cost.js";
@@ -159,6 +161,8 @@ export interface Bundle {
   redacted: Record<string, number>;
   /** Images and other files that aren't text, left out. */
   leftOut: number;
+  /** Places the sender's name, email, login or home folder was taken out. */
+  hidden: number;
 }
 
 export function redactedCount(b: Bundle): number {
@@ -166,7 +170,13 @@ export function redactedCount(b: Bundle): number {
 }
 
 /** The session, its subagents and its tool-result files, redacted, as one zipped JSONL. */
-export function bundleSession(session: SessionFile): Bundle {
+export function bundleSession(session: SessionFile, who: string[] = whoIAm()): Bundle {
+  let hidden = 0;
+  const hide = (text: string) => {
+    const r = anonymize(text, who);
+    hidden += r.n;
+    return r.text;
+  };
   const own = session.path.slice(0, -".jsonl".length);
   const files = [session.path, ...subagentFiles(session)];
   const raw = files.map((f) => readLines(f));
@@ -205,9 +215,10 @@ export function bundleSession(session: SessionFile): Bundle {
         if (!id || !seen.has(id)) messages++;
         if (id) seen.add(id);
       }
-      if (typeof e.timestamp === "string") {
-        startedAt ??= e.timestamp;
-        endedAt = e.timestamp;
+      const at = typeof e.timestamp === "string" ? Date.parse(e.timestamp) : NaN;
+      if (!Number.isNaN(at)) {
+        if (startedAt === undefined || at < Date.parse(startedAt)) startedAt = e.timestamp as string;
+        if (endedAt === undefined || at > Date.parse(endedAt)) endedAt = e.timestamp as string;
       }
       const env = touchesEnv(entry, envIds);
       const clean = walk(entry, (s) => {
@@ -221,7 +232,7 @@ export function bundleSession(session: SessionFile): Bundle {
         }
         const r = redactText(text);
         count(r.found);
-        return r.text;
+        return hide(r.text);
       }, () => leftOut++);
       out.push(JSON.stringify(clean));
     }
@@ -240,12 +251,12 @@ export function bundleSession(session: SessionFile): Bundle {
     }
     const r = redactText(content);
     count(r.found);
-    out.push(JSON.stringify({ type: "trail-share-file", sessionId: session.id, path: `tool-results/${f.name}`, content: r.text }));
+    out.push(JSON.stringify({ type: "trail-share-file", sessionId: session.id, path: `tool-results/${f.name}`, content: hide(r.text) }));
   }
 
   const redacted: Record<string, number> = {};
   for (const kind of taken.values()) redacted[kind] = (redacted[kind] ?? 0) + 1;
-  const title = redactText(flatLine(titleLine, 80) || savedTitle(session) || firstPrompt(raw[0] ?? [])).text;
+  const title = hide(redactText(flatLine(titleLine, 80) || savedTitle(session) || firstPrompt(raw[0] ?? [])).text);
   const text = `${out.join("\n")}\n`;
   return {
     session,
@@ -258,7 +269,57 @@ export function bundleSession(session: SessionFile): Bundle {
     gz: gzipSync(text),
     redacted,
     leftOut,
+    hidden,
   };
+}
+
+/**
+ * What names the person on this laptop, longest first: their home folder,
+ * login, git name and email (and the email's name part), and the name and
+ * email they signed in to Trail with. Shorter than 3 characters is left out.
+ */
+export function whoIAm(extra: string[] = []): string[] {
+  const git = (key: string) => {
+    const r = spawnSync("git", ["config", "--global", "--get", key], { encoding: "utf8", timeout: 3000 });
+    return r.status === 0 ? r.stdout.trim() : "";
+  };
+  let login = "";
+  try {
+    login = userInfo().username;
+  } catch {
+    // no passwd entry
+  }
+  const emails = [git("user.email"), ...extra.filter((x) => x.includes("@"))];
+  const all = [homedir(), login, basename(homedir()), git("user.name"), ...emails, ...emails.map((e) => e.split("@")[0]!), ...extra];
+  return [...new Set(all.map((x) => x.trim()).filter((x) => x.length >= 3))].sort((a, b) => b.length - a.length);
+}
+
+const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+
+/**
+ * `text` with nothing that names the sender: the home folder becomes `~`,
+ * any email `[email]`, and their login, git name or email name `[you]`
+ * wherever it stands as its own word (in a path, `-Users-<login>-…`, too).
+ * `n` counts the places.
+ */
+export function anonymize(text: string, who: string[]): { text: string; n: number } {
+  let n = 0;
+  let out = text;
+  for (const w of who) {
+    if (!out.toLowerCase().includes(w.toLowerCase())) continue;
+    const esc = w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const re = w.startsWith("/") || /^[A-Za-z]:\\/.test(w) ? new RegExp(esc, "gi") : new RegExp(`(?<![A-Za-z0-9])${esc}(?![A-Za-z0-9])`, "gi");
+    const to = w.startsWith("/") || /^[A-Za-z]:\\/.test(w) ? "~" : w.includes("@") ? "[email]" : "[you]";
+    out = out.replace(re, () => {
+      n++;
+      return to;
+    });
+  }
+  out = out.replace(EMAIL, () => {
+    n++;
+    return "[email]";
+  });
+  return { text: out, n };
 }
 
 function readLines(path: string): string[] {
@@ -422,8 +483,9 @@ export function previewLines(b: Bundle, to: { workspace: string; url: string }, 
     ["", [shortId(b.session), when, `${b.messages} message${b.messages === 1 ? "" : "s"}`, ...(b.subagents ? [`${b.subagents} subagent${b.subagents === 1 ? "" : "s"}`] : [])].join(" · ")],
     ["Size", `${sizeLabel(b.bytes)}, ${sizeLabel(b.gz.length)} zipped`],
     ["Secrets", n ? `${n} redacted: ${kinds}` : "none found"],
+    ["You", b.hidden ? `your name, email and home folder taken out in ${b.hidden} place${b.hidden === 1 ? "" : "s"}` : "nothing that names you found"],
     ...(b.leftOut ? [["Left out", `${b.leftOut} image${b.leftOut === 1 ? "" : "s"} and other files that aren't text`] as [string, string]] : []),
-    ["Goes to", `${to.workspace} on ${host}, read only by the Trail team`],
+    ["Goes to", `${to.workspace} on ${host}, read only by the Trail team, without your name`],
   ];
   return rows.map(([k, v]) => `${k.padEnd(10)}${v}`);
 }
