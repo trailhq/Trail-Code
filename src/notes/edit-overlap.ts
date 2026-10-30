@@ -77,7 +77,20 @@ function symbolOf(n: NodeV1): CodeSymbol | null {
   return { id: `${n.path}#${name}`, label: CALLABLE.has(n.kind) ? `${name}()` : name, start: Number(m[1]), end: Number(m[2]) };
 }
 
-/** The symbols in one file's text, by whichever tier parses its language; none when no tier does. */
+/** A comment line, not a preprocessor one. */
+const COMMENT_LINE = /^\s*(?:\/\/|\/\*|\*|#(?!\s*(?:include|define|if|ifdef|ifndef|else|endif|pragma)\b))/;
+
+/**
+ * The comment block directly above a symbol documents it, so a change there is
+ * a change to the symbol: Go's doc comments, and JSDoc, sit outside the parsed span.
+ */
+function withComment(s: CodeSymbol, lines: string[]): CodeSymbol {
+  let start = s.start;
+  while (start > 1 && COMMENT_LINE.test(lines[start - 2] ?? "")) start--;
+  return start === s.start ? s : { ...s, start };
+}
+
+/** The symbols in one file's text, by whichever tier parses its language, each with its comment block; none when no tier does. */
 export async function symbolsIn(rel: string, source: string): Promise<CodeSymbol[]> {
   try {
     await warmGrammarsFor([rel]);
@@ -89,7 +102,11 @@ export async function symbolsIn(rel: string, source: string): Promise<CodeSymbol
         : generic
           ? extractGeneric(rel, source, generic.name).nodes
           : [];
-    return nodes.map(symbolOf).filter((s): s is CodeSymbol => s !== null);
+    const lines = source.split("\n");
+    return nodes
+      .map(symbolOf)
+      .filter((s): s is CodeSymbol => s !== null)
+      .map((s) => withComment(s, lines));
   } catch {
     return [];
   }
@@ -195,9 +212,28 @@ function lineAt(source: string, index: number): number {
 }
 
 /**
+ * How many whole lines the new text keeps from the old at its start and at its
+ * end: Claude anchors an edit with lines around it that it doesn't change, like
+ * the `}` closing the function above. [0, 0] when there's no old text to compare.
+ */
+function anchors(oldText: unknown, newText: string): [number, number] {
+  if (typeof oldText !== "string" || oldText === newText) return [0, 0];
+  const a = oldText.split("\n");
+  const b = newText.split("\n");
+  const most = Math.min(a.length, b.length);
+  let head = 0;
+  while (head < most && a[head] === b[head]) head++;
+  let tail = 0;
+  while (head + tail < most && a[a.length - 1 - tail] === b[b.length - 1 - tail]) tail++;
+  return [head, tail];
+}
+
+/**
  * The lines an edit changed, in the file as it is now, from the tool call
  * that made it: Claude Code's Write (the whole file), Edit and MultiEdit (where
- * each new text now sits). An edit that only deletes leaves nothing to find.
+ * each new text now sits, less the lines it kept from the old text). An edit
+ * that only deletes leaves nothing to find, unless it kept lines around the
+ * deletion: then it marks those two, as `changedLines` does.
  */
 export function editedLines(toolInput: any, source: string): Lines[] {
   if (typeof toolInput?.content === "string") return [{ start: 1, end: lineAt(source, source.length) }];
@@ -207,9 +243,10 @@ export function editedLines(toolInput: any, source: string): Lines[] {
     const text = e?.new_string;
     if (typeof text !== "string" || !text) continue;
     const span = text.split("\n").length - 1;
+    const [head, tail] = anchors(e.old_string, text);
     for (let i = source.indexOf(text); i !== -1; i = e.replace_all ? source.indexOf(text, i + text.length) : -1) {
       const start = lineAt(source, i);
-      out.push({ start, end: start + span });
+      out.push(head + tail > span ? { start: Math.max(1, start + head - 1), end: start + head } : { start: start + head, end: start + span - tail });
     }
   }
   return out;

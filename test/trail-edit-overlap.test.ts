@@ -140,6 +140,15 @@ test("an edit to the function a teammate's branch changes is an overlap; one to 
   assert.deepEqual(await functionOverlaps(kumar, join(kumar, "src", "retry.ts"), { new_string: "Math.min" }, "Kumar"), [], "the branch you're on isn't overlap");
 });
 
+test("a comment added above a function is a change to it, though the edit is anchored on the function above's closing brace", async () => {
+  const { anirudh, kumar } = team();
+  kumarChangesBackoff(kumar);
+  refreshBranches(anirudh);
+  const edit = anirudhEdits(anirudh, "}\n\nexport function backoff(", "}\n\n/** How long to wait before the next attempt. */\nexport function backoff(");
+  const found = await functionOverlaps(anirudh, edit.file_path, edit, "Anirudh");
+  assert.deepEqual(found.map((o) => o.symbols.map((s) => s.label)), [["backoff()"]]);
+});
+
 test("your own other open branch on the same function is an overlap too, as from a parallel session", async () => {
   const { kumar } = team();
   kumarChangesBackoff(kumar);
@@ -252,4 +261,10 @@ test("edited lines are where each edit's new text sits now; a Write is the whole
   assert.deepEqual(editedLines({ edits: [{ new_string: "c\nb" }] }, source), [{ start: 3, end: 4 }]);
   assert.deepEqual(editedLines({ content: source }, source), [{ start: 1, end: 5 }]);
   assert.deepEqual(editedLines({ old_string: "b\n", new_string: "" }, source), [], "a deletion leaves nothing to find");
+});
+
+test("edited lines leave out the lines an edit kept from the old text to anchor it", () => {
+  const source = "}\n\n// What f returns.\nfunc f() {\n\treturn 1\n}\n";
+  assert.deepEqual(editedLines({ old_string: "}\n\nfunc f() {", new_string: "}\n\n// What f returns.\nfunc f() {" }, source), [{ start: 3, end: 3 }]);
+  assert.deepEqual(editedLines({ old_string: "func f() {\n\tx := 2\n\treturn 1", new_string: "func f() {\n\treturn 1" }, source), [{ start: 4, end: 5 }], "a deletion between kept lines marks the two");
 });
