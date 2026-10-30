@@ -20,7 +20,7 @@ import {
   langsValue,
   savedTokensBucket,
 } from '../src/telemetry/contract.js';
-import { track } from '../src/telemetry/track.js';
+import { detectHost, track } from '../src/telemetry/track.js';
 import { peek } from '../src/telemetry/queue.js';
 import { tmpRepo } from './helpers.js';
 
@@ -74,6 +74,22 @@ test('every event carries the common properties, and no identifier beyond them',
   }
   // distinct_id is the random install uuid and nothing else.
   assert.match(ev.distinct_id, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+});
+
+test('agent_host tells the Claude desktop app and Codex apart from the terminal, sending only a fixed label', () => {
+  assert.equal(detectHost(undefined, { CLAUDECODE: '1', CLAUDE_CODE_ENTRYPOINT: 'claude-desktop' }), 'claude-desktop');
+  assert.equal(detectHost(undefined, { CLAUDECODE: '1', CLAUDE_CODE_ENTRYPOINT: 'cli' }), 'claude-code');
+  assert.equal(detectHost(undefined, { CLAUDECODE: '1' }), 'claude-code');
+  assert.equal(detectHost(undefined, { CLAUDE_CODE_ENTRYPOINT: 'something/odd' }), 'claude-code', 'any other entrypoint is plain Claude Code: the value never travels');
+  assert.equal(detectHost(undefined, { CODEX_THREAD_ID: 't-1' }), 'codex');
+  assert.equal(detectHost(undefined, { CODEX_SANDBOX: 'seatbelt' }), 'codex');
+  assert.equal(detectHost(undefined, {}), 'cli');
+  assert.equal(detectHost('mcp', { CLAUDE_CODE_ENTRYPOINT: 'claude-desktop' }), 'mcp', 'the surface a caller names wins');
+  assert.equal(detectHost(undefined, { TRAIL_AGENT_HOST: 'codex' }), 'codex', "a hook's children carry its payload's host");
+  assert.equal(detectHost(undefined, { TRAIL_AGENT_HOST: 'my-laptop' }), 'cli', 'a value outside the set is ignored');
+  const home = sandbox('tel-host-desktop');
+  const ev = track('first_run', {}, { home, env: { CLAUDECODE: '1', CLAUDE_CODE_ENTRYPOINT: 'claude-desktop' } });
+  assert.equal(ev?.properties.agent_host, 'claude-desktop');
 });
 
 // Pinned rather than counted, so adding an event is a deliberate edit here and

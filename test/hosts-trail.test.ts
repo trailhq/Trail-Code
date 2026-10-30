@@ -79,6 +79,18 @@ test('the instruction text under trail names trail commands only; under graft it
   assert.match(instructionBody(), /^## Graft — repo context graph/);
 });
 
+test('under trail, AGENTS.md says where the learnings are and how to save one; graft\'s text has none of it', () => {
+  // Codex reads AGENTS.md whether or not its hooks are trusted: this is all it hears of learnings until they are.
+  const trail = instructionBody('trail');
+  assert.match(trail, /### Learnings/);
+  assert.match(trail, /`\.trail\/learnings\/`/);
+  assert.match(trail, /`trail note --title "/);
+  assert.match(trail, /--personal/);
+  assert.match(trail, /`trail check`/);
+  assert.doesNotMatch(trail, GRAFT_COMMAND);
+  assert.doesNotMatch(instructionBody(), /learning/i);
+});
+
 test('trail init for every agent: trail-named files, trail commands, a trail server', () => {
   const home = agentHome();
   const repo = tmpRepo('trail-hosts');

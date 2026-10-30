@@ -1,6 +1,6 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { join, basename, isAbsolute, relative, resolve } from 'node:path';
+import { join, basename, dirname, isAbsolute, relative, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { readWiring } from './stats.js';
 import { formatBlastRadius, formatOrientation, notesOnTouch, standingDirective, teamNotesDirective, type Touch } from './format.js';
@@ -23,7 +23,7 @@ import { classifyToolUse, commandInvokesGraft, isMcpToolName, isGraftMcpTool, pa
 import { adoptRepoBrand, brand, commandOnPath, repoWiredForTrail, tag, trailHandoverLine, trailOnPath } from '../brand.js';
 import { fitTrailServerToMachine } from '../hosts/claude-global.js';
 import { globalCopyCovers } from './hook-layers.js';
-import { keepsNotes, noteCounts, repoPlace, type NoteCounts } from '../notes/home.js';
+import { checkoutRoot, keepsNotes, noteCounts, repoPlace, type NoteCounts } from '../notes/home.js';
 import { branchesStale, overlapMark, readBranchCache, refreshBranches, SESSION_REFRESH_MS } from '../notes/branches.js';
 import { learningFiles } from '../notes/repo-trail.js';
 import { inWorkspace, maybeSyncInBackground } from '../cloud/workspace-sync.js';
@@ -32,7 +32,7 @@ import { cacheDir, readJson, writeJsonAtomic } from '../util/state.js';
 import { countBucket, type AgentHost } from '../telemetry/contract.js';
 import { detectHost } from '../trace/host.js';
 import type { HookOut } from '../skills/types.js';
-import { track } from '../telemetry/track.js';
+import { claudeHost, HOST_ENV, track } from '../telemetry/track.js';
 import { skillsDirective } from '../skills/skills.js';
 import { everyRepoLearnings } from '../notes/every-repo.js';
 import type { Note } from '../notes/notes.js';
@@ -173,7 +173,10 @@ export function learningsOnTouch(input: any, dir: string, before = false): strin
     const path = typeof ti.file_path === 'string' ? ti.file_path : typeof ti.notebook_path === 'string' ? ti.notebook_path : null;
     let touch: Touch;
     if (path) {
-      const rel = relative(dir, isAbsolute(path) ? path : join(dir, path)).replace(/\\/g, '/');
+      const abs = isAbsolute(path) ? path : join(dir, path);
+      // In a Claude Desktop worktree session the project is the main checkout and the file is in
+      // the worktree: its path in its own checkout is what a learning's touches name.
+      const rel = relative(checkoutRoot(dirname(abs)) ?? dir, abs).replace(/\\/g, '/');
       if (!rel || rel.startsWith('..') || underGraft(dir, path)) return null;
       touch = { file: rel, verb: before ? 'editing' : input?.tool_name === 'Read' ? 'opened' : 'changed' };
     } else if (typeof ti.command === 'string' && ti.command && !commandInvokesGraft(ti.command)) {
@@ -217,10 +220,10 @@ export function withTouchLearnings(out: HookOut, input: any, dir: string): HookO
   return { ...out, context: [out.context, learned].filter(Boolean).join('\n\n') };
 }
 
-/** Who to put a tool use down to: Cursor and Copilot CLI run these hooks too. */
+/** Who to put a hook's events down to: Codex, Cursor and Copilot CLI run these hooks too. */
 function telemetryHost(input: unknown): AgentHost {
   const host = detectHost(input).host;
-  return host === 'cursor' || host === 'copilot' ? host : 'claude-code';
+  return host === 'codex' || host === 'cursor' || host === 'copilot' ? host : claudeHost();
 }
 
 /**
@@ -502,6 +505,8 @@ export async function main(event: string): Promise<void> {
   // Registered in the repo and in ~/.claude, Claude Code runs both: one answers.
   // Who sent the payload decides first: Copilot CLI runs only the repo's copy.
   if (globalCopyCovers(event, process.argv[1], homedir(), process.env, input)) return;
+  // Every event this hook sends, and every trail command it starts, is put down to the agent that sent the payload.
+  process.env[HOST_ENV] = telemetryHost(input);
   const dir = projectDir(input);
   // A failed Bash call (PostToolUseFailure, D34): the skills mark, and 1b's wall fix as its one answer, before any of
   // the work the other events share.

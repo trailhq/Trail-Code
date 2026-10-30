@@ -37,7 +37,7 @@ Every event carries only these common properties:
 | `arch` | `arm64` / `x64` | CPU architecture |
 | `node_major` | `20` | Major version only |
 | `ci` | `false` | Always false: CI never sends (see below) |
-| `agent_host` | `claude-code` / `cursor` / `copilot` / `mcp` / `cli` | Which surface Trail-code ran under |
+| `agent_host` | `claude-code` / `claude-desktop` / `codex` / `cursor` / `copilot` / `mcp` / `cli` | Which surface Trail-code ran under (`claude-desktop` is the Claude desktop app's Code tab) |
 | `cli_name` | `trail` / `graft` | Which of the two names started the process (graft is trail's old name) |
 | `repo_id` | a random UUID | See "How it stays anonymous" |
 
