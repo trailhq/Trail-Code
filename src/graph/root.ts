@@ -7,6 +7,15 @@
  * above → the start dir itself, so `graft build` in a fresh repo still means
  * "here" and no command silently retargets a sibling tree.
  *
+ * One boundary stops the walk early: a LINKED git worktree. A worktree is often
+ * nested inside its own main checkout (`.claude/worktrees/<name>`), so walking up
+ * from it reaches the parent's graph and answers with the parent's code — old line
+ * numbers, none of the branch's new symbols — before worktree seeding gets a
+ * chance to run (#453). The test is {@link mainWorktreeRoot}, not "has a `.git`":
+ * a submodule or a nested clone also carries a `.git`, but its graph lives in the
+ * parent (`--follow-submodules`, `--follow-nested-repos`), so the walk must keep
+ * going through those.
+ *
  * Only the IMPLICIT case walks. An explicit `[dir]` argument is taken at face
  * value, and a `--dir` override short-circuits entirely: `contextDirFor` returns
  * an override verbatim and ignores the root it is handed, so every ancestor
@@ -16,6 +25,7 @@
 import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { contextDirFor } from "../context/node-file.js";
+import { mainWorktreeRoot } from "./seed.js";
 import { wiringPath } from "./write.js";
 import { workspacePath } from "./workspace.js";
 
@@ -31,13 +41,17 @@ export interface RootResolution {
   levels: number;
 }
 
-/** The nearest ancestor of `start` (inclusive) that holds a graft index, else `start`. */
+/**
+ * The nearest ancestor of `start` (inclusive) that holds a graft index, without
+ * leaving a linked worktree; else `start`.
+ */
 export function nearestGraftRoot(start: string, override?: string): RootResolution {
   const from = resolve(start);
   if (override) return { root: from, levels: 0 };
   let dir = from;
   for (let levels = 0; ; levels++) {
     if (hasGraftIndex(dir)) return { root: dir, levels };
+    if (mainWorktreeRoot(dir) !== null) return { root: dir, levels }; // a linked worktree is its own root
     const up = dirname(dir);
     if (up === dir) return { root: from, levels: 0 }; // hit the filesystem root, nothing indexed
     dir = up;
