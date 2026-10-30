@@ -304,7 +304,11 @@ const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
  */
 export function anonymize(text: string, who: string[]): { text: string; n: number } {
   let n = 0;
-  let out = text;
+  // Emails first, so a name part swapped below can't leave `[you]@company.com`.
+  let out = text.replace(EMAIL, () => {
+    n++;
+    return "[email]";
+  });
   for (const w of who) {
     if (!out.toLowerCase().includes(w.toLowerCase())) continue;
     const esc = w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -315,10 +319,6 @@ export function anonymize(text: string, who: string[]): { text: string; n: numbe
       return to;
     });
   }
-  out = out.replace(EMAIL, () => {
-    n++;
-    return "[email]";
-  });
   return { text: out, n };
 }
 
@@ -421,7 +421,8 @@ function walk(value: unknown, fix: (s: string) => string, dropped: () => void, k
   if (value && typeof value === "object") {
     const o = value as Record<string, unknown>;
     const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(o)) out[k] = walk(v, fix, dropped, k, o);
+    // Keys too: Claude Code keys some maps by file path.
+    for (const [k, v] of Object.entries(o)) out[fix(k)] = walk(v, fix, dropped, k, o);
     return out;
   }
   return value;
