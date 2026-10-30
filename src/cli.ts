@@ -54,6 +54,7 @@ import { buildGraphWithProgress } from "./claude/build-progress.js";
 import { installBrainsServer, installCursorBrainsServer, removeBrainsServer, removeCursorBrainsServer } from "./hosts/claude-global.js";
 import { upsertCodexToml } from "./hosts/mcp-config.js";
 import { homedir } from "node:os";
+import { createInterface } from "node:readline";
 import { formatUpgradeReport, formatVersionReport, getNpmViewVersion, readCurrentVersion, readPackageName, runUpgrade } from "./cli-meta.js";
 import { nativeFallbackNotice } from "./graph/native.js";
 import { patchBuildConfig, type BuildConfig } from "./util/state.js";
@@ -74,7 +75,7 @@ import { gateNote, namesRepoSymbol, symbolCandidates, trackedFiles } from "./not
 import { recordLookup } from "./cloud/lookup-activity.js";
 import { clearPending, cloudLines, loginLines, loginLink, sessionKey, startWaiting, WAIT_MS, waitForConnect } from "./cloud/nudge.js";
 import { teamWorkspace } from "./cloud/team-file.js";
-import { addRepo, claimLoginCode, clearCloud, cloudEnabled, cloudForRepo, cloudIn, failPair, fetchMe, fetchTeam, isError, readCloud, readClouds, sameWorkspace, serverUrl, trailUrl, useServer, writeCloud, type Cloud, type Me, type SetupFailure } from "./cloud/workspace.js";
+import { addRepo, claimLoginCode, clearCloud, cloudEnabled, cloudForRepo, cloudIn, failPair, fetchMe, fetchTeam, isError, readCloud, readClouds, sameWorkspace, serverUrl, shareAllowed, shareSession, trailUrl, useServer, writeCloud, type Cloud, type Me, type SetupFailure } from "./cloud/workspace.js";
 import {
   claimConnectCode,
   connectAgain,
@@ -99,7 +100,7 @@ import { formatOverlap, maybeRefreshBranches, overlapsWith, pushedWhen, readBran
 import { ensureRepoTrail, LEARNINGS_DIR } from "./notes/repo-trail.js";
 import type { AskResult } from "./ask/ask.js";
 import { setInputRate } from "./context/savings.js";
-import { formatUpdateNudge, maybeRefreshInBackground, readStamp, readUpdateCache, refreshUpdateCache, wiredHostIds, wiringOpts, writeStamp } from "./upkeep.js";
+import { formatUpdateNudge, maybeRefreshInBackground, readStamp, readUpdateCache, refreshUpdateCache, runningVersion, wiredHostIds, wiringOpts, writeStamp } from "./upkeep.js";
 import { shouldMoveToTrail } from "./upkeep-run.js";
 import {
   countBucket,
@@ -115,9 +116,12 @@ import {
   maybeFlushInBackground,
   patchState,
   runFlush,
+  sessionMessagesBucket,
+  sessionSizeBucket,
   track,
   trackFirstRunIfNew,
 } from "./telemetry/index.js";
+import { bundleSession, listLines, MAX_GZ_BYTES, pickSession, previewLines, redactedCount, sessionsHere, shortId, sizeLabel, whoIAm } from "./cloud/share-session.js";
 
 const program = new Command();
 const currentVersion = readCurrentVersion(import.meta.url);
@@ -2349,6 +2353,103 @@ function logoutCommand(name = "logout"): Command {
     });
 }
 
+const INTERNAL_ONLY = "✗ internal only: share-session is for the Trail team, signed in to its workspace on team.trailhq.com";
+
+/**
+ * The connection that may send sessions: the Trail team's workspace, which
+ * trail-cloud decides. This repo's workspace is asked first. Null after
+ * saying why there is none.
+ */
+async function shareCloud(repoKey: string | null): Promise<Cloud | null> {
+  const all = readClouds();
+  const mine = repoKey ? cloudIn(all, repoKey) : null;
+  let failed: string | null = null;
+  for (const c of mine ? [mine, ...all.filter((x) => x !== mine)] : all) {
+    const ok = await shareAllowed(c);
+    if (ok === true) return c;
+    if (isError(ok)) failed = ok.error;
+  }
+  console.error(failed ? `✗ couldn't check with Trail · ${failed}` : INTERNAL_ONLY);
+  process.exitCode = 1;
+  return null;
+}
+
+/** Ask on the terminal; only `y` or `yes` is a yes, and a closed input is a no. */
+function askYes(question: string): Promise<boolean> {
+  const rl = createInterface({ input: process.stdin, output: process.stderr });
+  return new Promise((done) => {
+    let answered = false;
+    rl.on("close", () => answered || done(false));
+    rl.question(question, (a) => {
+      answered = true;
+      rl.close();
+      done(/^y(es)?$/i.test(a.trim()));
+    });
+  });
+}
+
+function shareSessionCommand(name = "share-session"): Command {
+  return new Command(name)
+    .description("Send one of this folder's Claude Code sessions to the Trail team, in full, secrets taken out (Trail team only)")
+    .argument("[session]", "its number in --list, or its id (default: 1, the newest)")
+    .option("--list", "list this folder's sessions, newest first")
+    .option("--yes", "send without asking: only after the person said yes to what it showed")
+    .action(async (pick: string | undefined, opts: { list?: boolean; yes?: boolean }) => {
+      const dir = process.cwd();
+      const here = workspaceRepo(dir);
+      const repoKey = here.git && !here.key.startsWith("local/") ? here.key : null;
+      const cloud = await shareCloud(repoKey);
+      if (!cloud) return;
+      const sessions = sessionsHere(dir);
+      if (opts.list) {
+        console.log(listLines(sessions).join("\n"));
+        if (sessions.length) console.log(`· send one: ${cmd("graft share-session")} <number>`);
+        return;
+      }
+      const session = pickSession(sessions, pick);
+      if (!session) {
+        console.error(sessions.length ? `✗ no session "${pick}" here · ${cmd("graft share-session")} --list shows them` : "✗ no Claude Code sessions for this folder yet");
+        process.exitCode = 1;
+        return;
+      }
+      const bundle = bundleSession(session, whoIAm([cloud.user.name, cloud.user.email]));
+      if (bundle.gz.length > MAX_GZ_BYTES) {
+        console.error(`✗ this session is too big to send: ${sizeLabel(bundle.gz.length)} zipped, and Trail takes up to ${sizeLabel(MAX_GZ_BYTES)}`);
+        process.exitCode = 1;
+        return;
+      }
+      console.log(previewLines(bundle, { workspace: cloud.workspace.name, url: cloud.url }).join("\n"));
+      console.log("");
+      const interactive = process.stdin.isTTY && process.stderr.isTTY;
+      if (!opts.yes && !interactive) {
+        console.log(`· nothing sent. Show the person what's above; only if they say yes, run ${cmd("graft share-session")} ${shortId(session)} --yes`);
+        return;
+      }
+      if (!opts.yes && !(await askYes("Send this whole session, every message, tool call and result, to the Trail team? [y/N] "))) {
+        console.error("· nothing sent");
+        return;
+      }
+      const sent = await shareSession(cloud, {
+        session_id: session.id,
+        repo: repoKey ?? "",
+        trail_version: runningVersion(),
+        title: bundle.title,
+        messages: bundle.messages,
+        subagents: bundle.subagents,
+        bytes: bundle.bytes,
+        redacted: redactedCount(bundle),
+        transcript_gz: bundle.gz.toString("base64"),
+      });
+      if (isError(sent)) {
+        console.error(`✗ couldn't send it · ${sent.error}`);
+        process.exitCode = 1;
+        return;
+      }
+      track("session_shared", { size_bucket: sessionSizeBucket(bundle.bytes), messages_bucket: sessionMessagesBucket(bundle.messages) }, { repo: here.checkout });
+      console.error(`✓ sent ${shortId(session)} to the Trail team (${sizeLabel(bundle.gz.length)}) · thank you: we read it to see where trail gets skipped or misused`);
+    });
+}
+
 /** The repo at `repo`, as the workspace names it. */
 function workspaceRepo(repo: string): { key: string; name: string; checkout: string; git: boolean } {
   const place = repoPlace(repo);
@@ -2799,6 +2900,8 @@ if (TRAIL) {
   // Signing in is how every coding agent here gets the team's workspace: always listed.
   program.addCommand(loginCommand().helpGroup(GROUP.cloud));
   for (const c of [workspaceCommand(), logoutCommand()]) program.addCommand(c.helpGroup(GROUP.cloud), { hidden: !cloudEnabled() });
+  // The Trail team's own: never listed, and anyone else is told so in one line.
+  program.addCommand(shareSessionCommand(), { hidden: true });
   program.addCommand(statusCommand().helpGroup(GROUP.setup));
 
   // Help lists the groups in this order, and the commands within each.

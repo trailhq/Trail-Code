@@ -6,7 +6,7 @@
  * carries a key (published releases only), `DO_NOT_TRACK` is unset, this is not
  * CI, and the user has not disabled it. See `gate.ts`.
  */
-export { EVENTS, VALUES, COMMON_KEYS, isTrackedCommand, errorCode, filesBucket, durationBucket, countBucket, savedTokensBucket, hookMsBucket, langsValue } from './contract.js';
+export { EVENTS, VALUES, COMMON_KEYS, isTrackedCommand, errorCode, filesBucket, durationBucket, countBucket, savedTokensBucket, hookMsBucket, sessionSizeBucket, sessionMessagesBucket, langsValue } from './contract.js';
 export type { AgentHost, Surface, TrackedCommand, BuildStage, ErrorCode } from './contract.js';
 export { track, trackFirstRunIfNew, trackInstallIfNew, detectHost } from './track.js';
 export type { QueuedEvent, TrackContext } from './track.js';
