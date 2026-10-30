@@ -1,0 +1,29 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.trailhq/trail-code",
+  "title": "Trail Code",
+  "description": "A local code map for coding agents: find code, trace callers, read a file's API, map a repo.",
+  "websiteUrl": "https://trailhq.com/trail-code",
+  "repository": {
+    "url": "https://github.com/trailhq/Trail-Code",
+    "source": "github",
+    "id": "1288325627"
+  },
+  "version": "0.28.1",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@trailhq/trail-code",
+      "version": "0.28.1",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "mcp"
+        }
+      ]
+    }
+  ]
+}
