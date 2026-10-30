@@ -5,7 +5,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -14,6 +14,9 @@ import { notesOnTouch } from '../src/claude/format.js';
 import { main, withTouchLearnings } from '../src/claude/hooks.js';
 import type { SessionState } from '../src/claude/state.js';
 import { writeNote, type Note } from '../src/notes/notes.js';
+import { otherCheckout } from '../src/notes/home.js';
+import { CI_ENV_VARS } from '../src/telemetry/gate.js';
+import { queuePath } from '../src/telemetry/queue.js';
 
 const BODY = '## Decided\n- Take the workspace from server-held data.\n\n## Watch out\n- The request body is client-controlled.\n';
 const note = (title: string, touches: string[], extra: Partial<Note> = {}): Note => ({ path: `/r/.trail/learnings/${title}.md`, title, author: 'Priya', date: '2026-10-07', touches, body: BODY, scope: 'repo', ...extra });
@@ -78,6 +81,56 @@ test('the Read hook puts a committed learning in front of the agent', async () =
   assert.equal(await hook('tool-savings', { session_id: 't1', tool_name: 'Read', tool_input: { file_path: join(d, 'tool', 'workspace.py') }, tool_response: 'x' }), '', 'once a session');
   assert.equal(await hook('tool-savings', { session_id: 't2', tool_name: 'Bash', tool_input: { command: 'trail skeleton tool/workspace.py' }, tool_response: 'x' }), '', "trail's own output already carries it");
   assert.match(await hook('tool-savings', { session_id: 't3', tool_name: 'Bash', tool_input: { command: 'sed -n 1,80p tool/workspace.py' }, tool_response: 'x' }), /Take workspace/);
+});
+
+const git = (cwd: string, ...args: string[]) => spawnSync('git', ['-c', 'user.name=Priya', '-c', 'user.email=p@acme.test', '-c', 'commit.gpgsign=false', ...args], { cwd });
+
+/** A main checkout with a committed learning, and a worktree under `.claude/worktrees/` as Claude Desktop makes, with one more on its branch. The session's project is the main checkout. */
+function worktreeSession(): { d: string; tree: string } {
+  process.env.TRAIL_HOME = mkdtempSync(join(tmpdir(), 'touch-home-'));
+  process.env[BRAND_ENV] = 'trail';
+  const d = mkdtempSync(join(tmpdir(), 'touch-repo-'));
+  git(d, 'init', '-q', '-b', 'main');
+  mkdirSync(join(d, 'graft', '.cache', 'session'), { recursive: true });
+  writeNote(d, { title: 'Take workspace from server-held data', body: BODY, author: 'Priya', date: '2026-10-07', touches: ['tool/workspace.py'] }, 'repo');
+  git(d, 'add', '.trail');
+  git(d, 'commit', '-qm', 'learning');
+  const tree = join(d, '.claude', 'worktrees', 'tidy');
+  git(d, 'worktree', 'add', '-q', '-b', 'tidy', tree);
+  writeNote(tree, { title: 'Pagination cursors are opaque', body: BODY, author: 'Kumar', date: '2026-10-08', touches: ['tool/pages.py'] }, 'repo');
+  process.env.CLAUDE_PROJECT_DIR = d;
+  return { d, tree };
+}
+
+test("in a worktree session, where the project is the main checkout, the worktree's copy of a file brings its learnings", async () => {
+  const { d, tree } = worktreeSession();
+
+  const read = await hook('tool-savings', { session_id: 'w1', tool_name: 'Read', tool_input: { file_path: join(tree, 'tool', 'workspace.py') }, tool_response: 'x' });
+  assert.match(JSON.parse(read).hookSpecificOutput.additionalContext, /Take workspace from server-held data/);
+  const edit = await hook('pre-edit', { session_id: 'w2', tool_name: 'Edit', tool_input: { file_path: join(tree, 'tool', 'pages.py'), old_string: 'a', new_string: 'b' } });
+  assert.match(JSON.parse(edit).hookSpecificOutput.additionalContext, /Pagination cursors are opaque/, "a learning on the worktree's branch counts too");
+
+  const elsewhere = mkdtempSync(join(tmpdir(), 'touch-other-'));
+  git(elsewhere, 'init', '-q', '-b', 'main');
+  assert.equal(otherCheckout(d, join(elsewhere, 'tool', 'workspace.py')), null, 'another repo is not this one');
+  assert.equal(otherCheckout(d, join(d, 'tool', 'workspace.py')), null, 'the main checkout is the project already');
+});
+
+test('each learning that reaches the agent on touch is counted, with whether it came through a worktree', async () => {
+  const keys = ['HOME', 'USERPROFILE', 'GRAFT_POSTHOG_KEY', 'GRAFT_POSTHOG_HOST', 'DO_NOT_TRACK', ...CI_ENV_VARS];
+  const saved = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
+  const home = mkdtempSync(join(tmpdir(), 'touch-telemetry-'));
+  try {
+    Object.assign(process.env, { HOME: home, USERPROFILE: home, GRAFT_POSTHOG_KEY: 'phc_test_key', GRAFT_POSTHOG_HOST: 'http://127.0.0.1:9' });
+    for (const k of ['DO_NOT_TRACK', ...CI_ENV_VARS]) delete process.env[k];
+    const { d, tree } = worktreeSession();
+    await hook('tool-savings', { session_id: 'm1', tool_name: 'Read', tool_input: { file_path: join(tree, 'tool', 'workspace.py') }, tool_response: 'x' });
+    await hook('tool-savings', { session_id: 'm2', tool_name: 'Read', tool_input: { file_path: join(d, 'tool', 'workspace.py') }, tool_response: 'x' });
+    const sent = readFileSync(queuePath(home), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)).filter((e) => e.event === 'learnings_on_touch');
+    assert.deepEqual(sent.map((e) => [e.properties.via, e.properties.worktree]), [['read', 'true'], ['read', 'false']]);
+  } finally {
+    for (const k of keys) saved[k] === undefined ? delete process.env[k] : (process.env[k] = saved[k]);
+  }
 });
 
 test("a Bash call's learnings join the skills part's context in one answer, and a block stays the whole answer", () => {

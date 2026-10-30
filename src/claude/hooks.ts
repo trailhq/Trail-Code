@@ -1,6 +1,6 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { join, basename, dirname, isAbsolute, relative, resolve } from 'node:path';
+import { join, basename, isAbsolute, relative, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { readWiring } from './stats.js';
 import { formatBlastRadius, formatOrientation, notesOnTouch, standingDirective, teamNotesDirective, type Touch } from './format.js';
@@ -23,7 +23,7 @@ import { classifyToolUse, commandInvokesGraft, isMcpToolName, isGraftMcpTool, pa
 import { adoptRepoBrand, brand, commandOnPath, repoWiredForTrail, tag, trailHandoverLine, trailOnPath } from '../brand.js';
 import { fitTrailServerToMachine } from '../hosts/claude-global.js';
 import { globalCopyCovers } from './hook-layers.js';
-import { checkoutRoot, keepsNotes, noteCounts, repoPlace, type NoteCounts } from '../notes/home.js';
+import { keepsNotes, noteCounts, otherCheckout, repoPlace, type NoteCounts } from '../notes/home.js';
 import { branchesStale, overlapMark, readBranchCache, refreshBranches, SESSION_REFRESH_MS } from '../notes/branches.js';
 import { learningFiles } from '../notes/repo-trail.js';
 import { inWorkspace, maybeSyncInBackground } from '../cloud/workspace-sync.js';
@@ -123,9 +123,8 @@ async function editOverlap(input: any, dir: string, file: string): Promise<strin
     if (!top.git) return null;
     const path = resolve(dir, file);
     // In a worktree session the project is the main checkout and the edit is in the worktree's copy:
-    // compare from the checkout the file is in, with the branches the session start read. A file in
-    // another repo finds none of these branches there.
-    const checkout = checkoutRoot(dirname(path)) ?? top.checkout;
+    // compare from the checkout the file is in, with the branches the session start read.
+    const checkout = otherCheckout(top.checkout, path) ?? top.checkout;
     const { functionOverlaps, editOverlapDirective } = await import('../notes/edit-overlap.js');
     const cache = readBranchCache(top.checkout);
     const found = await functionOverlaps(checkout, path, input?.tool_input, noteAuthor(top.checkout), cache);
@@ -181,19 +180,28 @@ export function learningsOnTouch(input: any, dir: string, before = false): strin
     const ti = input?.tool_input ?? {};
     const path = typeof ti.file_path === 'string' ? ti.file_path : typeof ti.notebook_path === 'string' ? ti.notebook_path : null;
     let touch: Touch;
+    // A worktree session's project is the main checkout while Claude works on the worktree's copy:
+    // name the file, and read the learnings, from the checkout it's in.
+    let repo = dir;
     if (path) {
-      const rel = relative(dir, isAbsolute(path) ? path : join(dir, path)).replace(/\\/g, '/');
-      if (!rel || rel.startsWith('..') || underGraft(dir, path)) return null;
+      const abs = isAbsolute(path) ? path : join(dir, path);
+      repo = otherCheckout(dir, abs) ?? dir;
+      const rel = relative(repo, abs).replace(/\\/g, '/');
+      if (!rel || rel.startsWith('..') || underGraft(repo, abs)) return null;
       touch = { file: rel, verb: before ? 'editing' : input?.tool_name === 'Read' ? 'opened' : 'changed' };
     } else if (typeof ti.command === 'string' && ti.command && !commandInvokesGraft(ti.command)) {
       touch = { command: ti.command };
     } else return null;
-    const notes = liveLearnings(listNotes(dir, { branches: false }));
+    const notes = liveLearnings(listNotes(repo, { branches: false }));
     if (!notes.length) return null;
     const id = payloadSessionId(input);
     const s = readSession(dir, id);
     const text = notesOnTouch(notes, touch, s);
-    if (text) writeSession(dir, id, s);
+    if (text) {
+      writeSession(dir, id, s);
+      const via = !path ? 'command' : !before && input?.tool_name === 'Read' ? 'read' : 'edit';
+      track('learnings_on_touch', { via, worktree: String(repo !== dir) });
+    }
     return text;
   } catch {
     // A learning that doesn't arrive costs one reminder; a broken hook costs the turn.
