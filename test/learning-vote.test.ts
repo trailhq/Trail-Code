@@ -1,5 +1,5 @@
 /**
- * "Did it help? 👍/👎" (src/claude/learning-vote.ts): the credit line asks
+ * "Did it help? yes/no" (src/claude/learning-vote.ts): the credit line asks
  * once a session, the Stop hook marks the vote pending, and the next prompt
  * settles it into one `learning_rated` event: the vote and the learning's id,
  * never what the person typed.
@@ -39,7 +39,7 @@ function repo(): string {
 test('the credit instruction asks once a session, and remembers which learning it showed', () => {
   const s = {} as SessionState;
   const first = notesForPrompt(ask, s)!;
-  assert.match(first, /end that line with " · did it help\? 👍\/👎"/);
+  assert.match(first, /end that line with " · did it help\? yes\/no"/);
   assert.equal(s.lastLearning, 'l-3f9a2c1d');
   s.vote = { learning: 'l-3f9a2c1d' };
   const touch = notesOnTouch([{ ...note, id: 'l-0000aaaa', path: '/n/b.md' } as unknown as Note], { file: 'clone.go', verb: 'opened' }, s)!;
@@ -48,16 +48,18 @@ test('the credit instruction asks once a session, and remembers which learning i
   assert.equal(s.lastLearning, 'l-0000aaaa');
 });
 
-test('a reply asked only when its credit line carries both thumbs', () => {
+test('a reply asked only when its credit line carries the question', () => {
   assert.equal(askedForVote(CREDIT), true);
   assert.equal(askedForVote("📝 Started from Maya's learning"), false);
-  assert.equal(askedForVote('Ship it? 👍/👎'), false, 'no credit line, no learning to rate');
+  assert.equal(askedForVote("📝 Started from Maya's learning · Did it help? Yes / No"), true, 'any case and spacing');
+  assert.equal(askedForVote("📝 Started from Maya's learning · did it help? 👍/👎"), false, 'the thumbs wording is gone');
+  assert.equal(askedForVote('Ship it? did it help? yes/no'), false, 'no credit line, no learning to rate');
 });
 
 test('the vote is read from the start of the person\'s words', () => {
-  for (const w of ['👍', '👍🏽 thanks, now the tests', '+1', ':+1:', ':thumbsup: nice']) assert.equal(voteOf(w), 'up', w);
-  for (const w of ['👎', '-1 it was stale', ':-1:', ':thumbsdown:']) assert.equal(voteOf(w), 'down', w);
-  for (const w of ['yes', 'now fix the tests', '+10 more rows', '-12 is the offset', 'it helped 👍']) assert.equal(voteOf(w), 'none', w);
+  for (const w of ['yes', 'Yes, now the tests', 'YES!', '👍', '👍🏽 thanks, now the tests', '+1', ':+1:', ':thumbsup: nice']) assert.equal(voteOf(w), 'up', w);
+  for (const w of ['no', 'No, it was stale', '👎', '-1 it was stale', ':-1:', ':thumbsdown:']) assert.equal(voteOf(w), 'down', w);
+  for (const w of ['y', 'n', 'yesterday it broke', 'nope', 'not yet', 'now fix the tests', '+10 more rows', '-12 is the offset', 'it helped 👍']) assert.equal(voteOf(w), 'none', w);
 });
 
 test('Stop marks the vote pending once; the next prompt settles it into one event with the vote and the id only', async () => {
@@ -67,9 +69,9 @@ test('Stop marks the vote pending once; the next prompt settles it into one even
   writeSession(dir, 's1', { graftReads: 0, sourceReads: 0, savedTokens: 0, lastLearning: 'l-3f9a2c1d' });
   await handleStopEvent({ session_id: 's1', last_assistant_message: CREDIT }, dir, { skills: false });
   assert.deepEqual(readSession(dir, 's1').vote, { learning: 'l-3f9a2c1d' });
-  const secret = '👍 and rename Zebrafinchsynthetic in clone.go';
+  const secret = 'yes, and rename Zebrafinchsynthetic in clone.go';
   settleVote(dir, 's1', secret, { home: h, env: OPEN });
-  settleVote(dir, 's1', '👎', { home: h, env: OPEN });
+  settleVote(dir, 's1', 'no', { home: h, env: OPEN });
   const sent = peek(h) as Array<{ event: string; properties: Record<string, string> }>;
   assert.equal(sent.length, 1, 'once a session');
   assert.equal(sent[0]!.event, 'learning_rated');

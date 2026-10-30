@@ -1,13 +1,13 @@
 /**
- * "Did it help? 👍/👎", asked once a session after a learning is reused.
+ * "Did it help? yes/no", asked once a session after a learning is reused.
  *
  * Reuse is the credit line: when a learning shapes a reply, the agent closes
  * it with "📝 Started from Maya's learning" (format.ts asks for that). Until
  * the session has asked, that ask also has the agent end the line with
  * {@link VOTE_ASK}, so the question costs no extra turn and never stops the
  * work. The Stop hook sees the question in the reply's last words and marks a
- * vote pending; the person's next prompt settles it: 👍 or +1 is `up`, 👎 or
- * -1 is `down`, anything else is `none`, and the prompt goes on as usual.
+ * vote pending; the person's next prompt settles it: yes (or 👍, +1) is `up`,
+ * no (or 👎, -1) is `down`, anything else is `none`, and the prompt goes on as usual.
  * One `learning_rated` event carries the vote and the learning's id. Nothing
  * the person typed is kept or sent.
  */
@@ -15,7 +15,7 @@ import { track, type TrackContext } from '../telemetry/track.js';
 import { readSession, writeSession, type SessionState } from './state.js';
 
 /** What the agent ends its credit line with, the one time a session it asks. */
-export const VOTE_ASK = 'did it help? 👍/👎';
+export const VOTE_ASK = 'did it help? yes/no';
 
 /** The vote a prompt's first characters give, or `none` for a prompt that isn't one. */
 export type Vote = 'up' | 'down' | 'none';
@@ -25,16 +25,17 @@ export function voteClause(s: SessionState): string {
   return s.vote ? '' : `, and in this reply only, end that line with " · ${VOTE_ASK}"`;
 }
 
-/** Whether a reply asked: a credit line carrying both thumbs. */
+/** Whether a reply asked: a credit line carrying the question. */
 export function askedForVote(reply: string): boolean {
-  return reply.split('\n').some((l) => l.includes('📝') && l.includes('👍') && l.includes('👎'));
+  return reply.split('\n').some((l) => l.includes('📝') && /did it help\?\s*yes\s*\/\s*no/i.test(l));
 }
 
 /** The person's answer, from the start of their own words. */
 export function voteOf(words: string): Vote {
   const w = words.trim();
-  if (/^(?:👍|:\+1:|:thumbsup:|\+1(?!\d))/u.test(w)) return 'up';
-  if (/^(?:👎|:-1:|:thumbsdown:|-1(?!\d))/u.test(w)) return 'down';
+  // Whole words only: a bare y/n may answer trail's own "(y/n)" in the same reply.
+  if (/^(?:yes\b|👍|:\+1:|:thumbsup:|\+1(?!\d))/iu.test(w)) return 'up';
+  if (/^(?:no\b|👎|:-1:|:thumbsdown:|-1(?!\d))/iu.test(w)) return 'down';
   return 'none';
 }
 
