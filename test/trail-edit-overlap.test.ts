@@ -135,41 +135,66 @@ test("an edit to the function a teammate's branch changes is an overlap; one to 
   assert.equal(found[0]!.file, "src/retry.ts");
   assert.deepEqual(found[0]!.symbols.map((s) => s.label), ["backoff()"]);
   assert.equal(found[0]!.subject, "fix(retry): cap the backoff at five seconds");
+  assert.equal(found[0]!.mine, false);
   refreshBranches(kumar);
-  assert.deepEqual(await functionOverlaps(kumar, join(kumar, "src", "retry.ts"), { new_string: "Math.min" }, "Kumar"), [], "your own branch isn't overlap");
+  assert.deepEqual(await functionOverlaps(kumar, join(kumar, "src", "retry.ts"), { new_string: "Math.min" }, "Kumar"), [], "the branch you're on isn't overlap");
 });
 
-test("after the edit, the hook tells the agent about it once a session", async () => {
+test("your own other open branch on the same function is an overlap too, as from a parallel session", async () => {
+  const { kumar } = team();
+  kumarChangesBackoff(kumar);
+  git(kumar, "checkout", "-q", "-b", "kumar/tidy", "main");
+  refreshBranches(kumar);
+  writeFileSync(join(kumar, "src", "retry.ts"), RETRY.replace("attempt * 100", "attempt * 120"));
+  const found = await functionOverlaps(kumar, join(kumar, "src", "retry.ts"), { new_string: "attempt * 120" }, "Kumar");
+  assert.deepEqual(found.map((o) => [o.ref, o.mine]), [["origin/kumar/backoff", true]]);
+});
+
+/** Runs the post-edit hook as Claude Code would, with `project` as the session's project, and returns what it printed. */
+async function postEdit(project: string, session: string, toolInput: object): Promise<string> {
   const { main } = await import("../src/claude/hooks.js");
+  process.env.CLAUDE_PROJECT_DIR = project;
+  let out = "";
+  const write = process.stdout.write;
+  const pass = write.bind(process.stdout);
+  // The hook writes strings; the test runner's own reports (bytes, on Node 20) pass through.
+  process.stdout.write = ((chunk: unknown, ...rest: unknown[]) => (typeof chunk === "string" ? ((out += chunk), true) : (pass as (...a: unknown[]) => boolean)(chunk, ...rest))) as typeof process.stdout.write;
+  process.env.GRAFT_TEST_STDIN = JSON.stringify({ session_id: session, tool_name: "Edit", tool_input: toolInput });
+  try {
+    await main("post-edit");
+  } finally {
+    process.stdout.write = write;
+    delete process.env.GRAFT_TEST_STDIN;
+  }
+  return out;
+}
+
+test("after the edit, the hook tells the agent about it once a session", async () => {
   const { anirudh, kumar } = team();
   kumarChangesBackoff(kumar);
   refreshBranches(anirudh);
   const edit = anirudhEdits(anirudh, "attempt * 100", "attempt * 150");
-  process.env.CLAUDE_PROJECT_DIR = anirudh;
-  const run = async (): Promise<string> => {
-    let out = "";
-    const write = process.stdout.write;
-    const pass = write.bind(process.stdout);
-    // The hook writes strings; the test runner's own reports (bytes, on Node 20) pass through.
-    process.stdout.write = ((chunk: unknown, ...rest: unknown[]) => (typeof chunk === "string" ? ((out += chunk), true) : (pass as (...a: unknown[]) => boolean)(chunk, ...rest))) as typeof process.stdout.write;
-    process.env.GRAFT_TEST_STDIN = JSON.stringify({ session_id: "s1", tool_name: "Edit", tool_input: edit });
-    try {
-      await main("post-edit");
-    } finally {
-      process.stdout.write = write;
-      delete process.env.GRAFT_TEST_STDIN;
-    }
-    return out;
-  };
-  const first = JSON.parse(await run()).hookSpecificOutput.additionalContext as string;
+  const first = JSON.parse(await postEdit(anirudh, "s1", edit)).hookSpecificOutput.additionalContext as string;
   assert.match(first, /Kumar's open branch kumar\/backoff also changes backoff\(\) in src\/retry\.ts/);
   assert.match(first, /🔀 trail · /);
-  assert.equal(await run(), "", "not again for the same branch and function");
+  assert.equal(await postEdit(anirudh, "s1", edit), "", "not again for the same branch and function");
+});
+
+test("in a worktree session, where the project is the main checkout, an edit to the worktree's copy is still compared", async () => {
+  const { anirudh, kumar } = team();
+  kumarChangesBackoff(kumar);
+  refreshBranches(anirudh);
+  const tree = join(anirudh, ".claude", "worktrees", "retry-fix");
+  git(anirudh, "worktree", "add", "-q", "-b", "anirudh/retry-fix", tree, "main");
+  const file = join(tree, "src", "retry.ts");
+  writeFileSync(file, RETRY.replace("attempt * 100", "attempt * 150"));
+  const out = await postEdit(anirudh, "wt1", { file_path: file, old_string: "attempt * 100", new_string: "attempt * 150" });
+  assert.match(JSON.parse(out).hookSpecificOutput.additionalContext, /Kumar's open branch kumar\/backoff also changes backoff\(\) in src\/retry\.ts/);
 });
 
 test("the agent is told who, what and where to look, and to say it in trail's words", () => {
   const text = editOverlapDirective(
-    { ref: "origin/kumar/backoff", author: "Kumar", at: 0, file: "src/retry.ts", symbols: [{ id: "src/retry.ts#backoff", label: "backoff()" }], subject: "fix(retry): cap the backoff" },
+    { ref: "origin/kumar/backoff", author: "Kumar", at: 0, file: "src/retry.ts", symbols: [{ id: "src/retry.ts#backoff", label: "backoff()" }], subject: "fix(retry): cap the backoff", mine: false },
     "origin/main",
     "[trail]",
     "🔀 trail",
@@ -179,6 +204,15 @@ test("the agent is told who, what and where to look, and to say it in trail's wo
   assert.match(text, /`git diff origin\/main\.\.\.origin\/kumar\/backoff -- src\/retry\.ts`/);
   assert.match(text, /start with "🔀 trail · "/);
   assert.match(text, /whether it clashes with yours/);
+
+  const mine = editOverlapDirective(
+    { ref: "origin/anirudh/retry", author: "Anirudh", at: 0, file: "src/retry.ts", symbols: [{ id: "src/retry.ts#backoff", label: "backoff()" }], subject: "", mine: true },
+    "origin/main",
+    "[trail]",
+    "🔀 trail",
+  );
+  assert.match(mine, /^\[trail\] Your other open branch anirudh\/retry also changes backoff\(\)/);
+  assert.match(mine, /"🔀 trail · Your branch anirudh\/retry also changes backoff\(\)\./);
 });
 
 test("a top-level constant both change is an overlap, though the graph has no node for it; imports aren't", async () => {

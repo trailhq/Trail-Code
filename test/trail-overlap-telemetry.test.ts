@@ -38,7 +38,7 @@ function sent(event: string): Record<string, string>[] {
 }
 
 const cache: BranchCache = { fetchedAt: 0, base: "origin/main", branches: [], open: ["kumar/backoff"] };
-const warning = (ref: string, author: string): FunctionOverlap => ({ ref, author, at: 0, file: "src/retry.ts", symbols: [{ id: "src/retry.ts#backoff", label: "backoff()" }], subject: "" });
+const warning = (ref: string, author: string, mine = false): FunctionOverlap => ({ ref, author, at: 0, file: "src/retry.ts", symbols: [{ id: "src/retry.ts#backoff", label: "backoff()" }], subject: "", mine });
 
 test("whether a branch has an open pull request, once GitHub has been asked", () => {
   assert.equal(prState(cache, "origin/kumar/backoff"), "open");
@@ -49,9 +49,9 @@ test("whether a branch has an open pull request, once GitHub has been asked", ()
 test("each warning is counted with its pull request, and a prompt naming the teammate or branch is acting on it, once", () => {
   const dir = tmpRepo("overlap-telemetry");
   const s = readSession(dir, "s1");
-  overlapsShown(s, [warning("origin/kumar/backoff", "Kumar"), warning("origin/maya/old-try", "Maya")], cache);
+  overlapsShown(s, [warning("origin/kumar/backoff", "Kumar"), warning("origin/maya/old-try", "Maya", true)], cache);
   writeSession(dir, "s1", s);
-  assert.deepEqual(sent("overlap_warned").map((p) => p.pr), ["open", "none"]);
+  assert.deepEqual(sent("overlap_warned").map((p) => [p.pr, p.whose]), [["open", "teammate"], ["none", "mine"]]);
   assert.ok(!JSON.stringify(sent("overlap_warned")).includes("kumar"), "no name travels");
 
   overlapActed(dir, "s1", "keep going with the retry fix");
@@ -61,5 +61,5 @@ test("each warning is counted with its pull request, and a prompt naming the tea
   overlapActed(dir, "s1", "ok, what is kumar changing there?");
   overlapActed(dir, "s1", "and rebase on maya/old-try");
   overlapActed(dir, "s1", "tell Kumar I'm on it");
-  assert.deepEqual(sent("overlap_acted").map((p) => p.pr), ["open", "none"], "once per warning");
+  assert.deepEqual(sent("overlap_acted").map((p) => [p.pr, p.whose]), [["open", "teammate"], ["none", "mine"]], "once per warning");
 });

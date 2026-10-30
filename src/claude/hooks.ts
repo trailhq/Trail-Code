@@ -1,6 +1,6 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { join, basename, isAbsolute, relative, resolve } from 'node:path';
+import { join, basename, dirname, isAbsolute, relative, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { readWiring } from './stats.js';
 import { formatBlastRadius, formatOrientation, notesOnTouch, standingDirective, teamNotesDirective, type Touch } from './format.js';
@@ -23,7 +23,7 @@ import { classifyToolUse, commandInvokesGraft, isMcpToolName, isGraftMcpTool, pa
 import { adoptRepoBrand, brand, commandOnPath, repoWiredForTrail, tag, trailHandoverLine, trailOnPath } from '../brand.js';
 import { fitTrailServerToMachine } from '../hosts/claude-global.js';
 import { globalCopyCovers } from './hook-layers.js';
-import { keepsNotes, noteCounts, repoPlace, type NoteCounts } from '../notes/home.js';
+import { checkoutRoot, keepsNotes, noteCounts, repoPlace, type NoteCounts } from '../notes/home.js';
 import { branchesStale, overlapMark, readBranchCache, refreshBranches, SESSION_REFRESH_MS } from '../notes/branches.js';
 import { learningFiles } from '../notes/repo-trail.js';
 import { inWorkspace, maybeSyncInBackground } from '../cloud/workspace-sync.js';
@@ -110,19 +110,25 @@ async function handlePostEdit(input: any, dir: string): Promise<void> {
 const INJECTED_OVERLAPS_CAP = 40;
 
 /**
- * Under trail, a teammate's open branch that changes the function this edit
- * just changed, for the agent to read and tell the person about, each branch
- * and function once a session. Parsing loads grammars, so it's imported only
- * when the edited file is one some branch changes. Never throws.
+ * Under trail, a teammate's open branch (or the person's own other one) that
+ * changes the function this edit just changed, for the agent to read and tell
+ * the person about, each branch and function once a session. Parsing loads
+ * grammars, so it's imported only when the edited file is one some branch
+ * changes. Never throws.
  */
 async function editOverlap(input: any, dir: string, file: string): Promise<string | null> {
   if (brand() !== 'trail' || !keepsNotes(dir)) return null;
   try {
     const top = repoPlace(dir);
     if (!top.git) return null;
+    const path = resolve(dir, file);
+    // In a worktree session the project is the main checkout and the edit is in the worktree's copy:
+    // compare from the checkout the file is in, with the branches the session start read. A file in
+    // another repo finds none of these branches there.
+    const checkout = checkoutRoot(dirname(path)) ?? top.checkout;
     const { functionOverlaps, editOverlapDirective } = await import('../notes/edit-overlap.js');
     const cache = readBranchCache(top.checkout);
-    const found = await functionOverlaps(top.checkout, resolve(dir, file), input?.tool_input, noteAuthor(top.checkout), cache);
+    const found = await functionOverlaps(checkout, path, input?.tool_input, noteAuthor(top.checkout), cache);
     if (!found.length) return null;
     const id = payloadSessionId(input);
     const s = readSession(dir, id);

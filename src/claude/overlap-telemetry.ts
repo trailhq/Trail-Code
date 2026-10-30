@@ -2,9 +2,10 @@
  * Whether overlap warnings earn their interruption: each one the agent is
  * given, with whether GitHub lists an open pull request for the branch (one
  * about an open pull request is real work; one about a branch with none is
- * often finished or given up), and whether the person then named that
- * teammate or branch in a prompt, which is acting on it. The names stay in the
- * session file on this machine; only `pr` travels.
+ * often finished or given up) and whether the branch is the person's own, and
+ * whether the person then named that teammate or branch in a prompt, which is
+ * acting on it. The names stay in the session file on this machine; only `pr`
+ * and `whose` travel.
  */
 import { prState, type BranchCache } from '../notes/branches.js';
 import type { FunctionOverlap } from '../notes/edit-overlap.js';
@@ -18,8 +19,9 @@ const SHOWN_CAP = 10;
 export function overlapsShown(s: SessionState, shown: FunctionOverlap[], cache: BranchCache | null): void {
   for (const o of shown) {
     const pr = prState(cache, o.ref);
-    track('overlap_warned', { pr });
-    s.shownOverlaps = [...(s.shownOverlaps ?? []), { who: o.author, branch: o.ref.replace(/^origin\//, ''), pr }].slice(-SHOWN_CAP);
+    const whose = o.mine ? ('mine' as const) : ('teammate' as const);
+    track('overlap_warned', { pr, whose });
+    s.shownOverlaps = [...(s.shownOverlaps ?? []), { who: o.author, branch: o.ref.replace(/^origin\//, ''), pr, whose }].slice(-SHOWN_CAP);
   }
 }
 
@@ -32,7 +34,7 @@ export function overlapActed(dir: string, sessionId: string, prompt: unknown): v
     if (!named.length) return;
     for (const w of named) {
       w.acted = true;
-      track('overlap_acted', { pr: w.pr });
+      track('overlap_acted', { pr: w.pr, whose: w.whose ?? 'teammate' });
     }
     writeSession(dir, sessionId, s);
   } catch {
