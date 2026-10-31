@@ -595,6 +595,10 @@ These apply to **every** repo you open with that agent, not just this one. The p
 | `trail_repo_map` | nothing | A first look at an unfamiliar repo: directory clusters, hubs, hotspots. |
 | `trail_check_freshness` | nothing | Whether the local graph has drifted from the code. |
 
+Every tool accepts an optional `root` to query another checkout, for example `trail_find_all` with `{"pattern":"readList", "root":"/tmp/review"}`. The path may name the checkout or one of its subdirectories; relative paths resolve from the server's root. Explicit roots must share the server checkout's Git common directory, so linked worktrees are accepted while independent clones, submodules and unrelated repositories are refused. Omitting `root` keeps the server's existing root selection, including workspace queries.
+
+Each checkout uses its own graph and in-process cache. A fresh worktree can copy its main checkout's graph and refresh it before answering, just like `trail mcp /tmp/review`. A server started with `--dir` keeps its original source root and graph directory, and refuses to switch to another checkout. Tool results end with the resolved root and its current full `HEAD` commit (`unavailable` outside Git or before the first commit). HEAD identifies the checkout; queries still include uncommitted source edits, and refresh warnings still apply. A rejected root returns a soft tool error before graph access.
+
 The same server still answers the old `graft_*` tool names. Register it by hand if your agent needs it explicit:
 
 ```json
