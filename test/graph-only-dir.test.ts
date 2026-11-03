@@ -71,6 +71,23 @@ test("--only-dir limits the walk, records the whitelist in the fingerprint, and 
   }
 });
 
+test("a plain build reuses the saved --only-dir whitelist", () => {
+  const d = repoWithDirs();
+  try {
+    runCli(["build", d, "--only-dir", "src/a"]);
+    runCli(["build", d]);
+
+    const graph = graphOf(d);
+    assert.ok(graph, "expected a rebuilt graph");
+    assert.ok(graph!.nodes.some((n) => n.path === "src/a/a.ts"), "src/a must remain indexed");
+    assert.ok(!graph!.nodes.some((n) => n.path === "src/b/b.ts"), "src/b must remain skipped");
+    assert.ok(!graph!.nodes.some((n) => n.path === "top.ts"), "top-level files must remain skipped");
+    assert.deepEqual(readFingerprint(join(d, "graft"))?.onlyDirs, ["src/a"]);
+  } finally {
+    rmSync(d, { recursive: true, force: true });
+  }
+});
+
 test("--only-dir rejects a prefix that normalizes to empty", () => {
   const d = repoWithDirs();
   try {
