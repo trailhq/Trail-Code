@@ -33,6 +33,7 @@ const PY_CTOR_KINDS: Kind[] = ["class"];
  * shape — types are tried only once functions (and methods, see extract.ts's
  * implicit-self widening) have found nothing. */
 const SWIFT_EXT = /\.swift$/i;
+const EX_EXT = /\.exs?$/i;
 const SWIFT_CTOR_KINDS: Kind[] = ["class", "struct", "enum"];
 
 /**
@@ -169,7 +170,9 @@ export function resolveEdges(
     let fileMap = perFileName.get(n.path);
     if (!fileMap) perFileName.set(n.path, (fileMap = new Map()));
     push(fileMap, n.name, n);
-    if (n.kind === "method") {
+    // Elixir functions carry `owner` (their module) from extractElixir and are looked up
+    // the same owner-qualified way a method is.
+    if (n.kind === "method" || (n.kind === "function" && n.owner)) {
       const owner = n.owner ?? ownerFromMethodId(n.id);
       if (owner) push(ownerMethod, `${owner}.${n.name}`, n);
     }
@@ -178,6 +181,13 @@ export function resolveEdges(
   // classParents: class/interface name → its declared base-class names, from raw
   // `extends` edges (source id's own name → the base name). Used to walk up an
   // inheritance chain when a receiver's own type has no matching method.
+  // Elixir module nodes by full name (extractElixir stamps `fqn`; a nested module's
+  // `name` is the bare last segment).
+  const moduleByFqn = new Map<string, NodeV1>();
+  for (const n of nodes) {
+    if (n.kind === "module" && n.fqn && !moduleByFqn.has(n.fqn)) moduleByFqn.set(n.fqn, n);
+  }
+
   const classParents = new Map<string, string[]>();
   for (const e of rawEdges) {
     if (e.relation !== "extends" || !e.name) continue;
@@ -301,6 +311,16 @@ export function resolveEdges(
           add(e.source, hit.id, "calls", hit.confidence);
           continue;
         }
+        if (EX_EXT.test(e.file)) {
+          // Elixir: the receiver module exists in the repo but declares no such `def` —
+          // the function is macro-generated (`use Ecto.Repo`, a DSL). The call is still
+          // a real dependency on that module: point the edge at the module node.
+          const mod = moduleByFqn.get(e.recvType);
+          if (mod && mod.id !== e.source && reachable(e.file, mod.path)) {
+            add(e.source, mod.id, "calls", "inferred");
+          }
+          continue;
+        }
         // No owner-qualified match means the call is unresolved. A unique bare
         // method name is not evidence that this receiver has that method — a
         // name-fallback here was measured to HALVE call-edge precision (73%→37%
@@ -342,7 +362,9 @@ export function resolveEdges(
           : e.file.endsWith(".java")
             ? ["class", "struct", "enum", "interface"]
             : ["function"]);
-      let hit = resolveName(e.name!, e.file, callKinds, perFileName, globalName);
+      let hit = EX_EXT.test(e.file)
+        ? resolveLocalName(e.name!, e.file, callKinds, perFileName)
+        : resolveName(e.name!, e.file, callKinds, perFileName, globalName);
       // Python is the Java case without the `new` to mark it: `Widget()` is an
       // ordinary call node, so a constructor edge dies against the function-only
       // index. Java can widen to types outright; Python has free functions, so
@@ -379,6 +401,22 @@ function ownerFromMethodId(id: string): string | undefined {
  * Resolve a bare symbol name: same-file match first (certain → `extracted`),
  * else a unique cross-file match (→ `inferred`), else null (ambiguous/unknown).
  */
+/**
+ * Same-file only — no cross-file fallback. Elixir: a bare `foo(x)` is a local, imported, or
+ * Kernel function, never another module's, so `resolveName`'s unique-global rule turned every
+ * coincidental name match into a false edge. Remote calls arrive receiver-typed from
+ * extractElixir and never reach this.
+ */
+function resolveLocalName(
+  name: string,
+  file: string,
+  kinds: Kind[],
+  perFileName: Map<string, Map<string, NodeV1[]>>,
+): { id: string; confidence: EdgeV1["confidence"] } | null {
+  const local = (perFileName.get(file)?.get(name) ?? []).filter((n) => kinds.includes(n.kind));
+  return local.length ? { id: local[0].id, confidence: "extracted" } : null;
+}
+
 function resolveName(
   name: string,
   file: string,
@@ -466,6 +504,12 @@ function resolveTypedMember(
         // below would pick whichever overload appears first in the file and
         // stamp it `extracted`, a confidently wrong edge. Drop instead.
         if (SWIFT_EXT.test(file)) return "ambiguous";
+        // Elixir multi-clause: several `def total(...)` heads of ONE function in one module.
+        // The first clause stands for the function.
+        if (EX_EXT.test(file) && candidates.every((c) => c.path === candidates[0].path)) {
+          const c = candidates[0];
+          return { id: c.id, confidence: c.path === file ? "extracted" : "inferred" };
+        }
         const sameFile = candidates.find((c) => c.path === file);
         if (sameFile) return { id: sameFile.id, confidence: "extracted" };
         return "ambiguous"; // several, none same-file — drop and stop

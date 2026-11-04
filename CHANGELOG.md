@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Elixir remote calls resolve through `alias`** (#351) in the generic tree-sitter tier, so
+  `graft callers` and `graft_trace_calls` work on Elixir. `Cart.total(x)` used to be
+  captured as a bare `total` and dropped as ambiguous the moment another `total` existed
+  anywhere in the repo — which in Elixir is always. A per-file `defmodule`/`alias` scope
+  pass now emits the call receiver-typed (`alias A.B.C`, `as:`, `alias A.{B, C}`,
+  `__MODULE__`, nested-module auto-aliases, `defmodule` under an aliased prefix,
+  `&Mod.fun/N`, pipes), stamps defs with their module and arity, and resolves through the
+  existing owner-qualified index. A bare `foo()` in Elixir is same-file only; a call to a
+  macro-generated function (`use Ecto.Repo`) lands on the module node instead of vanishing;
+  multi-clause heads collapse to one target. Measured on a 219-file app against
+  `mix xref graph`: cross-file call-edge precision 0.38 → 0.93, recall 0.41 → 0.64.
+
 ## 0.28.0
 
 ### Added
