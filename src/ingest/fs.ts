@@ -332,7 +332,12 @@ function walkFilesystem(dir: string, includes?: ReadonlySet<string>): string[] {
     const full = join(dir, entry.name);
     if (entry.isDirectory()) {
       if (shouldSkipDir(entry.name, includes)) continue;
-      out.push(...walkFilesystem(full, includes));
+      // Append one at a time rather than spreading: the child array becomes the
+      // argument list of push(), and V8 caps that at ~128k. A single unignored
+      // subtree with more paths than that (a browser profile or dataset under a
+      // non-git repo, where listGitFiles returns null and this walker runs)
+      // throws "Maximum call stack size exceeded" at trivial directory depth.
+      for (const file of walkFilesystem(full, includes)) out.push(file);
     } else if (entry.isFile()) {
       if (entry.name.startsWith(".")) continue; // dot-files are not source either
       try {
