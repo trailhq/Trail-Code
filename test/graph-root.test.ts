@@ -27,6 +27,12 @@ function workspaceParent(root: string, children: string[]): string {
   return root;
 }
 
+/** A checkout root without a graph yet. */
+function gitRepo(root: string): string {
+  mkdirSync(join(root, ".git"), { recursive: true });
+  return root;
+}
+
 test("a subdirectory of a built repo resolves up to the repo root", () => {
   const repo = builtRepo(tmpRepo("root-walk"));
   const deep = join(repo, "src", "foo", "bar");
@@ -52,6 +58,19 @@ test("the NEAREST root wins — a built child inside a workspace parent, not the
   mkdirSync(deep, { recursive: true });
 
   assert.deepEqual(nearestGraftRoot(deep), { root: child, levels: 1 }, "must stop at the child, not federate at the parent");
+});
+
+test("a child checkout without a graph does not fall back to a parent graph", () => {
+  const parent = builtRepo(tmpRepo("root-parent-graph"));
+  const child = gitRepo(join(parent, "toolforge"));
+  const deep = join(child, "src");
+  mkdirSync(deep, { recursive: true });
+
+  assert.deepEqual(
+    nearestGraftRoot(deep),
+    { root: child, levels: 1 },
+    "a missing child graph must resolve to the child checkout, not the parent graph",
+  );
 });
 
 test("nothing indexed anywhere above → the start dir, so `build` in a fresh repo still means here", () => {
