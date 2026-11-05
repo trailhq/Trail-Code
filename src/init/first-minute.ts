@@ -9,22 +9,28 @@
  *    the learnings the prompt hook's own matching (findNotes) brings up on
  *    its messages, each with where it came from.
  * 2. The learnings themselves, a title and one line each, at most
- *    {@link MAX_SHOWN}. A person at their own terminal answers "right? (y/n)"
+ *    {@link MAX_SHOWN}: the last task's, then what this run kept. With
+ *    neither (no past sessions here, or the read kept nothing), the ones the
+ *    team already committed, each with whose and when (2026-11-04: a
+ *    teammate's learning applied is the aha a clone with no sessions can
+ *    still have). A person at their own terminal answers "right? (y/n)"
  *    for each; the answer stays on this machine, in the repo's Trail home.
  * 3. A first prompt that brings one of them up, shown only once
  *    promptLearnings, the prompt hook's path, returns that learning first
  *    for it.
- * 4. Nothing to show, or no prompt that passes: one live lookup on the
+ * 4. No learning at all, or no prompt that passes: one live lookup on the
  *    repo's map, its top file:line and the tokens it saved.
  *
  * Offline: the transcripts, learnings and map on this machine. No model call.
  */
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { lookupOnHub, notProductCode, shortBody } from '../cloud/onboarding.js';
 import { MIN_CUE_CHARS, promptLearnings, promptWords } from '../claude/prompt-hook.js';
 import { flatLine } from '../notes/flatten.js';
 import { noteAuthor } from '../notes/git-facts.js';
 import { ensureRepoHome } from '../notes/home.js';
+import { liveLearnings } from '../notes/learning-fields.js';
 import { findNotes, shortDate, type Note, type NoteHit } from '../notes/notes.js';
 import { IDLE_MS } from '../notes/session-cost.js';
 import { countBucket } from '../telemetry/contract.js';
@@ -42,6 +48,8 @@ export const MAX_SHOWN = 5;
 const MAX_FOR_TASK = 3;
 /** A task's messages read for matching: the start of the work is where a learning would have been handed over. */
 const MAX_TASK_PROMPTS = 60;
+/** The repo's learnings past the listed ones tried for a first prompt, when none listed passes. */
+const MAX_MORE_TRIES = 15;
 
 /** The last task, as the ending says it. Only what the transcript says: no figure is guessed. */
 export interface TaskFacts {
@@ -67,8 +75,8 @@ export interface Shown {
   line: string;
   /** Where it came from: "from that session", "from your past sessions, Nov 3", "Shrish, Oct 27". */
   from: string;
-  /** Brought up by the last task's messages. */
-  forTask: boolean;
+  /** Why it's listed: the last task's messages brought it up, this run kept it, or the repo already has it. */
+  group: 'task' | 'kept' | 'repo';
 }
 
 /** A first prompt, and the number of the listed learning it brings up. */
@@ -201,10 +209,16 @@ export function sourceOf(note: Note, ctx: { me?: string; fromTask?: ReadonlySet<
   const said = PROVENANCE.exec(note.body)?.[1];
   if (said) {
     const sessions = /^From past Claude sessions here, (.+)$/.exec(said);
-    if (sessions) return `from your past sessions, ${sessions[1]}`;
+    // A teammate's init wrote the same line about their own sessions.
+    if (sessions) return ctx.me && note.author && note.author !== ctx.me ? `from ${note.author}'s past sessions, ${sessions[1]}` : `from your past sessions, ${sessions[1]}`;
     return said[0]!.toLowerCase() + said.slice(1);
   }
-  const who = ctx.me && note.author === ctx.me ? 'you' : note.author;
+  return whoAndWhen(note, ctx.me);
+}
+
+/** Whose a learning is and when it was saved: "Shrish, Oct 27", "you, Nov 4". */
+export function whoAndWhen(note: Pick<Note, 'author' | 'date'>, me?: string): string {
+  const who = me && note.author === me ? 'you' : note.author;
   return [who, shortDate(note.date)].filter(Boolean).join(', ');
 }
 
@@ -217,14 +231,14 @@ export function lineOf(note: Note): string {
 export function shownLearnings(forTask: Note[], kept: Note[], ctx: { me?: string; fromTask?: ReadonlySet<string> } = {}): Shown[] {
   const out: Shown[] = [];
   const seen = new Set<string>();
-  const add = (note: Note, task: boolean) => {
+  const add = (note: Note, group: Shown['group']) => {
     const key = note.path || note.title;
     if (seen.has(key) || out.length >= MAX_SHOWN) return;
     seen.add(key);
-    out.push({ note, line: lineOf(note), from: sourceOf(note, ctx), forTask: task });
+    out.push({ note, line: lineOf(note), from: sourceOf(note, ctx), group });
   };
-  for (const n of forTask.slice(0, MAX_FOR_TASK)) add(n, true);
-  for (const n of kept) add(n, false);
+  for (const n of forTask.slice(0, MAX_FOR_TASK)) add(n, 'task');
+  for (const n of kept) add(n, 'kept');
   return out;
 }
 
@@ -256,13 +270,24 @@ export function saveCheck(repo: string, note: Pick<Note, 'id' | 'path'>, right: 
 /** An identifier a learning names in backticks: `personAtTerminal`, `run_upgrade()`. */
 const SYMBOL = /`([A-Za-z_][A-Za-z0-9_]*[a-z][A-Z_][A-Za-z0-9_]*)(?:\(\))?`/;
 
+/** Whether a file of the repo holds a name: a symbol from a learning's text is paired only with a file it's in. */
+export function fileHolds(repo: string): (file: string, sym: string) => boolean {
+  return (file, sym) => {
+    try {
+      return readFileSync(join(repo, file), 'utf8').includes(sym);
+    } catch {
+      return false;
+    }
+  };
+}
+
 /**
  * Prompts a person might type before touching what a learning is about,
- * built from the code it names: the file and symbol it touches, else a file,
- * else a symbol in its text. Never its title: a prompt that repeats the
- * learning back would show nothing.
+ * built from the code it names: the file and symbol it touches, a symbol in
+ * its text with a touched file that `holds` it, a file, else that symbol.
+ * Never its title: a prompt that repeats the learning back would show nothing.
  */
-export function promptsFor(note: Pick<Note, 'touches' | 'body'>): string[] {
+export function promptsFor(note: Pick<Note, 'touches' | 'body'>, holds: (file: string, sym: string) => boolean = () => false): string[] {
   const out: string[] = [];
   const ask = (what: string) => `I'm about to change ${what}. What should I know first?`;
   const touches = note.touches.filter((t) => t && !notProductCode(t.split('#')[0]!)).slice(0, 3);
@@ -271,7 +296,7 @@ export function promptsFor(note: Pick<Note, 'touches' | 'body'>): string[] {
     if (sym) out.push(ask(`${sym} in ${file}`));
   }
   const sym = SYMBOL.exec(note.body)?.[1];
-  const file = touches[0]?.split('#')[0];
+  const file = sym ? touches.map((t) => t.split('#')[0]!).find((f) => holds(f, sym)) : undefined;
   if (sym && file) out.push(ask(`${sym} in ${file}`));
   for (const t of touches) out.push(ask(t.split('#')[0]!));
   if (sym) out.push(ask(sym));
@@ -296,10 +321,32 @@ export function bringsUp(repo: string, prompt: string, note: Pick<Note, 'path' |
  * ending looks one thing up instead (4).
  */
 export function firstPrompt(repo: string, shown: Note[], check = bringsUp): TryPrompt | null {
+  const holds = fileHolds(repo);
   for (const [i, note] of shown.entries()) {
-    for (const prompt of promptsFor(note)) if (check(repo, prompt, note)) return { prompt, n: i + 1, title: note.title };
+    for (const prompt of promptsFor(note, holds)) if (check(repo, prompt, note)) return { prompt, n: i + 1, title: note.title };
   }
   return null;
+}
+
+/**
+ * The list when the person's own sessions gave none: the repo's committed
+ * learnings, newest first, at most {@link MAX_SHOWN}, each with whose and
+ * when, and a first prompt for one of them. When none listed passes, the
+ * next {@link MAX_MORE_TRIES} are tried, and one that passes takes the last
+ * place, so the prompt's learning is always on the list.
+ */
+export function repoLearnings(repo: string, notes: Note[], me?: string, check = bringsUp): { shown: Shown[]; tryPrompt: TryPrompt | null } {
+  const team = liveLearnings(notes).filter((n) => n.scope === 'repo' && !n.ref);
+  const listed = team.slice(0, MAX_SHOWN);
+  let tryPrompt = firstPrompt(repo, listed, check);
+  for (const note of tryPrompt ? [] : team.slice(MAX_SHOWN, MAX_SHOWN + MAX_MORE_TRIES)) {
+    const prompt = promptsFor(note, fileHolds(repo)).find((p) => check(repo, p, note));
+    if (!prompt) continue;
+    listed[MAX_SHOWN - 1] = note;
+    tryPrompt = { prompt, n: MAX_SHOWN, title: note.title };
+    break;
+  }
+  return { shown: listed.map((note) => ({ note, line: lineOf(note), from: whoAndWhen(note, me), group: 'repo' as const })), tryPrompt };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -345,22 +392,31 @@ export function wrongLine(n: number): string {
   return `${pad}saved on this laptop · Claude still reads it until a new learning replaces it: tell Claude what's wrong and it saves one`;
 }
 
-/** The learnings' part: the task first when one bears on it, then the rest under their own heading. */
+/** The learnings' part, numbered on across it: the task's under the task, then what this run kept, then what the repo already has, each under its own heading. */
 export function listLines(e: Pick<Ending, 'task' | 'shown'>): Array<{ line: string; ask?: { n: number; s: Shown } }> {
   const out: Array<{ line: string; ask?: { n: number; s: Shown } }> = [];
-  const forTask = e.task ? e.shown.filter((s) => s.forTask) : [];
-  const rest = e.shown.filter((s) => !forTask.includes(s));
-  const item = (s: Shown, n: number) => {
-    const lines = learningLines(s, n);
-    lines.forEach((line, i) => out.push(i === lines.length - 1 ? { line, ask: { n, s } } : { line }));
+  const forTask = e.task ? e.shown.filter((s) => s.group === 'task') : [];
+  const kept = e.shown.filter((s) => s.group === 'kept' || (s.group === 'task' && !forTask.includes(s)));
+  const repo = e.shown.filter((s) => s.group === 'repo');
+  let n = 0;
+  const items = (list: Shown[]) => {
+    for (const s of list) {
+      const lines = learningLines(s, ++n);
+      const at = n;
+      lines.forEach((line, i) => out.push(i === lines.length - 1 ? { line, ask: { n: at, s } } : { line }));
+    }
   };
   if (e.task && forTask.length) {
     out.push({ line: '' }, ...taskLines(e.task, forTask.length).map((line) => ({ line })));
-    forTask.forEach((s, i) => item(s, i + 1));
+    items(forTask);
   }
-  if (rest.length) {
+  if (kept.length) {
     out.push({ line: '' }, { line: forTask.length ? 'Also kept from your past sessions:' : 'Kept from your past sessions:' });
-    rest.forEach((s, i) => item(s, forTask.length + i + 1));
+    items(kept);
+  }
+  if (repo.length) {
+    out.push({ line: '' }, { line: "Your team's learnings in this repo:" });
+    items(repo);
   }
   return out;
 }
@@ -415,8 +471,11 @@ export function planEnding(input: EndingInput): Ending {
     const task = last && hits.length ? taskFacts(last, activeMinutes(last)) : null;
     const fromTask = new Set<string>();
     if (last) for (const [id, from] of input.sources ?? []) if (from.includes(last.id.slice(0, 8))) fromTask.add(id);
-    const shown = shownLearnings(task ? hits : [], input.kept, { me: noteAuthor(repo), fromTask });
-    const tryPrompt = firstPrompt(repo, shown.map((s) => s.note));
+    const me = noteAuthor(repo);
+    let shown = shownLearnings(task ? hits : [], input.kept, { me, fromTask });
+    let tryPrompt = firstPrompt(repo, shown.map((s) => s.note));
+    // Nothing from the person's own sessions: what the team already committed here.
+    if (!shown.length) ({ shown, tryPrompt } = repoLearnings(repo, notes, me));
     // Only with no prompt to try: one live lookup instead.
     const lookup = tryPrompt ? null : liveLookup(repo, input.contextDir);
     return { task, shown, tryPrompt, lookup };

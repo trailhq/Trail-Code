@@ -13,8 +13,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough, Writable } from 'node:stream';
 import {
-  activeMinutes, bringsUp, checksPath, firstPrompt, learningLines, learningsForTask, listLines, pickLastTask, planEnding,
-  promptsFor, sayEnding, sourceOf, taskFacts, taskLines, tryLines, type Ending, type Shown,
+  activeMinutes, bringsUp, checksPath, firstPrompt, learningLines, learningsForTask, listLines, MAX_SHOWN, pickLastTask, planEnding,
+  promptsFor, repoLearnings, sayEnding, sourceOf, taskFacts, taskLines, tryLines, type Ending, type Shown,
 } from '../src/init/first-minute.js';
 import { formatInitEpilogue } from '../src/cli-epilogue.js';
 import type { PastSession } from '../src/init/sessions.js';
@@ -126,15 +126,16 @@ test('active minutes: every entry\'s time, gaps over 10 minutes count as nothing
 test('where a learning came from: that session, the provenance init wrote, else whose and when', () => {
   assert.equal(sourceOf(note({ id: 'l-1' }), { fromTask: new Set(['l-1']) }), 'from that session');
   assert.equal(sourceOf(note({ body: 'x\n\n_From past Claude sessions here, Nov 3._\n' })), 'from your past sessions, Nov 3');
+  assert.equal(sourceOf(note({ author: 'Anirudh', body: 'x\n\n_From past Claude sessions here, Nov 3._\n' }), { me: 'Rushabh' }), "from Anirudh's past sessions, Nov 3", "a teammate's init wrote it");
   assert.equal(sourceOf(note({ body: 'x\n\n_From PR #12 here, Oct 2._' })), 'from PR #12 here, Oct 2');
   assert.equal(sourceOf(note()), 'Shrish, Oct 27');
   assert.equal(sourceOf(note({ author: 'Rushabh' }), { me: 'Rushabh' }), 'you, Oct 27');
 });
 
 test('the list: the task\'s learnings under it, the rest under their own heading, numbered on; y/n goes on each one\'s last line', () => {
-  const shown = (title: string, forTask: boolean): Shown => ({ note: note({ title, path: `/r/${title}.md` }), line: 'Keep MAX at 4.', from: 'Shrish, Oct 27', forTask });
+  const shown = (title: string, group: Shown['group']): Shown => ({ note: note({ title, path: `/r/${title}.md` }), line: 'Keep MAX at 4.', from: 'Shrish, Oct 27', group });
   const task = { id: 't', day: '2026-11-03', what: 'fix the retry loop', messages: 14, minutes: 96, corrections: 2 };
-  const lines = listLines({ task, shown: [shown('A', true), shown('B', false)] });
+  const lines = listLines({ task, shown: [shown('A', 'task'), shown('B', 'kept')] });
   assert.deepEqual(lines.map((l) => l.line), [
     '',
     'Your last task here, Nov 3: "fix the retry loop"',
@@ -151,8 +152,12 @@ test('the list: the task\'s learnings under it, the rest under their own heading
   ]);
   assert.deepEqual(lines.filter((l) => l.ask).map((l) => l.ask!.n), [1, 2]);
   // No task: only what was kept, under its own heading, from 1.
-  const bare = listLines({ task: null, shown: [shown('B', false)] }).map((l) => l.line);
+  const bare = listLines({ task: null, shown: [shown('B', 'kept')] }).map((l) => l.line);
   assert.deepEqual(bare, ['', 'Kept from your past sessions:', '  1. B', '     Keep MAX at 4.', '     Shrish, Oct 27']);
+  // Nothing from the person's sessions: the team's, under their own heading.
+  const team = listLines({ task: null, shown: [shown('C', 'repo'), shown('D', 'repo')] });
+  assert.deepEqual(team.map((l) => l.line).slice(0, 3), ['', "Your team's learnings in this repo:", '  1. C']);
+  assert.deepEqual(team.filter((l) => l.ask).map((l) => l.ask!.n), [1, 2]);
   assert.deepEqual(taskLines({ ...task, minutes: undefined, corrections: 0, messages: 3 }, 2).slice(1), [
     '  3 messages from you',
     '  Trail now has 2 learnings for work like it:',
@@ -160,8 +165,11 @@ test('the list: the task\'s learnings under it, the rest under their own heading
   assert.deepEqual(learningLines(shown('C', false), 12).slice(1), ['      Keep MAX at 4.', '      Shrish, Oct 27'], 'lines under a 2-digit number line up');
 });
 
-test('prompts come from the code a learning names, never its title', () => {
-  const p = promptsFor({ touches: ['src/retry.ts#withRetry', 'test/retry.test.ts'], body: '- `backoffMs` doubles' });
+test('prompts come from the code a learning names, never its title; a name from its text only with a file that holds it', () => {
+  const holds = (file: string, sym: string) => file === 'src/retry.ts' && sym === 'backoffMs';
+  assert.ok(!promptsFor({ touches: ['src/retry.ts#withRetry'], body: '- `backoffMs` doubles' }).some((p) => p.includes('backoffMs in')), 'no file said to hold it');
+  assert.ok(!promptsFor({ touches: ['src/other.ts'], body: '- `backoffMs` doubles' }, holds).some((p) => p.includes('backoffMs in')), 'not in that file');
+  const p = promptsFor({ touches: ['src/retry.ts#withRetry', 'test/retry.test.ts'], body: '- `backoffMs` doubles' }, holds);
   assert.deepEqual(p, [
     "I'm about to change withRetry in src/retry.ts. What should I know first?",
     "I'm about to change backoffMs in src/retry.ts. What should I know first?",
@@ -199,11 +207,42 @@ test('planned end to end: the last task, what bears on it, and a prompt that pas
     const cents = notes.find((n) => n.title.startsWith('Payments'))!;
     const e = planEnding({ repo, notes, kept: [cents], sources: new Map([[cents.id!, ['cafe1234']]]), sessions: [task] });
     assert.equal(e.task?.what, 'the invoices are a cent off again, check how billing stores payments');
-    assert.deepEqual(e.shown.map((s) => [s.note.title, s.from, s.forTask]), [['Payments are stored in cents, never floats, after a rounding bug', 'from that session', true]]);
+    assert.deepEqual(e.shown.map((s) => [s.note.title, s.from, s.group]), [['Payments are stored in cents, never floats, after a rounding bug', 'from that session', 'task']]);
     assert.equal(e.tryPrompt?.n, 1);
     assert.equal(bringsUp(repo, e.tryPrompt!.prompt, cents), true);
     assert.equal(e.lookup, null);
   });
+});
+
+test('no sessions, nothing kept: the team\'s committed learnings with whose and when, and a prompt checked to bring one up first', () => {
+  const { repo, env } = repoWith([{ name: '2026-10-27-retries.md', text: RETRY }, { name: '2026-10-29-cents.md', text: CENTS }]);
+  withEnv(env, () => {
+    const notes = listNotes(repo);
+    const e = planEnding({ repo, notes, kept: [], sessions: null });
+    assert.equal(e.task, null);
+    assert.deepEqual(e.shown.map((s) => [s.note.title, s.from, s.group]), [
+      ['Payments are stored in cents, never floats, after a rounding bug', 'Anirudh, Oct 29', 'repo'],
+      ['Retries stay at 4 because the gateway times out at 30 s', 'Shrish, Oct 27', 'repo'],
+    ], 'newest first, whose and when');
+    assert.ok(e.tryPrompt, 'a prompt passes');
+    assert.equal(bringsUp(repo, e.tryPrompt!.prompt, e.shown[e.tryPrompt!.n - 1]!.note), true, 'the hook brings up the learning it names, first');
+    assert.equal(e.lookup, null, 'no lookup when a prompt passes');
+  });
+});
+
+test('the team\'s list: newest five, a passing one past them takes the last place, the person\'s own and branch ones left out', () => {
+  const notes = Array.from({ length: 8 }, (_x, i) => note({ path: `/n${i}`, title: `N${i}`, date: `2026-10-${String(20 - i).padStart(2, '0')}`, scope: 'repo', touches: [`src/n${i}.ts`] }));
+  const mine = note({ path: '/p', title: 'P', scope: 'personal', touches: ['src/p.ts'] });
+  const branch = note({ path: 'origin/x:.trail/learnings/b.md', title: 'B', scope: 'repo', ref: 'origin/x', touches: ['src/b.ts'] });
+  const passes = (path: string) => (_r: string, _p: string, n: Pick<Note, 'path'>) => n.path === path;
+  const first = repoLearnings('/r', [mine, branch, ...notes], 'Rushabh', passes('/n1'));
+  assert.deepEqual(first.shown.map((s) => s.note.title), ['N0', 'N1', 'N2', 'N3', 'N4']);
+  assert.deepEqual(first.tryPrompt, { prompt: "I'm about to change src/n1.ts. What should I know first?", n: 2, title: 'N1' });
+  const later = repoLearnings('/r', notes, 'Rushabh', passes('/n6'));
+  assert.deepEqual(later.shown.map((s) => s.note.title), ['N0', 'N1', 'N2', 'N3', 'N6'], 'the one the prompt brings up is on the list');
+  assert.equal(later.tryPrompt?.n, MAX_SHOWN);
+  assert.equal(repoLearnings('/r', notes, 'Rushabh', () => false).tryPrompt, null, 'none passes: the lookup instead');
+  assert.equal(repoLearnings('/r', [mine, branch], 'Rushabh', () => true).shown.length, 0);
 });
 
 test('nothing to show and no map: no task, no list, no prompt, no lookup, and no throw', () => {
@@ -243,7 +282,7 @@ function terminal(keys: string[]): { io: { stdin: NodeJS.ReadStream; stdout: Nod
 
 test('right? (y/n): y and n saved on this machine by learning id, n says Claude still reads it, enter skips', async () => {
   const { repo, env } = repoWith([]);
-  const shown = (id: string, title: string): Shown => ({ note: note({ id, title, path: `/r/${id}.md` }), line: 'one line', from: 'Shrish, Oct 27', forTask: false });
+  const shown = (id: string, title: string): Shown => ({ note: note({ id, title, path: `/r/${id}.md` }), line: 'one line', from: 'Shrish, Oct 27', group: 'kept' });
   const e: Ending = { task: null, shown: [shown('l-aaaa1111', 'A'), shown('l-bbbb2222', 'B'), shown('l-cccc3333', 'C')], tryPrompt: { prompt: 'p', n: 1, title: 'A' }, lookup: null };
   const t = terminal(['y', 'n', '\r']);
   const tally = await sayEnding(e, repo, { say: t.say, io: t.io, env });
@@ -259,7 +298,7 @@ test('right? (y/n): y and n saved on this machine by learning id, n says Claude 
 
 test('esc stops asking and the rest are listed; with no terminal nothing is asked', async () => {
   const { repo, env } = repoWith([]);
-  const shown = (id: string): Shown => ({ note: note({ id, title: id, path: `/r/${id}.md` }), line: '', from: 'x', forTask: false });
+  const shown = (id: string): Shown => ({ note: note({ id, title: id, path: `/r/${id}.md` }), line: '', from: 'x', group: 'kept' });
   const e: Ending = { task: null, shown: [shown('l-1'), shown('l-2')], tryPrompt: null, lookup: null };
   const t = terminal(['\x1b']);
   assert.deepEqual(await sayEnding(e, repo, { say: t.say, io: t.io, env }), { answered: 0, right: 0 });
