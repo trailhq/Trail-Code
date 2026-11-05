@@ -270,27 +270,36 @@ export async function applyNames(
  * nor a review comment should fail over a cosmetic layer. The note comes back
  * rather than going to a stream, so `graft blast --name` can prefix it and the
  * App can log it against the pull request it belongs to.
+ *
+ * `allowClaudeCode` is for commands the person runs themselves: the
+ * claude-code provider runs on that one person's own Claude login, so the
+ * GitHub App, which serves other people's pull requests, never uses it.
  */
 export async function nameReport(
   graph: GraphV1,
   report: BlastReport,
   contextDir: string,
+  opts: { allowClaudeCode?: boolean } = {},
 ): Promise<{ stats: NameStats; note: string | null }> {
   const { resolveConfig } = await import("../ai/providers.js");
   const cfg = resolveConfig({ contextDir });
 
+  const claudeCode = cfg.provider === "claude-code";
   let namer: Namer | undefined;
   if (cfg.chatModel) {
     namer = new ChatNamer(cfg.chatModel);
-  } else if (cfg.apiKey) {
+  } else if (claudeCode ? opts.allowClaudeCode : cfg.apiKey) {
     const { createChatModel } = await import("../ai/llm/factory.js");
     namer = new ChatNamer(createChatModel({
-      provider: cfg.provider, apiKey: cfg.apiKey, model: cfg.model,
+      provider: cfg.provider, apiKey: cfg.apiKey ?? "", model: cfg.model,
       baseUrl: cfg.baseUrl, headers: cfg.headers,
     }));
   }
 
   const stats = await applyNames(graph, report, { namer, contextDir });
+  if (!namer && claudeCode) {
+    return { stats, note: "the claude-code provider is only for commands you run yourself, so areas keep their symbol names" };
+  }
   if (!namer) return { stats, note: "no API key (GRAFT_API_KEY), so areas keep their symbol names" };
   if (stats.error) return { stats, note: `naming failed (${stats.error}) — areas keep their symbol names` };
   if (stats.named + stats.cached + stats.declined > 0) {

@@ -132,7 +132,7 @@ export async function runBlastCommand(dir: string, opts: BlastCliOptions): Promi
  */
 async function nameClusters(graph: GraphV1, report: BlastReport, contextDir: string): Promise<void> {
   const { nameReport } = await import("./name.js");
-  const { note } = await nameReport(graph, report, contextDir);
+  const { note } = await nameReport(graph, report, contextDir, { allowClaudeCode: true });
   if (note) console.error(`• --name: ${note}`);
 }
 

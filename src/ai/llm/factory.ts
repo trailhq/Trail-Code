@@ -13,14 +13,24 @@
  * OrcaRouter AI gateway by default (see orcarouter.ts) so its users get the
  * gateway's routing, failover, and guardrails behind a named provider instead
  * of a bare custom base URL.
+ *
+ * `claude-code` is the one provider that is not an HTTP wire format: it runs
+ * the person's own `claude -p` (see claude-code.ts), so the deep pass can use
+ * their Claude plan instead of an API key. It takes no key and no base URL.
  */
 import type { ChatModel } from "./types.js";
 import { OpenAIChatModel } from "./openai.js";
 import { AnthropicChatModel } from "./anthropic.js";
 import { LiteLLMChatModel } from "./litellm.js";
 import { OrcaRouterChatModel } from "./orcarouter.js";
+import { ClaudeCodeChatModel } from "./claude-code.js";
 
-export type ProviderKind = "openai" | "anthropic" | "litellm" | "orcarouter";
+export type ProviderKind = "openai" | "anthropic" | "litellm" | "orcarouter" | "claude-code";
+
+/** Whether `provider` needs an API key; `claude-code` uses the login of the installed `claude`. */
+export function providerNeedsApiKey(provider: ProviderKind): boolean {
+  return provider !== "claude-code";
+}
 
 export interface ChatModelConfig {
   provider: ProviderKind;
@@ -56,6 +66,8 @@ export function createChatModel(cfg: ChatModelConfig): ChatModel {
         baseUrl: cfg.baseUrl,
         headers: cfg.headers,
       });
+    case "claude-code":
+      return new ClaudeCodeChatModel({ model: cfg.model });
     default: {
       const _exhaustive: never = cfg.provider;
       throw new Error(`unknown provider: ${String(_exhaustive)}`);

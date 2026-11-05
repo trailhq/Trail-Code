@@ -31,11 +31,12 @@ export { resolveConfig, DEFAULTS, DEFAULT_MODELS } from "./ai/providers.js";
 
 // Provider transport, for advanced/custom setups.
 export type { ChatModel, ChatRequest, ChatResponse, Message, ToolSpec, ToolCall, Usage } from "./ai/llm/types.js";
-export { createChatModel, type ProviderKind, type ChatModelConfig } from "./ai/llm/factory.js";
+export { createChatModel, providerNeedsApiKey, type ProviderKind, type ChatModelConfig } from "./ai/llm/factory.js";
 export { OpenAIChatModel } from "./ai/llm/openai.js";
 export { AnthropicChatModel } from "./ai/llm/anthropic.js";
 export { LiteLLMChatModel, listLiteLLMModels, DEFAULT_LITELLM_BASE_URL } from "./ai/llm/litellm.js";
 export { OrcaRouterChatModel, listOrcaRouterModels, DEFAULT_ORCAROUTER_BASE_URL } from "./ai/llm/orcarouter.js";
+export { ClaudeCodeChatModel } from "./ai/llm/claude-code.js";
 
 // Engine ops, for advanced/custom setups.
 export { ChatSynthesizer } from "./ai/synthesize.js";

@@ -14,7 +14,7 @@ import { resolveConfig, type EngineConfig, type ResolvedConfig } from "./ai/prov
 import { ChatSynthesizer, type Synthesizer } from "./ai/synthesize.js";
 import { ChatSummarizer, type Summarizer } from "./ai/summarize.js";
 import { ChatCruxSummarizer, type CruxSummarizer } from "./ai/crux.js";
-import { createChatModel } from "./ai/llm/factory.js";
+import { createChatModel, providerNeedsApiKey } from "./ai/llm/factory.js";
 import type { ChatModel } from "./ai/llm/types.js";
 import { buildContext, CODE_EXTENSIONS, type BuildProgress, type BuildResult } from "./context/build.js";
 import { checkContext, type CheckResult } from "./context/check.js";
@@ -127,15 +127,16 @@ export class Graft {
   private chatModel(): ChatModel {
     if (this.cfg.chatModel) return this.cfg.chatModel;
     if (this._chatModel) return this._chatModel;
-    if (!this.cfg.apiKey) {
+    if (!this.cfg.apiKey && providerNeedsApiKey(this.cfg.provider)) {
       throw new Error(
         "No API key. Set GRAFT_API_KEY (and GRAFT_PROVIDER / GRAFT_BASE_URL / GRAFT_MODEL " +
-          "for your provider) to build or summarize the graph.",
+          "for your provider), or GRAFT_PROVIDER=claude-code to use your Claude Code login, " +
+          "to build or summarize the graph.",
       );
     }
     this._chatModel = createChatModel({
       provider: this.cfg.provider,
-      apiKey: this.cfg.apiKey,
+      apiKey: this.cfg.apiKey ?? "",
       model: this.cfg.model,
       baseUrl: this.cfg.baseUrl,
       headers: this.cfg.headers,
