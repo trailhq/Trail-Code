@@ -14,7 +14,10 @@
  *    team already committed, each with whose and when (2026-11-04: a
  *    teammate's learning applied is the aha a clone with no sessions can
  *    still have). A person at their own terminal answers "right? (y/n)"
- *    for each; the answer stays on this machine, in the repo's Trail home.
+ *    for each one a teammate wrote, never for one they just kept on the
+ *    review screen or wrote themselves (2026-11-04: asking again about what
+ *    the screen had just shown was the same question twice). The answer
+ *    stays on this machine, in the repo's Trail home.
  * 3. A first prompt that brings one of them up, shown only once
  *    promptLearnings, the prompt hook's path, returns that learning first
  *    for it.
@@ -77,6 +80,8 @@ export interface Shown {
   from: string;
   /** Why it's listed: the last task's messages brought it up, this run kept it, or the repo already has it. */
   group: 'task' | 'kept' | 'repo';
+  /** "right? (y/n)" goes on it: a teammate wrote it, and this run didn't just keep it. */
+  ask: boolean;
 }
 
 /** A first prompt, and the number of the listed learning it brings up. */
@@ -227,15 +232,25 @@ export function lineOf(note: Note): string {
   return flatLine(shortBody(note.body).replace(/^In the code:\s*/i, ''), 110);
 }
 
+/**
+ * Whether the ending asks "right? (y/n)" about a learning: only one someone
+ * else wrote. The person's own, and what they kept on this run's screen,
+ * they've already judged.
+ */
+export function teammates(note: Pick<Note, 'author'>, me?: string): boolean {
+  return Boolean(note.author) && note.author !== me;
+}
+
 /** The ending's list: what bears on the last task first, then what this run kept, at most {@link MAX_SHOWN}. */
 export function shownLearnings(forTask: Note[], kept: Note[], ctx: { me?: string; fromTask?: ReadonlySet<string> } = {}): Shown[] {
   const out: Shown[] = [];
   const seen = new Set<string>();
+  const keptNow = new Set(kept.map((n) => n.path || n.title));
   const add = (note: Note, group: Shown['group']) => {
     const key = note.path || note.title;
     if (seen.has(key) || out.length >= MAX_SHOWN) return;
     seen.add(key);
-    out.push({ note, line: lineOf(note), from: sourceOf(note, ctx), group });
+    out.push({ note, line: lineOf(note), from: sourceOf(note, ctx), group, ask: !keptNow.has(key) && teammates(note, ctx.me) });
   };
   for (const n of forTask.slice(0, MAX_FOR_TASK)) add(n, 'task');
   for (const n of kept) add(n, 'kept');
@@ -346,7 +361,7 @@ export function repoLearnings(repo: string, notes: Note[], me?: string, check = 
     tryPrompt = { prompt, n: MAX_SHOWN, title: note.title };
     break;
   }
-  return { shown: listed.map((note) => ({ note, line: lineOf(note), from: whoAndWhen(note, me), group: 'repo' as const })), tryPrompt };
+  return { shown: listed.map((note) => ({ note, line: lineOf(note), from: whoAndWhen(note, me), group: 'repo' as const, ask: teammates(note, me) })), tryPrompt };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -403,7 +418,7 @@ export function listLines(e: Pick<Ending, 'task' | 'shown'>): Array<{ line: stri
     for (const s of list) {
       const lines = learningLines(s, ++n);
       const at = n;
-      lines.forEach((line, i) => out.push(i === lines.length - 1 ? { line, ask: { n: at, s } } : { line }));
+      lines.forEach((line, i) => out.push(i === lines.length - 1 && s.ask ? { line, ask: { n: at, s } } : { line }));
     }
   };
   if (e.task && forTask.length) {
@@ -526,9 +541,10 @@ export function readAnswer(stdin: NodeJS.ReadStream): Promise<Answer> {
 
 /**
  * Says the ending. With `io` (a person at their own terminal, not `--yes`),
- * each listed learning ends with "right? (y/n)" and waits for one key; y or
- * n is saved on this machine, enter skips, esc or q stops asking. One
- * `cold_start` event (`source: check`) counts the answers, never which.
+ * each listed learning a teammate wrote ends with "right? (y/n)" and waits
+ * for one key; y or n is saved on this machine, enter skips, esc or q stops
+ * asking. One `cold_start` event (`source: check`) counts the answers,
+ * never which.
  */
 export async function sayEnding(e: Ending, repo: string, opts: {
   say: (line: string) => void;
