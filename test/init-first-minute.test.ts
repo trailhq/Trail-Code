@@ -13,8 +13,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough, Writable } from 'node:stream';
 import {
-  activeMinutes, bringsUp, checksPath, firstPrompt, learningLines, learningsForTask, listLines, MAX_SHOWN, pickLastTask, planEnding,
-  promptsFor, repoLearnings, sayEnding, shownLearnings, sourceOf, taskFacts, taskLines, tryLines, type Ending, type Shown,
+  activeMinutes, bringsUp, checksPath, firstPrompt, learningLines, learningsForTask, listLines, MAX_SHOWN, openingWords, pickLastTask, planEnding,
+  promptsFor, repoLearnings, sayEnding, shownLearnings, sourceOf, splitTasks, taskFacts, taskLines, tryLines, type Ending, type Shown,
 } from '../src/init/first-minute.js';
 import { formatInitEpilogue } from '../src/cli-epilogue.js';
 import type { PastSession } from '../src/init/sessions.js';
@@ -85,13 +85,50 @@ function withEnv<T>(env: NodeJS.ProcessEnv, fn: () => T): T {
   }
 }
 
-test('the last task: the newest session with 3+ typed messages, by its last one; a question is not a task', () => {
+test('the last task: sessions split at gaps over 2 hours, the newest piece with 3+ typed messages; a question is not a task', () => {
   const old = session('old', '2026-10-01T10:00:00Z', ['fix the retry loop in the gateway', 'ok', 'ship it']);
   const quick = session('quick', '2026-11-03T10:00:00Z', ['what does this do?']);
   const long = session('long', '2026-09-01T10:00:00Z', ['a', 'b', 'c']);
   long.prompts.push({ text: 'still here', at: '2026-10-20T10:00:00Z' });
-  assert.equal(pickLastTask([old, quick, long])?.id, 'long', 'its last message is the newest');
+  assert.equal(pickLastTask([old, quick, long])?.id, 'old', "long's newest piece is one message: a question, not a task");
+  long.prompts.push({ text: 'and this', at: '2026-10-20T10:05:00Z' }, { text: 'and that', at: '2026-10-20T10:09:00Z' });
+  const t = pickLastTask([old, quick, long])!;
+  assert.deepEqual([t.id, t.prompts.map((p) => p.text)], ['long', ['still here', 'and this', 'and that']], 'only that piece');
   assert.equal(pickLastTask([quick]), null);
+});
+
+test('a session splits where the person was away more than 2 hours; a message with no time stays where it is', () => {
+  const at = (h: number) => new Date(Date.parse('2026-10-13T08:00:00Z') + h * 3_600_000).toISOString();
+  const s: PastSession = { id: 's', at: at(0), prompts: [
+    { text: 'a', at: at(0) }, { text: 'b', at: at(2) }, // exactly 2 h: the same task
+    { text: 'c' },
+    { text: 'd', at: at(4.5) }, // 2.5 h on: a new one
+    { text: 'e', at: at(30) },
+  ] };
+  const tasks = splitTasks(s);
+  assert.deepEqual(tasks.map((t) => t.prompts.map((p) => p.text).join('')), ['abc', 'd', 'e']);
+  assert.deepEqual(tasks.map((t) => [t.window.from, t.window.to]), [
+    [Date.parse(at(0)), Date.parse(at(4.5))], [Date.parse(at(4.5)), Date.parse(at(30))], [Date.parse(at(30)), Infinity],
+  ], 'each task runs to the next one\'s first message');
+  assert.equal(tasks[1]!.at, at(4.5));
+  assert.deepEqual(splitTasks({ id: 'n', at: '', prompts: [{ text: 'x' }, { text: 'y' }] }).map((t) => t.prompts.length), [2], 'no times: one task');
+});
+
+test('the task\'s facts cover that task only: its days, its messages, its corrections', () => {
+  const s = session('weeks', '2026-10-13T10:00:00Z', ['set up the repo', "no, that's wrong", 'try again']);
+  s.prompts.push(
+    { text: 'make enter pick the team at the who-is-it-for question', at: '2026-10-22T09:00:00Z' },
+    { text: 'and test it', at: '2026-10-22T09:10:00Z' },
+    { text: 'ship it', at: '2026-10-22T09:20:00Z' },
+  );
+  const f = taskFacts(pickLastTask([s])!);
+  assert.deepEqual([f.day, 'since' in f, f.messages, f.corrections, f.what], ['2026-10-22', false, 3, 0, 'make enter pick the team at the who-is-it-for question']);
+});
+
+test('opening words skip a pasted header, a line ending in a colon and a pasted list\'s steps', () => {
+  const w = openingWords({ prompts: [{ text: 'Background (from the session that started this one):\nRepo: acme/shop\n1. Read README.md, docs/ and the log\n- run the tests first\nmake the ending show the last task' }] });
+  assert.equal(w, 'make the ending show the last task');
+  assert.equal(openingWords({ prompts: [{ text: '1. only a list here' }] }), '1. only a list here', 'nothing else: the first message as it is');
 });
 
 test('task facts: the first line that asks for something, corrections by trail\'s own check, minutes only when measured', () => {
@@ -117,6 +154,9 @@ test('active minutes: every entry\'s time, gaps over 10 minutes count as nothing
   // 0 → 5 → 9 (9 min), a 2-hour lunch, then 129 → 135 (6 min).
   writeFileSync(path, [0, 5, 9, 129, 135].map((m) => JSON.stringify({ type: 'user', timestamp: at(m) })).join('\n') + '\n');
   assert.equal(activeMinutes({ path }), 15);
+  const t0 = Date.parse(at(0));
+  assert.equal(activeMinutes({ path, window: { from: Date.parse(at(129)), to: Infinity } }), 6, 'a task after the lunch: its own minutes');
+  assert.equal(activeMinutes({ path, window: { from: t0, to: Date.parse(at(129)) } }), 9, 'the task before it: up to the next one\'s start');
   const none = join(dir, 'n.jsonl');
   writeFileSync(none, '{"type":"user"}\n');
   assert.equal(activeMinutes({ path: none }), undefined);
@@ -211,6 +251,22 @@ test('planned end to end: the last task, what bears on it, and a prompt that pas
     assert.equal(e.tryPrompt?.n, 1);
     assert.equal(bringsUp(repo, e.tryPrompt!.prompt, cents), true);
     assert.equal(e.lookup, null);
+  });
+});
+
+test('learnings are matched on the last task\'s messages only, not the session\'s earlier tasks', () => {
+  const { repo, env } = repoWith([{ name: '2026-10-27-retries.md', text: RETRY }, { name: '2026-10-29-cents.md', text: CENTS }]);
+  withEnv(env, () => {
+    const notes = listNotes(repo);
+    const s = session('cafe1234-0000', '2026-10-01T10:00:00Z', ['the invoices are a cent off again, check how billing stores payments', 'use cents', 'ok']);
+    s.prompts.push(
+      { text: 'the gateway keeps timing out, look at withRetry in src/retry.ts', at: '2026-10-03T10:00:00Z' },
+      { text: 'keep it under the gateway limit', at: '2026-10-03T10:05:00Z' },
+      { text: 'ok ship it', at: '2026-10-03T10:10:00Z' },
+    );
+    const e = planEnding({ repo, notes, kept: [], sessions: [s] });
+    assert.equal(e.task?.what, 'the gateway keeps timing out, look at withRetry in src/retry.ts');
+    assert.deepEqual(e.shown.map((x) => [x.note.title, x.group]), [['Retries stay at 4 because the gateway times out at 30 s', 'task']], 'not the payments one from Oct 1');
   });
 });
 

@@ -3,11 +3,14 @@
  * they close the terminal, not a promise about a later session nobody
  * notices (2026-11-04: of 9 developers asked, 6 never saw a learning used).
  *
- * 1. Their last task here: the newest past Claude Code session in the repo
- *    with {@link TASK_MESSAGES} or more typed messages, its day and opening
- *    words, its active minutes and the messages that corrected Claude, and
- *    the learnings the prompt hook's own matching (findNotes) brings up on
- *    its messages, each with where it came from.
+ * 1. Their last task here: a past Claude Code session split where the
+ *    person was away more than {@link TASK_GAP_MS} between two messages (a
+ *    session left open for weeks is many tasks, 2026-11-04), and the newest
+ *    piece with {@link TASK_MESSAGES} or more typed messages. Its days and
+ *    opening words, its active minutes and the messages that corrected
+ *    Claude, and the learnings the prompt hook's own matching (findNotes)
+ *    brings up on its messages, each with where it came from: all of that
+ *    task only.
  * 2. The learnings themselves, a title and one line each, at most
  *    {@link MAX_SHOWN}: the last task's, then what this run kept. With
  *    neither (no past sessions here, or the read kept nothing), the ones the
@@ -43,8 +46,10 @@ import { readJson, writeJsonAtomic } from '../util/state.js';
 import type { PastSession } from './sessions.js';
 import { dayOf, eachLine } from './transcript.js';
 
-/** A session with fewer typed messages is a question, not a task. */
+/** A task with fewer typed messages is a question, not a task. */
 export const TASK_MESSAGES = 3;
+/** Longer than this between two typed messages, and the next one starts a new task. */
+export const TASK_GAP_MS = 2 * 60 * 60 * 1000;
 /** The most learnings the ending lists. */
 export const MAX_SHOWN = 5;
 /** The most learnings said to bear on the last task. */
@@ -103,12 +108,40 @@ export interface Ending {
 
 const lastAt = (s: PastSession) => s.prompts.reduce((m, p) => (p.at && p.at > m ? p.at : m), s.at);
 
-/** The newest session with {@link TASK_MESSAGES} or more typed messages, by its last one. */
-export function pickLastTask(sessions: PastSession[]): PastSession | null {
-  let best: PastSession | null = null;
-  for (const s of sessions) {
-    if (s.prompts.length < TASK_MESSAGES) continue;
-    if (!best || lastAt(s) > lastAt(best)) best = s;
+/**
+ * One task of a session: its typed messages, `at` its first one's time, and
+ * `window` (epoch ms) from that first message to the next task's first, the
+ * stretch of transcript its minutes are counted in.
+ */
+export interface PastTask extends PastSession { window: { from: number; to: number } }
+
+/**
+ * A session's typed messages as tasks: a new one starts after a gap of more
+ * than {@link TASK_GAP_MS}. A message with no time stays in the task it's in.
+ */
+export function splitTasks(s: PastSession): PastTask[] {
+  const groups: PastSession['prompts'][] = [];
+  let last = NaN;
+  for (const p of s.prompts) {
+    const t = p.at ? Date.parse(p.at) : NaN;
+    if (!groups.length || (Number.isFinite(t) && Number.isFinite(last) && t - last > TASK_GAP_MS)) groups.push([]);
+    groups[groups.length - 1]!.push(p);
+    if (Number.isFinite(t)) last = t;
+  }
+  const start = (g: PastSession['prompts'] | undefined) => Date.parse(g?.find((p) => p.at)?.at ?? '');
+  return groups.map((prompts, i) => {
+    const from = start(prompts);
+    const to = start(groups[i + 1]);
+    return { ...s, at: prompts.find((p) => p.at)?.at ?? s.at, prompts, window: { from: Number.isFinite(from) ? from : -Infinity, to: Number.isFinite(to) ? to : Infinity } };
+  });
+}
+
+/** The newest task, across sessions, with {@link TASK_MESSAGES} or more typed messages, by its last one. */
+export function pickLastTask(sessions: PastSession[]): PastTask | null {
+  let best: PastTask | null = null;
+  for (const task of sessions.flatMap(splitTasks)) {
+    if (task.prompts.length < TASK_MESSAGES) continue;
+    if (!best || lastAt(task) > lastAt(best)) best = task;
   }
   return best;
 }
@@ -116,19 +149,22 @@ export function pickLastTask(sessions: PastSession[]): PastSession | null {
 /** The person's own words in a typed message, the prompt hook's way: no pasted block, no harness text. */
 const own = (text: string) => promptWords(text);
 
-/** A line that labels what follows (`Repo: acme/shop (…)`, `Background:`) rather than asking for something. */
-const HEADER = /^[\w ()'/-]{1,40}:(\s|$)/;
+/** A line that labels what follows (`Repo: acme/shop (…)`, `Background (from …):`) rather than asking for something. */
+const HEADER = /^[\w ()'/-]{1,40}:(\s|$)|:$/;
+/** A pasted step of a list: `1. Read README.md`, `- run the tests`, `• ship it`. */
+const STEP = /^(\d+[.)]|[-*•])\s/;
 
 /**
  * What a task was about, in the person's words: the first line of their
- * messages that asks for something, three words or more. "hi", "continue"
- * and a pasted context header don't say what the work was.
+ * messages that asks for something, three words or more. "hi", "continue",
+ * a pasted context header and a pasted list's steps don't say what the
+ * work was.
  */
 export function openingWords(s: Pick<PastSession, 'prompts'>): string {
   for (const p of s.prompts) {
     for (const line of p.text.split('\n')) {
       const w = own(line);
-      if (w.split(/\s+/).length >= 3 && !HEADER.test(w)) return flatLine(w, 90);
+      if (w.split(/\s+/).length >= 3 && !HEADER.test(w) && !STEP.test(w)) return flatLine(w, 90);
     }
   }
   return flatLine(own(s.prompts[0]?.text ?? ''), 90);
@@ -153,19 +189,21 @@ const TIMESTAMP = /"timestamp":"([^"]+)"/;
 
 /**
  * The active minutes in a session's transcript (its in-repo stretch for one
- * started above the repo): every entry's time, gaps over IDLE_MS counted as
- * nothing, as a learning's cost counts them. Undefined when there are no
- * times to read.
+ * started above the repo), within a task's `window` when given: every
+ * entry's time, gaps over IDLE_MS counted as nothing, as a learning's cost
+ * counts them. Undefined when there are no times to read.
  */
-export function activeMinutes(s: Pick<PastSession, 'path' | 'stretch'>): number | undefined {
+export function activeMinutes(s: Pick<PastSession, 'path' | 'stretch'> & { window?: PastTask['window'] }): number | undefined {
   if (!s.path) return undefined;
+  const from = s.window?.from ?? -Infinity;
+  const to = s.window?.to ?? Infinity;
   let prev = 0;
   let active = 0;
   try {
     eachLine(s.path, (line) => {
       const m = TIMESTAMP.exec(line);
       const t = m ? Date.parse(m[1]!) : NaN;
-      if (!Number.isFinite(t)) return;
+      if (!Number.isFinite(t) || t < from || t >= to) return;
       const gap = t - prev;
       if (prev && gap > 0 && gap <= IDLE_MS) active += gap;
       if (t > prev) prev = t;
