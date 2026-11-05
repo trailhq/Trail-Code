@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import { PassThrough, Writable } from 'node:stream';
 import {
   activeMinutes, bringsUp, checksPath, firstPrompt, learningLines, learningsForTask, listLines, MAX_SHOWN, openingWords, pickLastTask, planEnding,
-  promptsFor, repoLearnings, sayEnding, shownLearnings, sourceOf, splitTasks, taskFacts, taskLines, tryLines, type Ending, type Shown,
+  promptsFor, repoLearnings, sayEnding, shownLearnings, sourceOf, splitTasks, taskFacts, taskLines, tryLines, withTeamPrompt, type Ending, type Shown,
 } from '../src/init/first-minute.js';
 import { formatInitEpilogue } from '../src/cli-epilogue.js';
 import type { PastSession } from '../src/init/sessions.js';
@@ -71,6 +71,19 @@ touches:
 - \`chargeInCents\` takes integer cents; a float total was off by a cent on invoices.
 
 _From past Claude sessions here, Oct 29._
+`;
+
+const INVOICES = `---
+title: Invoices are sent once a month so finance can reconcile them
+author: Rushabh
+date: 2026-11-01
+id: l-3333cccc
+scope: repo
+status: active
+---
+
+## Decided
+- Invoices are sent once a month, after finance reconciles the month.
 `;
 
 /** Runs `fn` with TRAIL_HOME pointed at the scratch home: the prompt hook's reads take process.env. */
@@ -267,6 +280,39 @@ test('learnings are matched on the last task\'s messages only, not the session\'
     const e = planEnding({ repo, notes, kept: [], sessions: [s] });
     assert.equal(e.task?.what, 'the gateway keeps timing out, look at withRetry in src/retry.ts');
     assert.deepEqual(e.shown.map((x) => [x.note.title, x.group]), [['Retries stay at 4 because the gateway times out at 30 s', 'task']], 'not the payments one from Oct 1');
+  });
+});
+
+test('none listed has a prompt: the first committed learning that passes joins the list as the team\'s, y/n only when a teammate wrote it', () => {
+  const row = (title: string, group: Shown['group']): Shown => ({ note: note({ path: `/${title}`, title }), line: '', from: 'x', group, ask: false });
+  const candidates = [note({ path: '/own', title: 'Own', author: 'Rushabh', touches: ['src/own.ts'] }), note({ path: '/t1', title: 'T1', author: 'Anirudh', touches: ['src/t1.ts'] })];
+  const passes = (path: string) => (_r: string, _p: string, n: Pick<Note, 'path'>) => n.path === path;
+  const two = withTeamPrompt('/r', [row('A', 'task'), row('B', 'kept')], candidates, 'Rushabh', passes('/t1'));
+  assert.deepEqual(two.shown.map((x) => [x.note.title, x.group, x.ask, x.from]), [['A', 'task', false, 'x'], ['B', 'kept', false, 'x'], ['T1', 'repo', true, 'Anirudh, Oct 27']]);
+  assert.deepEqual(two.tryPrompt, { prompt: "I'm about to change src/t1.ts. What should I know first?", n: 3, title: 'T1' });
+  const full = withTeamPrompt('/r', ['A', 'B', 'C', 'D', 'E'].map((t) => row(t, 'kept')), candidates, 'Rushabh', passes('/t1'));
+  assert.deepEqual(full.shown.map((x) => x.note.title), ['A', 'B', 'C', 'D', 'T1'], 'a full list: it takes the last place');
+  assert.equal(full.tryPrompt?.n, MAX_SHOWN);
+  const own = withTeamPrompt('/r', [row('A', 'kept')], candidates, 'Rushabh', passes('/own'));
+  assert.deepEqual([own.shown[1]!.from, own.shown[1]!.ask], ['you, Oct 27', false], "the person's own: listed, not asked");
+  const none = withTeamPrompt('/r', [row('A', 'kept')], candidates, 'Rushabh', () => false);
+  assert.deepEqual([none.shown.length, none.tryPrompt], [1, null], 'none passes: the list as it was, and the lookup');
+});
+
+test('planned with sessions: the task\'s learning names no code, so a committed one with a passing prompt is listed and tried, not the lookup', () => {
+  const { repo, env } = repoWith([{ name: '2026-10-27-retries.md', text: RETRY }, { name: '2026-10-29-cents.md', text: CENTS }, { name: '2026-11-01-invoices.md', text: INVOICES }]);
+  withEnv(env, () => {
+    const notes = listNotes(repo);
+    const task = session('beef5678-0000', '2026-11-03T10:00:00Z', ['when are the invoices sent each month?', 'and who reconciles them', 'ok thanks']);
+    const e = planEnding({ repo, notes, kept: [], sessions: [task] });
+    assert.deepEqual(e.shown.map((x) => [x.note.title, x.group]), [
+      ['Invoices are sent once a month so finance can reconcile them', 'task'],
+      ['Payments are stored in cents, never floats, after a rounding bug', 'repo'],
+    ]);
+    assert.equal(e.shown[1]!.from, 'Anirudh, Oct 29');
+    assert.deepEqual([e.tryPrompt?.n, e.tryPrompt?.prompt], [2, "I'm about to change chargeInCents in src/billing.ts. What should I know first?"]);
+    assert.equal(bringsUp(repo, e.tryPrompt!.prompt, e.shown[1]!.note), true);
+    assert.equal(e.lookup, null);
   });
 });
 

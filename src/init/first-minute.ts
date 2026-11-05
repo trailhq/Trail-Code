@@ -23,7 +23,10 @@
  *    stays on this machine, in the repo's Trail home.
  * 3. A first prompt that brings one of them up, shown only once
  *    promptLearnings, the prompt hook's path, returns that learning first
- *    for it.
+ *    for it. When none listed has one (a learning from past sessions often
+ *    names no code), the repo's committed learnings are tried, and the one
+ *    that passes joins the list as the team's: a teammate's learning
+ *    applied over a lookup, as for a clone with no sessions (2026-11-04).
  * 4. No learning at all, or no prompt that passes: one live lookup on the
  *    repo's map, its top file:line and the tokens it saved.
  *
@@ -56,8 +59,8 @@ export const MAX_SHOWN = 5;
 const MAX_FOR_TASK = 3;
 /** A task's messages read for matching: the start of the work is where a learning would have been handed over. */
 const MAX_TASK_PROMPTS = 60;
-/** The repo's learnings past the listed ones tried for a first prompt, when none listed passes. */
-const MAX_MORE_TRIES = 15;
+/** The repo's learnings, past the listed ones, tried for a first prompt when none listed passes. */
+const MAX_TEAM_TRIES = 20;
 
 /** The last task, as the ending says it. Only what the transcript says: no figure is guessed. */
 export interface TaskFacts {
@@ -385,21 +388,41 @@ export function firstPrompt(repo: string, shown: Note[], check = bringsUp): TryP
  * The list when the person's own sessions gave none: the repo's committed
  * learnings, newest first, at most {@link MAX_SHOWN}, each with whose and
  * when, and a first prompt for one of them. When none listed passes, the
- * next {@link MAX_MORE_TRIES} are tried, and one that passes takes the last
- * place, so the prompt's learning is always on the list.
+ * next ones are tried ({@link withTeamPrompt}), and one that passes takes
+ * the last place, so the prompt's learning is always on the list.
  */
 export function repoLearnings(repo: string, notes: Note[], me?: string, check = bringsUp): { shown: Shown[]; tryPrompt: TryPrompt | null } {
-  const team = liveLearnings(notes).filter((n) => n.scope === 'repo' && !n.ref);
-  const listed = team.slice(0, MAX_SHOWN);
-  let tryPrompt = firstPrompt(repo, listed, check);
-  for (const note of tryPrompt ? [] : team.slice(MAX_SHOWN, MAX_SHOWN + MAX_MORE_TRIES)) {
-    const prompt = promptsFor(note, fileHolds(repo)).find((p) => check(repo, p, note));
+  const team = committed(notes);
+  const listed = team.slice(0, MAX_SHOWN).map((note) => teamRow(note, me));
+  const tryPrompt = firstPrompt(repo, listed.map((s) => s.note), check);
+  return tryPrompt ? { shown: listed, tryPrompt } : withTeamPrompt(repo, listed, team.slice(MAX_SHOWN), me, check);
+}
+
+/** The repo's own committed learnings, newest first: not the person's on this machine, not a teammate's unmerged branch. */
+function committed(notes: Note[]): Note[] {
+  return liveLearnings(notes).filter((n) => n.scope === 'repo' && !n.ref);
+}
+
+/** A learning of the repo as the list shows it: whose and when, and "right? (y/n)" when a teammate wrote it. */
+function teamRow(note: Note, me?: string): Shown {
+  return { note, line: lineOf(note), from: whoAndWhen(note, me), group: 'repo', ask: teammates(note, me) };
+}
+
+/**
+ * The list, with the first of `candidates` (at most {@link MAX_TEAM_TRIES})
+ * that has a prompt that passes added as the team's, taking the last place
+ * when the list is full, and that prompt. The list as it was and no prompt
+ * when none passes: the lookup runs instead.
+ */
+export function withTeamPrompt(repo: string, shown: Shown[], candidates: Note[], me?: string, check = bringsUp): { shown: Shown[]; tryPrompt: TryPrompt | null } {
+  const holds = fileHolds(repo);
+  for (const note of candidates.slice(0, MAX_TEAM_TRIES)) {
+    const prompt = promptsFor(note, holds).find((p) => check(repo, p, note));
     if (!prompt) continue;
-    listed[MAX_SHOWN - 1] = note;
-    tryPrompt = { prompt, n: MAX_SHOWN, title: note.title };
-    break;
+    const list = [...(shown.length < MAX_SHOWN ? shown : shown.slice(0, MAX_SHOWN - 1)), teamRow(note, me)];
+    return { shown: list, tryPrompt: { prompt, n: list.length, title: note.title } };
   }
-  return { shown: listed.map((note) => ({ note, line: lineOf(note), from: whoAndWhen(note, me), group: 'repo' as const, ask: teammates(note, me) })), tryPrompt };
+  return { shown, tryPrompt: null };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -529,6 +552,11 @@ export function planEnding(input: EndingInput): Ending {
     let tryPrompt = firstPrompt(repo, shown.map((s) => s.note));
     // Nothing from the person's own sessions: what the team already committed here.
     if (!shown.length) ({ shown, tryPrompt } = repoLearnings(repo, notes, me));
+    // None listed has a prompt: a teammate's learning applied, over a lookup, as with no sessions.
+    else if (!tryPrompt) {
+      const listed = new Set([...shown, ...input.kept.map((note) => ({ note }))].map((s) => s.note.path || s.note.title));
+      ({ shown, tryPrompt } = withTeamPrompt(repo, shown, committed(notes).filter((n) => !listed.has(n.path || n.title)), me));
+    }
     // Only with no prompt to try: one live lookup instead.
     const lookup = tryPrompt ? null : liveLookup(repo, input.contextDir);
     return { task, shown, tryPrompt, lookup };
