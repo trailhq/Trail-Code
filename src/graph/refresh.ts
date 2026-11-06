@@ -48,7 +48,7 @@ import { acquireLockIn, lockHeldIn, releaseLockIn } from "../util/state.js";
 import { CACHE_DIR } from "../context/node-file.js";
 import { buildGraph } from "./build.js";
 import { driftCount, isClean, probeDrift, readFingerprint, type Drift } from "./fingerprint.js";
-import { invalidateGraphCaches } from "./load.js";
+import { invalidateGraphCaches, loadGraphCached } from "./load.js";
 import type { RefreshRunArgs } from "./refresh-run.js";
 import { seedGraph, type SeedResult } from "./seed.js";
 import { wiringPath } from "./write.js";
@@ -202,7 +202,12 @@ let rebuilding: ChildProcess | null = null;
 async function rebuild(args: RefreshRunArgs): Promise<void> {
   const run = process.env.GRAFT_TEST_REFRESH_RUN ?? fileURLToPath(new URL("./refresh-run.js", import.meta.url));
   if (!existsSync(run)) {
-    await buildGraph(args.dir, { contextDir: args.contextDir, graphOnly: true, onlyDirs: args.onlyDirs });
+    await buildGraph(args.dir, {
+      contextDir: args.contextDir,
+      graphOnly: true,
+      onlyDirs: args.onlyDirs,
+      extensions: args.extensions,
+    });
     return;
   }
   await new Promise<void>((done, fail) => {
@@ -324,11 +329,11 @@ export async function ensureFreshGraph(root: string, opts: RefreshOptions = {}):
       // else. The markdown projections under `graft/` stay the `Stop` hook's job —
       // a query has no business rewriting the repo's `.gitignore` or churning every
       // card's mtime, and skipping them is most of what keeps this cheap.
-      // A `--only-dir` build recorded its whitelist in the fingerprint; re-apply it
-      // here so an auto-rebuild keeps the same limited file set instead of silently
-      // widening to the whole tree.
+      // Re-apply saved filters. Extension selection lives in the graph itself,
+      // so a missing or obsolete extractor fingerprint cannot widen the build.
       const onlyDirs = readFingerprint(outDir)?.onlyDirs;
-      await rebuild({ dir, contextDir: opts.contextDir, onlyDirs });
+      const extensions = loadGraphCached(outDir)?.meta?.extensions;
+      await rebuild({ dir, contextDir: opts.contextDir, onlyDirs, extensions });
       invalidateGraphCaches(outDir);
       return { refreshed: true, drift: drift ?? undefined, note: seedNote };
     } finally {

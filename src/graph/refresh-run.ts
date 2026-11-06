@@ -12,11 +12,12 @@ export interface RefreshRunArgs {
   dir: string;
   contextDir?: string;
   onlyDirs?: string[];
+  extensions?: string[];
 }
 
 export async function main(arg: string): Promise<void> {
-  const { dir, contextDir, onlyDirs } = JSON.parse(arg) as RefreshRunArgs;
-  await buildGraph(dir, { contextDir, graphOnly: true, onlyDirs });
+  const { dir, contextDir, onlyDirs, extensions } = JSON.parse(arg) as RefreshRunArgs;
+  await buildGraph(dir, { contextDir, graphOnly: true, onlyDirs, extensions });
 }
 
 // Run only when executed directly, not on import.

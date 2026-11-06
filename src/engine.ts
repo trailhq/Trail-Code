@@ -42,6 +42,8 @@ export interface CheckRunOptions {
 }
 
 export interface GraphRunOptions {
+  /** Source extensions to include; absent or empty includes every supported language. */
+  extensions?: string[];
   /** Run the Tier-2 LLM meaning pass (summary + crux). Absent → Tier-1 only. */
   llm?: boolean;
   /** Max files summarized in parallel during the LLM pass. */
@@ -94,6 +96,7 @@ export class Graft {
    */
   graph(dir: string, opts: GraphRunOptions = {}): Promise<GraphBuildResult> {
     return buildGraph(dir, {
+      extensions: opts.extensions,
       contextDir: this.cfg.contextDir,
       summarizer: opts.llm ? this.cruxSummarizer() : undefined,
       concurrency: opts.concurrency,

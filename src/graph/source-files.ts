@@ -7,7 +7,7 @@
  * {@link listSourceFiles} so its existing importers are unaffected.
  */
 import { statSync } from "node:fs";
-import { resolve } from "node:path";
+import { extname, resolve } from "node:path";
 import { walkDir } from "../ingest/fs.js";
 import { relPosix } from "../util/paths.js";
 import { readFollowNestedRepos, readFollowSubmodules, readIncludeDirs } from "../util/state.js";
@@ -25,6 +25,11 @@ export function supportedExtensions(): string[] {
 function normExt(e: string): string {
   const t = e.trim().toLowerCase();
   return t.startsWith(".") ? t : `.${t}`;
+}
+
+/** Canonical selection for the build and its persisted freshness record. */
+export function normalizeExtensions(exts?: readonly string[]): string[] | undefined {
+  return exts?.length ? [...new Set(exts.map(normExt))].sort() : undefined;
 }
 
 /**
@@ -69,7 +74,9 @@ export function listSourceFiles(
     followNestedRepos: readFollowNestedRepos(resolve(root)),
   }),
   onlyDirs?: ReadonlySet<string>,
+  extensions?: readonly string[],
 ): string[] {
+  const selected = normalizeExtensions(extensions);
   // A file is a source file if a depth-tier grammar (languageOf), a breadth-tier
   // grammar (genericLangOf) or a container (containerLangOf) claims its extension.
   // All three must agree here or `build` and `check` would enumerate different sets.
@@ -77,6 +84,7 @@ export function listSourceFiles(
     repoFiles.filter(
       (f) =>
         !f.startsWith(outDir) &&
+        (!selected || selected.includes(extname(f).toLowerCase())) &&
         (languageOf(f) !== null || genericLangOf(f) !== null || containerLangOf(f) !== null),
     ),
     root,
@@ -105,9 +113,10 @@ export function listSourceStats(
   outDir: string,
   repoFiles?: string[],
   onlyDirs?: ReadonlySet<string>,
+  extensions?: readonly string[],
 ): SourceStat[] {
   const out: SourceStat[] = [];
-  for (const abs of listSourceFiles(root, outDir, repoFiles, onlyDirs)) {
+  for (const abs of listSourceFiles(root, outDir, repoFiles, onlyDirs, extensions)) {
     let s: { size: number; mtimeMs: number };
     try {
       s = statSync(abs);

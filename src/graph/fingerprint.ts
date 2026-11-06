@@ -54,6 +54,8 @@ export interface Fingerprint {
    * — so the query-path freshness probe (which never sees a CLI flag) enumerates the
    * identical whitelisted set and excluded files are never phantom "added" drift. */
   onlyDirs?: string[];
+  /** Normalized source extension selection (`--extensions`); absent = all supported. */
+  extensions?: string[];
 }
 
 /** What moved since the last build. Empty in all three arrays = nothing to do. */
@@ -88,12 +90,14 @@ export function writeFingerprint(
   outDir: string,
   entries: Record<string, ExtractEntry>,
   onlyDirs?: string[],
+  extensions?: string[],
 ): boolean {
   const files: Record<string, Print> = {};
   for (const [rel, e] of Object.entries(entries)) files[rel] = [e.size, e.mtimeMs, e.hash];
   try {
     const record: Fingerprint = { version: FINGERPRINT_VERSION, extractor: stamp(), files };
     if (onlyDirs && onlyDirs.length > 0) record.onlyDirs = onlyDirs;
+    if (extensions && extensions.length > 0) record.extensions = extensions;
     writeJsonAtomic(fingerprintPath(outDir), record, true);
     pruneSidecars(join(outDir, CACHE_DIR), FINGERPRINT_PREFIX);
     return true;
@@ -155,7 +159,7 @@ export function probeDrift(root: string, outDir: string): Drift | null {
   const seen = new Set<string>();
 
   const onlyDirs = fp.onlyDirs && fp.onlyDirs.length > 0 ? new Set(fp.onlyDirs) : undefined;
-  for (const f of listSourceStats(root, outDir, undefined, onlyDirs)) {
+  for (const f of listSourceStats(root, outDir, undefined, onlyDirs, fp.extensions)) {
     seen.add(f.rel);
     const print = fp.files[f.rel];
     if (!print) {
