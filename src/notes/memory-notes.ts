@@ -47,9 +47,11 @@ export interface MemoryCandidate {
   /** Tied to code that exists now and not already said: offered for the team, ticked. */
   forTeam: boolean;
   touches: string[];
-  /** The note it came from, for the once-per-note mark. */
+  /** The note it came from, for the once-per-note mark; `claude.ai:<hash>` for a fact of a Claude.ai export. */
   path: string;
   updated: string;
+  /** A fact of a memory export the person pasted from Claude.ai (claude-export.ts), not one of Claude Code's notes. */
+  from?: "claude.ai";
 }
 
 const BODY_CHARS = 1500;
@@ -179,7 +181,7 @@ export function readsAsLearning(body: string): boolean {
 }
 
 /** Still looks like a credential after scrubbing, or names where one lives: not worth the risk of committing. */
-const SECRETISH = /\b(?:AWS_SECRET_ACCESS_KEY|PRIVATE KEY|client_secret|BEGIN OPENSSH)\b|\[redacted\]/;
+export const SECRETISH = /\b(?:AWS_SECRET_ACCESS_KEY|PRIVATE KEY|client_secret|BEGIN OPENSSH)\b|\[redacted\]/;
 
 /**
  * What `trail init` offers from Claude Code's memory of this repo, for the
@@ -211,9 +213,9 @@ export function memoryCandidates(repo: string, opts: { home?: string; offered?: 
   return team;
 }
 
-/** A note is offered again only once it changes. */
-function offerKey(note: { path: string; updated: string }): string {
-  return `${note.path}@${note.updated}`;
+/** A note is offered again only once it changes; a Claude.ai fact's key is already its words. */
+function offerKey(note: { path: string; updated: string; from?: "claude.ai" }): string {
+  return note.from ? note.path : `${note.path}@${note.updated}`;
 }
 
 /** Where a repo remembers which memory notes init offered, on this machine. */
@@ -235,7 +237,7 @@ export function saveMemoryCandidates(repo: string, kept: MemoryCandidate[], auth
         title: c.title,
         author,
         date,
-        body: `${c.body.trim()}\n\n_From Claude Code's memory of this repo, last updated ${shortDate(c.updated)}._`,
+        body: `${c.body.trim()}\n\n_${c.from ? "From your Claude.ai memory, as of" : "From Claude Code's memory of this repo, last updated"} ${shortDate(c.updated)}._`,
         touches: c.touches,
       },
       c.forTeam ? "repo" : "personal",
@@ -246,15 +248,18 @@ export function saveMemoryCandidates(repo: string, kept: MemoryCandidate[], auth
 /**
  * Save the candidates the person keeps and remember every one was offered.
  * Without `keep` (no terminal to ask on), the team ones are kept: the
- * person's own are already in their Claude's memory. `keep` resolving null
- * means they cancelled: nothing is saved or marked, and the next init asks again.
+ * person's own are already in their Claude's memory. A Claude.ai export's
+ * facts are kept too, just for them: they passed the export, and Claude Code
+ * never reads it. `keep` resolving null means they cancelled: nothing is
+ * saved or marked, and the next init asks again.
  */
 export async function finishMemoryRead(
   repo: string,
   candidates: MemoryCandidate[],
   keep?: (candidates: MemoryCandidate[]) => Promise<MemoryCandidate[] | null>,
+  source: "memory" | "claude_ai" = "memory",
 ): Promise<{ saved: Note[]; kept: MemoryCandidate[]; cancelled: boolean }> {
-  const chosen = candidates.length && keep ? await keep(candidates) : candidates.filter((c) => c.forTeam);
+  const chosen = candidates.length && keep ? await keep(candidates) : candidates.filter((c) => c.forTeam || c.from);
   const kept = chosen ?? [];
   const saved = kept.length ? saveMemoryCandidates(repo, kept) : [];
   if (chosen !== null && candidates.length) {
@@ -266,7 +271,7 @@ export async function finishMemoryRead(
   track(
     "cold_start",
     {
-      source: "memory",
+      source,
       outcome: chosen === null ? "cancelled" : candidates.length ? "found" : "none_found",
       offered_bucket: countBucket(candidates.length),
       picked_bucket: countBucket(saved.length),

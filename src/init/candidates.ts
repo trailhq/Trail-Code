@@ -186,14 +186,14 @@ export function buildCandidates(i: CandidateInput, now: Date = new Date()): Init
 /** The at-most-5 the screen shows, in order (4.7): skill 1, guardrail 1, preference 1, skill 2, guardrail 2, preference 2, review 1, then by rank. */
 export function pickFive(c: InitCandidate[]): InitCandidate[] {
   const of = (k: InitKind) => c.filter((x) => x.kind === k).sort((a, b) => a.rank - b.rank);
-  const lists: Record<InitKind, InitCandidate[]> = { skill: of('skill'), guardrail: of('guardrail'), preference: of('preference'), review: of('review'), session: of('session'), claude: of('claude') };
+  const lists: Record<InitKind, InitCandidate[]> = { skill: of('skill'), guardrail: of('guardrail'), preference: of('preference'), review: of('review'), session: of('session'), claude: of('claude'), claudeai: of('claudeai') };
   const order: Array<[InitKind, number]> = [['skill', 0], ['guardrail', 0], ['preference', 0], ['skill', 1], ['guardrail', 1], ['preference', 1], ['review', 0]];
   const out: InitCandidate[] = [];
   for (const [k, n] of order) {
     const x = lists[k][n];
     if (x && out.length < 5) out.push(x);
   }
-  const kinds: InitKind[] = ['skill', 'guardrail', 'preference', 'review', 'session', 'claude'];
+  const kinds: InitKind[] = ['skill', 'guardrail', 'preference', 'review', 'session', 'claude', 'claudeai'];
   const rest = c.filter((x) => !out.includes(x)).sort((a, b) => a.rank - b.rank || kinds.indexOf(a.kind) - kinds.indexOf(b.kind));
   for (const x of rest) if (out.length < 5) out.push(x);
   return out;

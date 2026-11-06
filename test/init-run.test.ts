@@ -266,3 +266,32 @@ test("offers off: the screen's end says so with the day, and init never writes s
     assert.deepEqual(readFileSync(file), before, "byte-equal");
   });
 });
+
+const CLAUDE_AI = "**Work context**\n\nThey ship the shop with npm run release from the main branch. They keep PRs under 300 lines.\n\n**Personal context**\n\nThey live in Pune.\n";
+
+test("a Claude.ai export's facts about code share the screen, just for the person; r adds one to the repo", async () => {
+  await inWorld("claude-ai", async (w, env) => {
+    const said: string[] = [];
+    const t = fakeTty(["r", "\r"]);
+    const { reads, lines } = beginLookBack(w.repo, { env, deps: deps(true), plain: true, claudeExport: CLAUDE_AI });
+    assert.deepEqual(lines.slice(-1), ["· init offers 2 of the 3 things Claude.ai knows about you, the ones about code, just for you"]);
+    await finishLookBack(w.repo, reads, { yes: false, say: (l) => said.push(l), io: t.io });
+    assert.match(t.out(), /For your Claude only\. Your teammates' Claude doesn't get these\.\n\nFrom what Claude\.ai knows about you\n› \[x\] 1 {2}They ship the shop with npm run release from the main branch \(this repo only\)\n {9}Claude\.ai knows this; Claude Code doesn't\.\n/);
+    const inRepo = texts(join(w.repo, ".trail", "learnings"));
+    assert.equal(inRepo.length, 1);
+    assert.match(inRepo[0]!, /npm run release from the main branch/);
+    assert.ok(texts(w.trail).some((x) => /They keep PRs under 300 lines/.test(x)), "the other stays just for the person");
+    assert.ok(!texts(w.trail).concat(inRepo).some((x) => /Pune/.test(x)), "never the private one");
+  });
+});
+
+test("an agent's init keeps a Claude.ai export's facts just for the person, and never relays them", async () => {
+  await inWorld("claude-ai-agent", async (w, env) => {
+    const said: string[] = [];
+    const { reads } = beginLookBack(w.repo, { env: { ...env, CLAUDECODE: "1" }, deps: deps(false), claudeExport: CLAUDE_AI });
+    const r = await finishLookBack(w.repo, reads, { yes: false, say: (l) => said.push(l) });
+    assert.deepEqual(r.teamKept?.fromClaudeAi?.saved.map((n) => n.scope), ["personal", "personal"]);
+    assert.ok(!said.some((l) => /npm run release/.test(l)), "not in the relay");
+    assert.equal(texts(join(w.repo, ".trail", "learnings")).length, 0);
+  });
+});
