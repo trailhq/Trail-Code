@@ -329,6 +329,11 @@ export function notePlace(n: Note): string {
   return at === -1 ? shownPath(n.path) : path.slice(at + 1);
 }
 
+/** Where to read a learning: its place, or the `git show` that prints one on a teammate's unmerged branch. */
+export function whereToRead(n: Note): string {
+  return n.ref ? `git show ${shellQuote(flatLine(n.path, 300))}` : flatLine(notePlace(n), 300);
+}
+
 /* -------------------------------------------------------------------------- */
 /* how a note reads inside a query's output                                   */
 /* -------------------------------------------------------------------------- */

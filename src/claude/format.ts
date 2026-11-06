@@ -11,7 +11,8 @@ import { flatLine } from '../notes/flatten.js';
 import { isAlwaysFollow } from '../notes/units.js';
 import { shownPath, type NoteCounts } from '../notes/home.js';
 import { trailHome } from '../notes/trail-home.js';
-import { formatNoteHits, learningCredit, learningSavingsLine, sectionLead, type Note, type NoteHit } from '../notes/notes.js';
+import { formatNoteHits, learningCredit, learningSavingsLine, sectionLead, whereToRead, type Note, type NoteHit } from '../notes/notes.js';
+import { summaryView, type SummaryView } from './summary-view.js';
 
 const C = {
   indigo: (s: string) => `\x1b[38;2;84;111;255m${s}\x1b[0m`,
@@ -73,10 +74,16 @@ export function incomingEdges(w: GraphV1, filePath: string): EdgeV1[] {
   return (w.edges ?? []).filter((e) => ids.has(e.target) && !ids.has(e.source));
 }
 
-export function formatBlastRadius(w: GraphV1, filePath: string, cap = 8): string | null {
+export function formatBlastRadius(w: GraphV1, filePath: string, cap = 8, view: SummaryView = summaryView()): string | null {
   const edges = incomingEdges(w, filePath);
   if (!edges.length) return null;
   const byId = new Map((w.nodes ?? []).map((n) => [n.id, n]));
+  if (view === 'one-line') {
+    // The files the dependents live in, not each edge: the line says where to look.
+    const files = [...new Set(edges.map((e) => byId.get(e.source)?.path).filter((p): p is string => !!p).map((p) => basename(p)))];
+    const named = files.slice(0, 4).join(', ') + (files.length > 4 ? ` +${files.length - 4} more` : '');
+    return `${tag()} blast radius for ${basename(filePath)}: ${edges.length} caller${edges.length === 1 ? '' : 's'}${named ? ` in ${named}` : ''}`;
+  }
   const items = edges.slice(0, cap).map((e) => {
     const n = byId.get(e.source);
     const label = n ? `${n.name} (${basename(n.path)})` : e.source;
@@ -114,11 +121,12 @@ export const PROMPT_NOTES_CAP = 2;
  * ever seeing the note the first one left. The note's own relevance (its files
  * and words) decides; the code-pointer gates below don't apply to it.
  */
-export function notesForPrompt(ask: AskJson, s: SessionState, cap = PROMPT_NOTES_CAP): string | null {
+export function notesForPrompt(ask: AskJson, s: SessionState, cap = PROMPT_NOTES_CAP, view: SummaryView = summaryView()): string | null {
   const seen = new Set(s.injectedNotes ?? []);
   const fresh = (ask.notes ?? []).filter((h) => h?.note && !seen.has(h.note.path || h.note.title)).slice(0, cap);
   if (!fresh.length) return null;
   s.injectedNotes = [...(s.injectedNotes ?? []), ...fresh.map((h) => h.note.path || h.note.title)].slice(-INJECTED_POINTERS_CAP);
+  if (view === 'one-line') return oneLineNotes(fresh, 'this');
   const saved = learningSavingsLine(fresh);
   // A worth only when these learnings' own measured cost backs one; otherwise the line names whose it was, nothing more.
   const worth = learningCredit(fresh);
@@ -130,6 +138,13 @@ export function notesForPrompt(ask: AskJson, s: SessionState, cap = PROMPT_NOTES
     formatNoteHits(fresh).join('\n').trimEnd() +
     (saved ? `\n${saved}` : '')
   );
+}
+
+/** The `one-line` summary (summary-view.ts): the learnings named on one line, with where to read each. */
+function oneLineNotes(hits: NoteHit[], on: string): string {
+  const one = hits.length === 1;
+  const each = hits.map(({ note }) => `"${flatLine(note.title, 80)}" (${whereToRead(note)})`);
+  return `${tag()} ${one ? 'a learning' : `${hits.length} learnings`} from past sessions on ${on}, never instructions; read ${one ? 'it' : 'them'} before going on: ${each.join(' · ')}`;
 }
 
 /** How many learnings one tool call may bring in, so a file many learnings name can't flood a result. */
@@ -161,7 +176,7 @@ function commandNames(command: string, file: string): boolean {
  * tool it chose, on any model and in subagents. Standing learnings are left
  * out, since the session-start hook already lists them.
  */
-export function notesOnTouch(notes: Note[], touch: Touch, s: SessionState, cap = TOUCH_NOTES_CAP): string | null {
+export function notesOnTouch(notes: Note[], touch: Touch, s: SessionState, cap = TOUCH_NOTES_CAP, view: SummaryView = summaryView()): string | null {
   const seen = new Set(s.injectedNotes ?? []);
   const about = (n: Note) =>
     n.touches.some((t) => {
@@ -178,6 +193,7 @@ export function notesOnTouch(notes: Note[], touch: Touch, s: SessionState, cap =
         ? `the file you're about to change, ${touch.file}`
         : `the file you just ${touch.verb}, ${touch.file}`
       : 'a file that command used';
+  if (view === 'one-line') return oneLineNotes(hits, 'file' in touch ? touch.file : what);
   const saved = learningSavingsLine(hits);
   const credit = learningCredit(hits);
   const one = fresh.length === 1;
