@@ -20,7 +20,7 @@ import { flushClosedSessions, summarizeSession } from '../telemetry/sessions.js'
 import { maybeFlushInBackground } from '../telemetry/flush.js';
 import { handleStopEvent } from './stop.js';
 import { main as preBashMain } from './pre-bash.js';
-import { classifyToolUse, commandInvokesGraft, isMcpToolName, isGraftMcpTool, parseSavings, recordToolUse, type ToolKind } from './session-metrics.js';
+import { addHookSavings, classifyToolUse, commandInvokesGraft, isMcpToolName, isGraftMcpTool, parseSavings, recordToolUse, type ToolKind } from './session-metrics.js';
 import { adoptRepoBrand, brand, commandOnPath, repoWiredForTrail, tag, trailHandoverLine, trailOnPath } from '../brand.js';
 import { fitTrailServerToMachine } from '../hosts/claude-global.js';
 import { globalCopyCovers } from './hook-layers.js';
@@ -185,7 +185,10 @@ export function learningsOnTouch(input: any, dir: string, before = false): strin
     const id = payloadSessionId(input);
     const s = readSession(dir, id);
     const text = notesOnTouch(notes, touch, s);
-    if (text) writeSession(dir, id, s);
+    if (text) {
+      addHookSavings(s, text);
+      writeSession(dir, id, s);
+    }
     return text;
   } catch {
     // A learning that doesn't arrive costs one reminder; a broken hook costs the turn.

@@ -18,6 +18,7 @@ import { keepsNotes } from '../notes/home.js';
 import { hookNotice, linkedNews } from '../cloud/nudge.js';
 import { findNotes, listNotes, type NoteHit } from '../notes/notes.js';
 import { INJECTED_POINTERS_CAP, notesForPrompt, relevantRetrieval, type AskJson } from './format.js';
+import { addHookSavings } from './session-metrics.js';
 import { CHILD_TIMEOUT_MS, emitHook, graftJsonWithin, payloadSessionId, withContextDirArg } from './hook-io.js';
 import { promptPart } from './skills-wiring.js';
 import { recordSkillUse, skillOfPrompt } from './skill-use.js';
@@ -286,6 +287,7 @@ export async function handlePrompt(input: any, dir: string, opts: { budgetMs?: n
   // The session's one shown list, which on-touch reads too: a learning the block said is not shown again on a file open.
   if (said.size) s.injectedNotes = [...(s.injectedNotes ?? []), ...saidPaths(dir, said)].slice(-INJECTED_POINTERS_CAP);
   const notes = learnings.length ? notesForPrompt({ query: prompt, mode: 'learnings', hits: [], notes: learnings }, s) : null;
+  if (notes) addHookSavings(s, notes);
   const retrieval = ask ? relevantRetrieval(ask, s) : null;
   // A count, never the prompt: nothing the person typed is kept (spec section 6).
   if (ask) s.promptAsks = (s.promptAsks ?? 0) + 1;

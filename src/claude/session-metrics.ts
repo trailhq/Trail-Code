@@ -145,6 +145,21 @@ export function recordToolUse(dir: string, sessionId: string, use: ToolUse): voi
   writeSession(dir, id, s);
 }
 
+/**
+ * Add the savings lines in text a hook is about to hand the agent to the
+ * session's running total; the caller writes the session.
+ *
+ * The prompt and file-touch hooks bring learnings with the same
+ * `[trail] learnings saved ≈ N` line `trail ask` prints, and only the copy in a
+ * tool's output was ever counted. Past its first hour a session mostly edits,
+ * tests and checks, so its learnings come by hook, and without this the
+ * statusline sat on one number for the rest of the session.
+ */
+export function addHookSavings(s: SessionState, text: string): void {
+  const saved = sumSavingsFooters(text);
+  if (saved > 0) s.savedTokens = (s.savedTokens ?? 0) + saved;
+}
+
 export interface SessionSummary extends SessionState {
   id: string;
 }
