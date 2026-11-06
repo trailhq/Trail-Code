@@ -5,6 +5,7 @@
 import type { AskResult } from "../ask/ask.js";
 import { findRepoPlace, keepsNotes } from "./home.js";
 import { findNotes, listNotes } from "./notes.js";
+import { markStale } from "./stale.js";
 
 /** The file part of a hit's `file:Lx-Ly` pointer. */
 function pointerFile(pointer: string): string {
@@ -18,5 +19,6 @@ export function attachNotes(r: AskResult, repo: string): AskResult {
   r.notesChecked = true;
   const hits = findNotes(listNotes(repo), r.query, r.hits.map((h) => pointerFile(h.pointer)));
   if (hits.length) r.notes = hits;
+  markStale(hits.map((h) => h.note), repo);
   return r;
 }
