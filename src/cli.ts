@@ -95,6 +95,7 @@ import type { CheckResult } from "./check/types.js";
 import { checkLocally } from "./check/local-check.js";
 import { findLearning, learningFileName, liveLearnings } from "./notes/learning-fields.js";
 import { savedIdLine } from "./notes/replace.js";
+import { addToLearning, rememberSessionLearning, sessionLearning } from "./notes/session-learning.js";
 import { ALWAYS_FOLLOW, isAlwaysFollow } from "./notes/units.js";
 import { alwaysFollowBacked } from "./notes/always-follow-gate.js";
 import { formatOverlap, maybeRefreshBranches, overlapsWith, pushedWhen, readBranchCache, refreshBranches } from "./notes/branches.js";
@@ -1336,6 +1337,17 @@ async function runNoteCommand(repo: string, opts: NoteOptions): Promise<void> {
   for (const t of targets) t.touches = real(t.dir, t.touches);
   const scope = opts.personal ? "personal" : "repo";
   const primary = targets[0]!;
+  // One learning per session: a later save on the same branch adds to the file
+  // this session already wrote, and another branch (another PR) starts a new one.
+  const session = sessionKey(repo);
+  const branches = new Map(targets.map((t) => [t.dir, currentBranch(t.dir)]));
+  const ongoing = new Map<string, Note>();
+  if (session && !opts.replaces && !opts.alwaysFollow) {
+    for (const t of targets) {
+      const n = sessionLearning(t.dir, session, scope, branches.get(t.dir));
+      if (n) ongoing.set(t.dir, n);
+    }
+  }
   const existing = listNotes(primary.dir, { branches: false });
   let old: Note | undefined;
   if (opts.replaces) {
@@ -1360,7 +1372,8 @@ async function runNoteCommand(repo: string, opts: NoteOptions): Promise<void> {
       touches: primary.touches,
       replaces,
     },
-    liveLearnings(existing).filter((n) => (n.scope ?? "repo") === scope),
+    // This session's own learning isn't one it could repeat: the save adds to it.
+    liveLearnings(existing).filter((n) => (n.scope ?? "repo") === scope && n.id !== ongoing.get(primary.dir)?.id),
   );
   if (gate.problems.length && !opts.anyway) {
     console.error("✗ not saved yet:");
@@ -1375,17 +1388,24 @@ async function runNoteCommand(repo: string, opts: NoteOptions): Promise<void> {
   // Saved by `trail note`, which is how an agent saves: src says so, and no flag changes it.
   const earlier: Note[] = [];
   const saved: Note[] = [];
+  const added = new Set<Note>();
   for (const t of targets) {
     earlier.push(...listNotes(t.dir));
     // Always follow is a mark on the learning: written as kind guardrail (what older files and the cloud read), and
     // standing, so every session starts with it. Only on the person's word (always-follow-gate.ts).
     const mark = always.ok ? { kind: "guardrail" as const, standing: true } : {};
-    saved.push(writeNote(t.dir, { title: opts.title, body, author, date, branch: currentBranch(t.dir), cost, touches: t.touches, replaces, src: "agent", ...mark }, scope));
+    const into = ongoing.get(t.dir);
+    const n = into
+      ? addToLearning(into, { body, cost, touches: t.touches })
+      : writeNote(t.dir, { title: opts.title, body, author, date, branch: branches.get(t.dir), cost, touches: t.touches, replaces, src: "agent", ...mark }, scope);
+    if (session) rememberSessionLearning(t.dir, session, scope, n, branches.get(t.dir));
+    if (into) added.add(n);
+    saved.push(n);
   }
   const touches = targets.flatMap((t) => t.touches);
   track(
     "note_saved",
-    { has_cost: String(cost?.tokens !== undefined || cost?.minutes !== undefined), touches_bucket: countBucket(touches.length), scope: saved[0]?.scope ?? scope },
+    { has_cost: String(cost?.tokens !== undefined || cost?.minutes !== undefined), touches_bucket: countBucket(touches.length), scope: saved[0]?.scope ?? scope, into: added.size ? "session" : "new" },
     { repo },
   );
 
@@ -1393,8 +1413,12 @@ async function runNoteCommand(repo: string, opts: NoteOptions): Promise<void> {
     console.log(JSON.stringify(saved.length === 1 ? saved[0] : saved, null, 2));
     return;
   }
-  for (const n of saved) console.log(`✓ ${n.scope === "personal" ? "saved just for you" : "added to this repo"}${isAlwaysFollow(n) ? `, ${ALWAYS_FOLLOW}` : ""} · ${notePlace(n)}`);
+  for (const n of saved) {
+    const how = added.has(n) ? "added to the learning this session already saved" : n.scope === "personal" ? "saved just for you" : "added to this repo";
+    console.log(`✓ ${how}${isAlwaysFollow(n) ? `, ${ALWAYS_FOLLOW}` : ""} · ${notePlace(n)}`);
+  }
   console.log(savedIdLine(saved));
+  if (added.size) console.log("· one learning per session: later saves on this branch go into the same file, and a new branch starts a new one");
   if (opts.alwaysFollow && !always.ok)
     console.log(
       `· not marked always follow: nothing the person typed this session says it must always hold. Saved as a learning; if they want it always followed, ask them, then save it again with --replaces ${saved[0]!.id} --always-follow`,

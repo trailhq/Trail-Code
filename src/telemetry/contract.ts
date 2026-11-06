@@ -65,10 +65,11 @@ export const EVENTS: Record<string, ReadonlySet<string>> = {
    *  signup failed travels as a category and never as the error's own words. */
   brain_signup_settled: new Set<string>(['outcome', 'mode', 'duration_bucket']),
   /** `trail note` saved a session note (into `~/.trail/`). Whether it carries
-   *  a cost, and how many files it is about, as a bucket. The title, the text
+   *  a cost, and how many files it is about, as a bucket, and whether it went
+   *  into the learning this session already saved (`into`). The title, the text
    *  and the paths never travel. The supply side of the notes loop; the
    *  `notes` property on `query` is the demand side. */
-  note_saved: new Set<string>(['has_cost', 'touches_bucket', 'scope']),
+  note_saved: new Set<string>(['has_cost', 'touches_bucket', 'scope', 'into']),
   /** Once a day per repo, from the session-start hook, for a repo trail runs
    *  in: whether `.trail/` is committed there, how many learnings it holds,
    *  as a bucket, and whether this machine shares it with a workspace. With

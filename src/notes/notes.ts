@@ -12,7 +12,9 @@
  * merge (branches.ts). A personal one, about one person's setup or habits,
  * stays on their machine in `~/.trail/repos/<repo>/notes/` (home.ts).
  *
- * One file per session and never edited after it's written. A summary only,
+ * One file per session, or per branch when a session goes on to another PR:
+ * a later save in the session adds to it (session-learning.ts), and nothing
+ * edits it after that. A summary only,
  * never a transcript: the agent writes the body, and nothing here reads
  * source files or prompts into it.
  */
