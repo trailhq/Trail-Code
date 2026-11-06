@@ -533,3 +533,20 @@ test("readWorkspace: rejects foreign/invalid json as not-a-workspace", () => {
   assert.deepEqual(readWorkspace(p), { version: 1, children: ["a", "x"] });
   rmSync(p, { recursive: true, force: true });
 });
+
+test("splitWorkspace: re-split keeps registry children discovery can't see, prunes dead/escaping entries", async () => {
+  const p = workspaceFx(REPOS);
+  await buildWorkspace(p);
+  // A child nested deeper than immediate-dir discovery, added to the registry
+  // by hand — mirrors a parent root whose git repos aren't immediate children.
+  mkdirSync(join(p, "nested", "repoC", ".git"), { recursive: true });
+  writeFileSync(join(p, "nested", "repoC", "c.ts"), "export function gammaHandler() { return 3; }\n");
+  const ws = readWorkspace(p, undefined)!;
+  writeWorkspace(p, { version: 1, children: [...ws.children, "nested/repoC", "gone", "../outside"] });
+
+  const { children } = await buildWorkspace(p); // discovery alone sees only repoA/repoB
+  assert.ok(children.includes("nested/repoC"), "hand-registered nested child survives the re-split");
+  assert.deepEqual(readWorkspace(p, undefined)!.children, ["nested/repoC", "repoA", "repoB"]);
+  assert.ok(existsSync(contextDirFor(join(p, "nested", "repoC"))), "surviving registered child was built too");
+  rmSync(p, { recursive: true, force: true });
+});
