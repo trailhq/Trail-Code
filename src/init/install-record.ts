@@ -103,6 +103,7 @@ function dirtyPaths(checkout: string, rels: string[], env: NodeJS.ProcessEnv): S
   if (!rels.length) return new Set();
   const r = spawnSync('git', ['status', '--porcelain', '-z', '--untracked-files=all', '--', ...rels], {
     cwd: checkout, encoding: 'utf8', timeout: 10_000, env: { ...env, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0' },
+    windowsHide: true,
   });
   if (r.status !== 0 || typeof r.stdout !== 'string') return null;
   const out = new Set<string>();

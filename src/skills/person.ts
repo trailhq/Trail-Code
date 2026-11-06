@@ -70,6 +70,7 @@ export function readProcessTable(): PsRow[] | null {
   if (!ps || process.platform === 'win32') return null;
   const run = (fields: string) => execFileSync(ps, ['-A', '-o', fields], {
     encoding: 'utf8', timeout: 3000, maxBuffer: 16 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'], env: { LC_ALL: 'C', PATH: '/usr/bin:/bin' },
+    windowsHide: true,
   });
   try {
     const rows = new Map<number, PsRow>();

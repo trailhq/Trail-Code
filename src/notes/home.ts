@@ -263,6 +263,7 @@ function rootCommits(checkout: string): string[] {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 5000,
+      windowsHide: true,
     });
     return out.split("\n").map((l) => l.trim()).filter(Boolean).sort();
   } catch {

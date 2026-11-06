@@ -118,6 +118,7 @@ function git(root: string, args: string[]): string | null {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
     maxBuffer: 64 * 1024 * 1024,
+    windowsHide: true,
   });
   if (res.error || res.status !== 0 || typeof res.stdout !== "string") return null;
   return res.stdout;

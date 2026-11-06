@@ -54,7 +54,7 @@ const TRAIL_NPX_LAUNCH = { command: 'npx', args: ['-y', '@trailhq/trail-code', '
 const TRAIL_BIN_LAUNCH = { command: 'trail', args: ['mcp'] };
 
 function graftOnPath(): boolean {
-  const r = spawnSync('graft', ['--version'], { stdio: 'ignore', timeout: 5000 });
+  const r = spawnSync('graft', ['--version'], { stdio: 'ignore', timeout: 5000, windowsHide: true });
   return r.status === 0;
 }
 

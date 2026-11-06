@@ -84,7 +84,7 @@ function decisionsOf(repoKey: string, env: NodeJS.ProcessEnv): NonNullable<LookB
 
 /** An https origin with no credential helper: git-https-auth is still true here (4.5). */
 function httpsNoHelper(checkout: string): boolean {
-  const git = (...args: string[]) => spawnSync('git', ['-C', checkout, ...args], { encoding: 'utf8', timeout: 5000 });
+  const git = (...args: string[]) => spawnSync('git', ['-C', checkout, ...args], { encoding: 'utf8', timeout: 5000, windowsHide: true });
   const url = git('remote', 'get-url', 'origin');
   if (url.status !== 0 || !/^https:\/\//.test(url.stdout.trim())) return false;
   const helper = git('config', '--get-all', 'credential.helper');

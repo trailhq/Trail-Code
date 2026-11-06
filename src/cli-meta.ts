@@ -100,6 +100,7 @@ function globalRoot(): string | null {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
       shell: process.platform === "win32",
+      windowsHide: true,
     }).trim();
     return root || null;
   } catch {
