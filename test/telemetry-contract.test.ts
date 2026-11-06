@@ -98,6 +98,12 @@ test('cold_start counts init\'s offers and keeps by kind, exact to 5, and drops 
   assert.equal(ev?.properties.offered_learnings, undefined, 'a value other than 0 to 5 or 6+ is dropped');
 });
 
+test('init_completed says whose status line shows, from a closed set', () => {
+  const home = sandbox('tel-init-statusline');
+  assert.equal(track('init_completed', { agents: 'claude', statusline: 'theirs' }, { home, env: OPEN })?.properties.statusline, 'theirs');
+  assert.equal(track('init_completed', { agents: 'claude', statusline: 'sh ~/.claude/statusline.sh' }, { home, env: OPEN })?.properties.statusline, undefined);
+});
+
 // --- the skills events (spec section 20): counts and closed sets, never content ---
 
 /** Each skills event with the keys it may carry, as the spec lists them. */

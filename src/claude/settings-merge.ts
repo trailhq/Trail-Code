@@ -280,18 +280,26 @@ export function mergeTrailShared(existing: Json): Json {
  * line, the footer regex and the allowlist, plus, when `~/.claude` doesn't carry
  * them (`--no-global`), the hooks for every event but session start, which the
  * shared file already runs once.
+ *
+ * `theirs` is the other settings Claude Code reads here, `~/.claude/settings.json`
+ * and the repo's `.claude/settings.json`. This file outranks both, so a status
+ * line trail put here would hide one the person or their team set there, often
+ * the line that says which folder the terminal is in. Theirs wins.
  */
 export function mergeTrailLocal(
   existing: Json,
-  opts: { statusline?: boolean; hooks?: boolean } = {},
-): { merged: Json; warnings: string[] } {
+  opts: { statusline?: boolean; hooks?: boolean; theirs?: (Json | null)[] } = {},
+): { merged: Json; warnings: string[]; statusline: 'trail' | 'theirs' | 'off' } {
   const merged = withoutOurs(existing);
   const warnings: string[] = [];
+  let statusline: 'trail' | 'theirs' | 'off' = 'off';
   if (statuslineWanted(opts)) {
     for (const key of ['statusLine', 'subagentStatusLine'] as const) {
-      if (!merged[key]) merged[key] = { type: 'command', command: TRAIL_SL_CMD };
+      const hasTheirs = (opts.theirs ?? []).some((s) => s?.[key] && !isGraftStatusline(s[key]));
+      if (!merged[key] && !hasTheirs) merged[key] = { type: 'command', command: TRAIL_SL_CMD };
       else if (key === 'statusLine') warnings.push('Existing statusLine left untouched (a session allows only one). To use Trail, point it at .trail/statusline.cjs.');
     }
+    statusline = merged.statusLine?.command === TRAIL_SL_CMD ? 'trail' : 'theirs';
   }
   if (opts.hooks) {
     merged.hooks = { ...(merged.hooks ?? {}) };
@@ -303,5 +311,5 @@ export function mergeTrailLocal(
   merged.footerLinksRegexes = [...(merged.footerLinksRegexes ?? []), FOOTER];
   merged.permissions = { ...(merged.permissions ?? {}) };
   merged.permissions.allow = [...(merged.permissions.allow ?? []), ...ALLOW_ENTRIES];
-  return { merged, warnings };
+  return { merged, warnings, statusline };
 }

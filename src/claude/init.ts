@@ -128,6 +128,8 @@ export interface InitResult {
   global: GlobalWrite[];
   warnings: string[];
   built: boolean;
+  /** Whose status line Claude Code shows here: trail's, one the person or team set, or none asked for. Trail only. */
+  statusline?: 'trail' | 'theirs' | 'off';
 }
 
 export function runInit(
@@ -219,7 +221,8 @@ function runTrailInit(
   // Hooks for every other event come from `~/.claude`. Only when that's off do
   // they go in the personal file, beside the status line.
   const existingLocal = readSettings(local);
-  const { merged, warnings } = mergeTrailLocal(existingLocal ?? {}, { statusline: opts.statusline, hooks: !global });
+  const theirs = [readSettings(join(home, '.claude', 'settings.json')), existingShared];
+  const { merged, warnings, statusline: shown } = mergeTrailLocal(existingLocal ?? {}, { statusline: opts.statusline, hooks: !global, theirs });
   if (existingLocal) writeFileSync(local, `${JSON.stringify(merged, null, 2)}\n`);
   else warnings.push(notPlainJson('.claude/settings.local.json', "trail's status line and allowlist"));
   if (!existingShared) warnings.unshift(notPlainJson('.claude/settings.json', "trail's session-start hook"));
@@ -241,7 +244,7 @@ function runTrailInit(
   if (global) globalWrites.push(disableGraftServerIn(home, resolve(dir)));
 
   const built = buildGraphIfMissing(dir, opts);
-  return { settingsPath: settings, shims: [statusline, hook], skill: skillPath, mcp: null, global: globalWrites, warnings, built };
+  return { settingsPath: settings, shims: [statusline, hook], skill: skillPath, mcp: null, global: globalWrites, warnings, built, statusline: shown };
 }
 
 /**

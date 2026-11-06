@@ -34,6 +34,12 @@ test('two-line bar: size + freshness + ctx + last', () => {
   assert.match(lines[1], /last: pkce\.ts/);
 });
 
+test('the folder comes first, so terminals in different repos tell apart', () => {
+  const stats = { ...emptyStats(), nodeCount: 5, edgeCount: 6, totalCount: 5 };
+  assert.match(strip(renderStatusline(stats, null, { ctxPct: null, folder: 'api_server' })[0]), /^◤ api_server · (trail|graft) · 5 nodes/);
+  assert.match(strip(renderStatusline(null, null, { ctxPct: null, folder: 'api_server' })[0]), /^◤ api_server · (trail|graft) · not built/);
+});
+
 test('syncing overrides stale; synced when clean', () => {
   const base = { ...emptyStats(), nodeCount: 1, edgeCount: 0, totalCount: 1 };
   assert.match(strip(renderStatusline({ ...base, syncing: true, dirty: true }, null, { ctxPct: null })[0]), /syncing/);

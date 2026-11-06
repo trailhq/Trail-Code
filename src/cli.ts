@@ -1938,7 +1938,11 @@ async function runInitCommand(dir: string, opts: InitOptions, progress?: InitPro
     // Sorted so `claude,cursor` and `cursor,claude` aggregate as one value.
     track(
       "init_completed",
-      { agents: [...ids].sort().join(","), consent: consent === undefined ? "unasked" : String(consent) },
+      {
+        agents: [...ids].sort().join(","),
+        consent: consent === undefined ? "unasked" : String(consent),
+        ...(reports[0]?.statusline ? { statusline: reports[0].statusline } : {}),
+      },
       { repo },
     );
     return { ids, laptop: laptop ?? ids };
@@ -2049,6 +2053,8 @@ interface WireReport {
   retracted: string[];
   /** ⚠ lines, printed in full. */
   warnings: string[];
+  /** Whose status line Claude Code shows in the repo (trail only). */
+  statusline?: 'trail' | 'theirs' | 'off';
 }
 
 /** One repo's worth of `init` writes — the parent, then each workspace child. */
@@ -2111,6 +2117,7 @@ function wireTarget(
       say(res.built ? `✓ built the graph (${cmd("graft build")})` : "· skipped graph build");
       if (!wantStatusline) say("· skipped Claude Code statusLine (--no-statusline)");
       for (const w of res.warnings) say(`⚠ ${w}`);
+      report.statusline = res.statusline;
     }
 
     // `ids` is already resolved, so hosts init is always driven by an explicit

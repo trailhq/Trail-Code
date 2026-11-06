@@ -69,6 +69,36 @@ test("the personal settings carry the hooks only when ~/.claude doesn't, and nev
   assert.equal(kept.warnings.length, 1);
 });
 
+test("a status line set in ~/.claude or the repo's settings is never hidden by trail's", () => {
+  // The personal file outranks both, so trail's line there would replace the
+  // person's own, often the one naming the folder the terminal is in.
+  const user = { statusLine: { type: "command", command: "sh ~/.claude/statusline.sh" } };
+  const fresh = mergeTrailLocal({}, { theirs: [user, {}] });
+  assert.equal(fresh.merged.statusLine, undefined);
+  assert.match(fresh.merged.subagentStatusLine.command, /\.trail\/statusline\.cjs/, "theirs didn't set this one");
+  assert.equal(fresh.warnings.length, 1);
+  assert.equal(fresh.statusline, "theirs");
+  assert.equal(mergeTrailLocal({}).statusline, "trail");
+  assert.equal(mergeTrailLocal({}, { statusline: false }).statusline, "off");
+
+  const before = mergeTrailLocal({}).merged;
+  assert.equal(mergeTrailLocal(before, { theirs: [{}, user] }).merged.statusLine, undefined, "a later run takes back the line an older init wrote");
+
+  const ours = { statusLine: { type: "command", command: 'node "${CLAUDE_PROJECT_DIR:-.}/.claude/helpers/trail-statusline.cjs"' } };
+  assert.match(mergeTrailLocal({}, { theirs: [null, ours] }).merged.statusLine.command, /\.trail\/statusline\.cjs/, "trail's own older line doesn't count");
+});
+
+test("trail init keeps the status line from ~/.claude/settings.json", () => {
+  const d = gitRepo("own-line");
+  const home = tmpRepo("own-line-home");
+  mkdirSync(join(home, ".claude"), { recursive: true });
+  writeFileSync(join(home, ".claude", "settings.json"), JSON.stringify({ statusLine: { type: "command", command: "my-line" } }));
+  const res = runInit(d, { build: false, home, brand: "trail", global: false });
+  const local = JSON.parse(readFileSync(join(d, ".claude", "settings.local.json"), "utf8"));
+  assert.equal(local.statusLine, undefined);
+  assert.ok(res.warnings.some((w) => /statusLine left untouched/.test(w)));
+});
+
 test("trail init leaves git status with only the shared files, and writes the skill to ~/.claude", () => {
   const d = gitRepo("layout");
   const home = tmpRepo("layout-home");
