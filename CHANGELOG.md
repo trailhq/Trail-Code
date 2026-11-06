@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.29.0
+
+### Added
+
+- **A sign-in link to your team's Trail.** At the end of Claude's reply in a
+  repo with learnings, trail now offers "sign in to Trail" by default. It
+  used to need `TRAIL_CLOUD=1`. It stays off with `DO_NOT_TRACK`, with
+  telemetry off, in CI, or with `TRAIL_CLOUD=0` (#730).
+- **`trail share-session` can send your whole Claude setup**: the last 30
+  days of Claude Code sessions, your memory notes and setup, scrubbed on your
+  laptop and sent only after you say yes. It's off unless
+  `TRAIL_SHARE_SESSION=1` is set. `--stop` and `--delete <code>` always work,
+  so anyone who tried it can take everything back (#740).
+
+### Fixed
+
+- **Background builds no longer pile up and hang a laptop.** The build lock
+  counted as abandoned after 5 minutes even while its build was still
+  running, so a slow laptop could run two or three builds at once. The lock
+  now names the process holding it, and background builds run at low CPU
+  priority (#736).
+- **Lower peak memory on big repos.** Rebuilds after an edit run in their own
+  short-lived process instead of the MCP server, queries no longer copy the
+  whole search index, and map files are written as plain ASCII. On a repo
+  with 88k symbols, one turn peaked at 2.9 GB instead of 4.3 GB (#737).
+- **Install and upgrade without sudo.** `trail upgrade` clears what a stopped
+  npm install leaves behind (ENOTEMPTY, EEXIST) and tries again, and on
+  EACCES it shows how to install into your home folder instead. On a Node
+  older than 20.16 or 22.3, `trail` stops with one plain line (#734).
+- **Installing compiles nothing.** The depth tier (TypeScript, Python, Go,
+  Java, Kotlin, Swift, PHP, R) now parses on WASM, so a laptop without a C
+  toolchain installs cleanly. The map is the same (#707).
+- `trail init`'s list of always-follow learnings says what each one makes
+  Claude do, and who gets it is said once as a heading (#724).
+
+## 0.28.1
+
+- Lists Trail Code's MCP server in MCP directories (`mcpName`, `server.json`,
+  `.mcp.json`). The code is the same as 0.28.0.
+
 ## 0.28.0
 
 ### Added
