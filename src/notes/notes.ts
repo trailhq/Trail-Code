@@ -28,6 +28,7 @@ import { ensureRepoHome, notePlaces, shownPath } from "./home.js";
 import { LEARNING_KEYS, learningFileName, liveLearnings, newLearningId, readLearningFields, type LearningFields } from "./learning-fields.js";
 import { ensureRepoTrail, LEARNINGS_DIR, learningsDir } from "./repo-trail.js";
 import { TOUCH_CHARS, TOUCH_LIMIT } from "./targets.js";
+import { isJustMe } from "./just-me.js";
 
 // Where a learning goes, which to show for a query and how one is credited live in their own files.
 export { findNotes, type NoteHit } from "./find-notes.js";
@@ -278,7 +279,8 @@ export interface WriteNoteInput {
 /**
  * Write a new learning for the repo `dir` is in, and return it: into the
  * repo's `.trail/learnings/` (made if needed), or with `scope: "personal"`,
- * or outside git, into ~/.trail. Never overwrites: a second one with the same
+ * outside git or in a repo on trail just for this person (just-me.ts), into
+ * ~/.trail. Never overwrites: a second one with the same
  * name on the same day gets `-2`, `-3`. Its id is 8 hex digits from the file
  * name it gets (`newLearningId`), written into the file.
  */
@@ -286,7 +288,8 @@ export function writeNote(dir: string, input: WriteNoteInput, scope: LearningSco
   const { place } = ensureRepoHome(dir);
   const inRepo = scope === "repo" && place.git;
   let notes: string;
-  if (inRepo) {
+  const shared = inRepo && !isJustMe(place.checkout);
+  if (shared) {
     ensureRepoTrail(place.checkout);
     notes = learningsDir(place.checkout);
   } else {
@@ -305,7 +308,7 @@ export function writeNote(dir: string, input: WriteNoteInput, scope: LearningSco
     touches: input.touches ?? [],
     body: input.body,
     ...(input.standing ? { standing: true } : {}),
-    ...readLearningFields({ ...input, id: newLearningId(name), scope: inRepo ? "repo" : "personal", applies: inRepo ? undefined : (input.applies ?? place.key), status: "active" }, name),
+    ...readLearningFields({ ...input, id: newLearningId(name), scope: shared ? "repo" : "personal", applies: shared ? undefined : (input.applies ?? place.key), status: "active" }, name),
   };
   writeFileSync(join(notes, name), renderNote(note));
   return { ...note, path: join(notes, name) };

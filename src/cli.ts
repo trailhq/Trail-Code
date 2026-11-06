@@ -93,6 +93,9 @@ import {
 import { dropActivity, inWorkspace, maybeSyncInBackground, recordActivity, runSyncChild, syncRepo, syncWorkspaceRepos, workspaceLearnings } from "./cloud/workspace-sync.js";
 import type { CheckResult } from "./check/types.js";
 import { checkLocally } from "./check/local-check.js";
+import { askJustMe, isJustMe, setJustMe } from "./notes/just-me.js";
+import { trailHome } from "./notes/trail-home.js";
+import { keepOutOfGit, letGitSee } from "./claude/init.js";
 import { findLearning, learningFileName, liveLearnings } from "./notes/learning-fields.js";
 import { savedIdLine } from "./notes/replace.js";
 import { ALWAYS_FOLLOW, isAlwaysFollow } from "./notes/units.js";
@@ -1231,6 +1234,8 @@ grouped(program.command("init"), GROUP.setup)
   .option("--no-hooks", "skip hook installation for other agents")
   .option("--no-statusline", "skip writing Claude Code statusLine (keep a user-defined one)")
   .option("--dry-run", "print every file init would touch, then exit without writing")
+  .option("--just-me", "trail just for you here: git sees none of it, your learnings stay in ~/.trail, and nothing asks you to commit or share")
+  .option("--team", "share trail with your team here: you commit .trail/ and .claude/settings.json once, and teammates' Claude reads your learnings")
   .option("-y, --yes", "skip the picker and wire every detected agent (the pre-0.8 default)")
   .option("--no-global", "skip writes outside this repo (the ~/.codex/ config + hooks)")
   .option("--verbose", "print every file written, the graph build's own output and the closing banner")
@@ -1630,6 +1635,42 @@ async function runInitCommand(dir: string, opts: InitOptions, progress?: InitPro
       return null;
     }
 
+    // Who trail is for here (notes/just-me.ts), settled before anything is written. Asked on a terminal, in a repo
+    // whose team hasn't committed `.trail/`; a repo already on trail just for this person stays so until --team.
+    const scopeFlags = opts as { justMe?: boolean; team?: boolean };
+    if (scopeFlags.justMe && scopeFlags.team) {
+      console.error("✗ --just-me and --team are the two answers to one question: give one");
+      process.exitCode = 1;
+      return null;
+    }
+    let justMe = false;
+    let scope: "just_me" | "team" | "unasked" = scopeFlags.justMe ? "just_me" : scopeFlags.team ? "team" : "unasked";
+    if (TRAIL && isGitWorkTree(repo) && opts.pair === undefined && opts.connect === undefined) {
+      if (scope !== "unasked") justMe = scope === "just_me";
+      else if (trailCommitted(repo)) justMe = false;
+      else if (isJustMe(repo)) justMe = true;
+      else if (process.stdin.isTTY && process.stderr.isTTY && !opts.yes) {
+        const answer = await askJustMe();
+        if (answer === null) {
+          console.error("· cancelled, nothing written");
+          return null;
+        }
+        justMe = answer;
+        scope = justMe ? "just_me" : "team";
+      }
+      for (const target of targets) {
+        if (!isGitWorkTree(target)) continue;
+        // This clone's own `.git/info/exclude`: never committed, so nobody else's checkout changes.
+        if (justMe) {
+          setJustMe(target, true);
+          keepOutOfGit(target, ".trail");
+        } else if (isJustMe(target)) {
+          setJustMe(target, false);
+          letGitSee(target, ".trail");
+        }
+      }
+    }
+
     // With --pair, Trail's onboarding page is waiting on this run: tell it
     // first, so the person can sign up while the rest of init runs.
     let pair: PairRun | null = null;
@@ -1823,13 +1864,13 @@ async function runInitCommand(dir: string, opts: InitOptions, progress?: InitPro
         // saveReviewFindings keeps the findings' order.
         fromReviews.saved.forEach((note, i) => {
           const prs = fromReviews.kept[i]?.prs ?? [];
-          console.error(`    for your team · ${note.title}${prs.length ? ` (${prs.map((n) => `#${n}`).join(", ")})` : ""}`);
+          console.error(`    ${note.scope === "personal" ? "just for you " : "for your team"} · ${note.title}${prs.length ? ` (${prs.map((n) => `#${n}`).join(", ")})` : ""}`);
         });
       }
       if (fromSessions?.saved.length) {
         const n = fromSessions.saved.length;
         console.error(`✓ ${n < fromSessions.offered ? `kept ${n} of the ${fromSessions.offered} learnings` : `${n} learning${n === 1 ? "" : "s"}`} from your past Claude sessions here`);
-        for (const note of fromSessions.saved) console.error(`    for your team · ${note.title}`);
+        for (const note of fromSessions.saved) console.error(`    ${note.scope === "personal" ? "just for you " : "for your team"} · ${note.title}`);
       }
       if (fromMemory?.saved.length) {
         console.error(`✓ kept ${fromMemory.saved.length} of the ${fromMemory.offered} notes your Claude keeps about this repo`);
@@ -1849,19 +1890,32 @@ async function runInitCommand(dir: string, opts: InitOptions, progress?: InitPro
       teamSaved = learned.team;
       if (learnedNow) {
         console.error("· Claude follows them from your next session");
-        if (learned.inRepo) console.error(commitLines({}, teammatesOn(repo), "repo").uncommitted);
+        if (learned.inRepo && !justMe) console.error(commitLines({}, teammatesOn(repo), "repo").uncommitted);
       }
     }
     // Not looked back (not trail, or not Claude Code): the page still gets its stage.
     if (!lookBack) report?.learned?.({ notes: [], sessions: 0 });
     if (TRAIL && !learnedNow) {
       const home = notesHome.get(repo);
-      if (home) {
+      if (home && justMe) console.error(`✓ learnings  ${shownPath(trailHome())} · just for you: a session that fixes a bug, takes a correction or opens a PR leaves one there`);
+      else if (home) {
         const learnings = liveLearnings(listNotes(repo, { branches: false })).filter((n) => n.scope === "repo");
         if (learnings.length === 0) console.error(`✓ learnings  ${LEARNINGS_DIR}/ · a session that fixes a bug, takes a correction or opens a PR leaves one there, for your whole team`);
         else console.error(`✓ learnings  ${learnings.length} in ${LEARNINGS_DIR}/, from ${new Set(learnings.map((n) => n.author || "someone")).size} ${new Set(learnings.map((n) => n.author)).size === 1 ? "person" : "people"}`);
       }
     }
+
+    // Just for this person: what init added for the other agents stays out of git too. A file git already
+    // tracks can't be kept out, so it's named.
+    const inGit: string[] = [];
+    if (justMe)
+      for (const w of selectedWrites(plan, ids)) {
+        if (w.scope !== "repo") continue;
+        const rel = shown(repo, w.path);
+        const r = spawnSync("git", ["status", "--porcelain", "--", rel], { cwd: repo, encoding: "utf8" });
+        if (r.stdout.startsWith("??")) keepOutOfGit(repo, rel);
+        else if (r.stdout.trim()) inGit.push(rel);
+      }
 
     if (!verbose) {
       // What there is to commit: the top-level entries the picked agents wrote.
@@ -1886,7 +1940,10 @@ async function runInitCommand(dir: string, opts: InitOptions, progress?: InitPro
       // Outside git there is nothing to commit to, and `git status` failing above
       // made every path look changed.
       if (TRAIL && !children.length && !isGitWorkTree(repo)) console.error(NOT_GIT_LINE);
-      else if (tops.length)
+      else if (justMe) {
+        for (const f of inGit) console.error(`⚠ git tracks ${f}, so trail's change to it shows in git status: leave it out of your commits`);
+        console.error(`· just for you: git sees nothing trail added, so there's nothing to commit. To share it with your team later, run ${cmd("graft init")} --team`);
+      } else if (tops.length)
         console.error(
           TRAIL
             ? `· commit ${tops.slice(0, 5).join(" and ")}${tops.length > 5 ? ` +${tops.length - 5} more` : ""} once: after that, teammates' Claude reads your learnings even before they install trail`
@@ -1931,17 +1988,23 @@ async function runInitCommand(dir: string, opts: InitOptions, progress?: InitPro
     // Run by an agent, not a person: the last line tells it to ask about the
     // commit, since the person never saw the picker and Claude Code folds the rest.
     // With --pair the person reviews them on the Trail page first, so no ask here.
-    if (teamSaved && !pair && !process.stderr.isTTY)
+    if (teamSaved && !pair && !justMe && !process.stderr.isTTY)
       console.error(
         `→ ${teamSaved} team learning${teamSaved === 1 ? "" : "s"} in ${LEARNINGS_DIR}/ ${teamSaved === 1 ? "isn't" : "aren't"} committed yet. Ask the user: "Commit ${teamSaved === 1 ? "it" : `the ${teamSaved}`} so your teammates' Claude starts from ${teamSaved === 1 ? "it" : "them"}? (yes / no)"`,
       );
     // Sorted so `claude,cursor` and `cursor,claude` aggregate as one value.
     track(
       "init_completed",
-      { agents: [...ids].sort().join(","), consent: consent === undefined ? "unasked" : String(consent) },
+      { agents: [...ids].sort().join(","), consent: consent === undefined ? "unasked" : String(consent), scope },
       { repo },
     );
     return { ids, laptop: laptop ?? ids };
+}
+
+/** The repo's team committed `.trail/`: trail is shared here already. */
+function trailCommitted(repo: string): boolean {
+  const r = spawnSync("git", ["ls-files", "--", ".trail"], { cwd: repo, encoding: "utf8" });
+  return r.status === 0 && r.stdout.trim().length > 0;
 }
 
 /** A plan with the out-of-repo writes only for `laptop`'s hosts; the plan itself when every host may write there. */

@@ -230,7 +230,7 @@ export function mergeGraftHooks(existing: Json, helpers: string): { merged: Json
 }
 
 /** Drop every fragment graft or trail wrote from a settings object, keeping the user's. */
-function withoutOurs(existing: Json): Json {
+export function withoutOurs(existing: Json): Json {
   const merged: Json = { ...(existing ?? {}) };
   for (const key of ['statusLine', 'subagentStatusLine'] as const) if (isGraftStatusline(merged[key])) delete merged[key];
   if (merged.hooks && typeof merged.hooks === 'object' && !Array.isArray(merged.hooks)) {

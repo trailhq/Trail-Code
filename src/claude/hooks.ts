@@ -16,6 +16,7 @@ import { handlePrompt } from './prompt-hook.js';
 import { runUpkeep } from '../upkeep-run.js';
 import { runningVersion, wiredHostIds } from '../upkeep.js';
 import { hostsWiredForTrail } from '../hosts/registry.js';
+import { isJustMe, JUST_ME_DIRECTIVE } from '../notes/just-me.js';
 import { flushClosedSessions, summarizeSession } from '../telemetry/sessions.js';
 import { maybeFlushInBackground } from '../telemetry/flush.js';
 import { handleStopEvent } from './stop.js';
@@ -341,12 +342,15 @@ export function trackLearningsCommitted(dir: string): void {
  * Learnings added to this repo but sitting uncommitted in `.trail/learnings/` (from trail init's
  * read of past sessions, or a session that ended before committing) reach no
  * teammate. Once a day per repo, the first reply says so, with the line that
- * makes the case for committing them. Empty when everything is committed.
+ * makes the case for committing them. Empty when everything is committed. In a
+ * repo on trail just for this person (notes/just-me.ts), every session is told
+ * instead that there is nothing to commit.
  */
 export function uncommittedDirective(dir: string, now = Date.now()): string {
   try {
     const place = repoPlace(dir);
     if (!place.git) return '';
+    if (isJustMe(place.checkout)) return `${tag()} ${JUST_ME_DIRECTIVE}\n`;
     const status = execFileSync('git', ['status', '--porcelain', '--untracked-files=all', '--', '.trail/learnings'], {
       cwd: place.checkout, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000, windowsHide: true,
     });

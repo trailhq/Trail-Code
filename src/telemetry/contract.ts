@@ -48,7 +48,7 @@ export const EVENTS: Record<string, ReadonlySet<string>> = {
   first_run: new Set<string>(),
   /** `graft init` completed. Tells us which agents people actually wire, and
    *  how many decline telemetry at the picker. */
-  init_completed: new Set<string>(['agents', 'consent']),
+  init_completed: new Set<string>(['agents', 'consent', 'scope']),
   /** A build finished. The activation event — an install that never reaches one
    *  of these is the funnel leak we most want to see. `overlap`: another build or
    *  sync of the same map was already running when this one started. */
@@ -169,6 +169,7 @@ export const VALUES: Record<string, Record<string, ReadonlySet<string>>> = {
   skill_value: { channel: new Set(['context', 'notice', 'list']) },
   skill_saved: { from: new Set(['init', 'repeated', 'repaired', 'asked']), scope: new Set(['personal', 'repo', 'team']) },
   skill_promoted: { to: new Set(['repo', 'team']) },
+  init_completed: { scope: new Set(['just_me', 'team', 'unasked']) },
   team_pull: { outcome: new Set(['updated', 'unchanged', 'diverged', 'failed']) },
   skill_used: { outcome: new Set(['checked', 'failed', 'unchecked']) },
   skill_stale: { reason: new Set(['failed', 'corrected', 'missing', 'unused', 'unfollowed']) },
