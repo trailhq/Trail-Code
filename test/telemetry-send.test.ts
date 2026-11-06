@@ -110,6 +110,22 @@ test('a trailing slash on the configured host does not produce a double slash', 
   process.env.GRAFT_POSTHOG_HOST = saved;
 });
 
+test('timestamp is the send time; the event keeps its own time as occurred_at', () => {
+  const sentAt = new Date('2026-01-02T08:00:00Z');
+  const [ev] = (buildBatch(EVENTS, sentAt) as { batch: any[] }).batch;
+  assert.equal(ev.timestamp, '2026-01-02T08:00:00.000Z');
+  assert.equal(ev.properties.occurred_at, '2026-01-01T00:00:00Z');
+});
+
+test('a batch sent now is stamped now, not when it was queued', async () => {
+  reset();
+  const start = Date.now();
+  await sendBatch(EVENTS);
+  const at = Date.parse(hits[0].body.batch[0].timestamp);
+  assert.ok(at >= start && at <= Date.now(), 'timestamp is the moment of the POST');
+  assert.equal(hits[0].body.batch[0].properties.occurred_at, '2026-01-01T00:00:00Z');
+});
+
 test('buildBatch still carries no key, whichever path is used', () => {
   assert.equal('api_key' in buildBatch(EVENTS), false);
 });

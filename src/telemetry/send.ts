@@ -34,16 +34,24 @@ export interface SendResult {
  * to be pasted into a bug report must not also paste our ingestion key into it.
  * `sendBatch` adds the key at the moment of the request and nowhere else, which
  * keeps the key entirely out of every code path that can reach a terminal.
+ *
+ * `timestamp` is when the batch is sent, not when the event happened; that
+ * time travels as the `occurred_at` property. Events wait up to a day in the
+ * queue, so with the event's own time a day already loaded in PostHog kept
+ * gaining rows, and the PostHog→BigQuery sync re-read a week on every run. With
+ * the send time, a loaded day is final.
  */
-export function buildBatch(events: unknown[]): Record<string, unknown> {
+export function buildBatch(events: unknown[], sentAt: Date = new Date()): Record<string, unknown> {
+  const timestamp = sentAt.toISOString();
   return {
     batch: events.map((e) => {
       const ev = e as { event: string; properties?: Record<string, string>; timestamp?: string; distinct_id?: string };
       return {
         event: ev.event,
-        timestamp: ev.timestamp,
+        timestamp,
         properties: {
           ...(ev.properties ?? {}),
+          occurred_at: ev.timestamp,
           distinct_id: ev.distinct_id,
           // Anonymous event: PostHog stores it without creating a person.
           $process_person_profile: false,
