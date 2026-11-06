@@ -5,9 +5,9 @@ type Json = Record<string, any>;
 const slCmd = (name: 'graft' | 'trail' = 'graft') => `node "\${CLAUDE_PROJECT_DIR:-.}/.claude/helpers/${name}-statusline.cjs"`;
 /** trail's status line, from the shim in `.trail/` (see claude/init.ts). */
 const TRAIL_SL_CMD = 'node "${CLAUDE_PROJECT_DIR:-.}/.trail/statusline.cjs"';
-/** Stable marker for "this statusLine is Graft's", not the full command string —
- * an older shim path or a GRAFT_DIR wrapper still names this file. Either name. */
-const STATUSLINE_HELPER = /(graft|trail)-statusline\.cjs|\.trail\/statusline\.cjs/;
+/** Stable marker for "this statusLine is Graft's/Trail's", matching standalone shim invocation
+ * without capturing user command chains or wrappers mentioning the path. */
+const STATUSLINE_HELPER = /^(?:sh -c ["'])?\s*node\s+["']?(?:\$\{CLAUDE_PROJECT_DIR:-[.]\}[/\\]|\.[/\\])?(?:\.claude[/\\]helpers[/\\](?:graft|trail)-statusline\.cjs|\.trail[/\\]statusline\.cjs)["']?\s*["']?$/;
 const FOOTER = 'graft/[\\w./-]+\\.md';
 // Every form graft is actually invoked as. 'graft:*' covers a global install;
 // the other two cover a repo working on graft itself (or any consumer running it

@@ -30,6 +30,14 @@ test('foreign statusLine is preserved with a warning; Graft not forced in', () =
   assert.match(warnings[0], /statusLine/);
 });
 
+test('user wrapper statusLine mentioning helper path is preserved as foreign', () => {
+  const customCmd = 'input=$(cat); printf "%s" "$input" | "$HOME/.claude/statusline.sh"; printf "%s" "$input" | node "${CLAUDE_PROJECT_DIR:-.}/.trail/statusline.cjs"';
+  const { merged, warnings } = mergeGraftSettings({ statusLine: { type: 'command', command: customCmd } });
+  assert.equal(merged.statusLine.command, customCmd);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /statusLine/);
+});
+
 test('a prior Graft statusLine (helper path, old command) is updated to the current command', () => {
   const { merged, warnings } = mergeGraftSettings({
     statusLine: { type: 'command', command: 'node .claude/helpers/graft-statusline.cjs' },
