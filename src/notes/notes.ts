@@ -24,7 +24,7 @@ import { tokensLabel, tokensWorthSaying } from "./credit.js";
 import type { NoteHit } from "./find-notes.js";
 import { flatLine } from "./flatten.js";
 import { isAlwaysFollow } from "./units.js";
-import { ensureRepoHome, notePlaces, shownPath } from "./home.js";
+import { ensureRepoHome, notePlaces, repoPlace, shownPath, type RepoPlace } from "./home.js";
 import { LEARNING_KEYS, learningFileName, liveLearnings, newLearningId, readLearningFields, type LearningFields } from "./learning-fields.js";
 import { ensureRepoTrail, LEARNINGS_DIR, learningsDir } from "./repo-trail.js";
 import { TOUCH_CHARS, TOUCH_LIMIT } from "./targets.js";
@@ -283,7 +283,14 @@ export interface WriteNoteInput {
  * name it gets (`newLearningId`), written into the file.
  */
 export function writeNote(dir: string, input: WriteNoteInput, scope: LearningScope = "repo"): Note {
-  const { place } = ensureRepoHome(dir);
+  let place: RepoPlace;
+  try {
+    place = ensureRepoHome(dir).place;
+  } catch (e) {
+    // Codex's sandbox can't write ~/.trail. A learning added to the repo doesn't need it, so it's still saved.
+    place = repoPlace(dir);
+    if (scope !== "repo" || !place.git) throw e;
+  }
   const inRepo = scope === "repo" && place.git;
   let notes: string;
   if (inRepo) {
