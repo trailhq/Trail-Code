@@ -65,7 +65,9 @@ import { listSessionIds, readSession, sessionDir } from "./claude/state.js";
 import { costLabel, listNotes, noteName, notePlace, noteTargets, readingTokens, commitLines, PERSONAL_SAVED_LINE, PR_SPEEDUP, SECTIONS, tokensWorthSaying, sectionLead, shortDate, tokensLabel, writeNote, type Note, mentionedFiles } from "./notes/notes.js";
 import { aboutTerms, currentSessionCost } from "./notes/session-cost.js";
 import { flatLine, unmarkedWords } from "./notes/flatten.js";
-import { beginLookBack, finishLookBack, type FoundSkill } from "./init/run.js";
+import { beginLookBack, finishLookBack, type FoundSkill, type SessionsKept } from "./init/run.js";
+import { planEnding, sayEnding, type Ending } from "./init/first-minute.js";
+import { discoverOffThread } from "./init/discover-worker.js";
 import { keepCommand } from "./init/keep.js";
 import { recordInit, snapInit } from "./init/install-paths.js";
 import { finishPair, PairRun, validPairCode } from "./cloud/pair.js";
@@ -1810,12 +1812,17 @@ async function runInitCommand(dir: string, opts: InitOptions, progress?: InitPro
     // What the look-back read, for the --pair and --connect pages, and the skills it found (--pair names them).
     let sessionsRead = 0;
     let skillsFound: FoundSkill[] = [];
+    // trail's last lines (first-minute.ts) say the learnings from past sessions themselves, so the ✓ list
+    // below leaves them out; --pair's page and a workspace parent keep it.
+    const ends = lookBack !== null && !pair && !children.length;
+    let keptFromSessions: SessionsKept | undefined;
     if (lookBack) {
       // With --pair the person reviews what was found on Trail's page, so no screen here, as with no terminal.
       const screen = tty && !pair;
       const learned = await finishLookBack(repo, lookBack.reads, { yes: opts.yes === true, verbose: opts.verbose === true, say: (l) => console.error(l), ...(screen ? { io: { stdin: process.stdin, stdout: process.stderr } } : {}) });
       // #662's lines for the team rows it kept with no screen, in its words.
       const { fromReviews, fromSessions, fromMemory } = learned.teamKept ?? { fromReviews: null, fromSessions: null, fromMemory: null };
+      keptFromSessions = learned.fromSessions;
       if (fromReviews?.saved.length) {
         const n = fromReviews.saved.length;
         const what = n < fromReviews.offered ? `kept ${n} of the ${fromReviews.offered} learnings` : `${n} learning${n === 1 ? "" : "s"}`;
@@ -1826,7 +1833,7 @@ async function runInitCommand(dir: string, opts: InitOptions, progress?: InitPro
           console.error(`    for your team · ${note.title}${prs.length ? ` (${prs.map((n) => `#${n}`).join(", ")})` : ""}`);
         });
       }
-      if (fromSessions?.saved.length) {
+      if (fromSessions?.saved.length && !ends) {
         const n = fromSessions.saved.length;
         console.error(`✓ ${n < fromSessions.offered ? `kept ${n} of the ${fromSessions.offered} learnings` : `${n} learning${n === 1 ? "" : "s"}`} from your past Claude sessions here`);
         for (const note of fromSessions.saved) console.error(`    for your team · ${note.title}`);
@@ -1848,7 +1855,8 @@ async function runInitCommand(dir: string, opts: InitOptions, progress?: InitPro
       learnedNow = learned.kept > 0;
       teamSaved = learned.team;
       if (learnedNow) {
-        console.error("· Claude follows them from your next session");
+        // The last lines show it happen instead.
+        if (!ends) console.error("· Claude follows them from your next session");
         if (learned.inRepo) console.error(commitLines({}, teammatesOn(repo), "repo").uncommitted);
       }
     }
@@ -1863,6 +1871,15 @@ async function runInitCommand(dir: string, opts: InitOptions, progress?: InitPro
       }
     }
 
+    // What the last lines will say, worked out before anything is printed: the person's last task here, the learnings
+    // that bear on it, and a prompt that brings one up (or one live lookup). Read from this machine only.
+    let ending: Ending | null = null;
+    if (ends) {
+      const notes = listNotes(repo);
+      const sessions = notes.length ? (await discoverOffThread(repo, home)).sessions : null;
+      ending = planEnding({ repo, notes, kept: keptFromSessions?.notes ?? [], sources: keptFromSessions?.sources, sessions, contextDir: program.opts<GlobalOpts>().dir });
+    }
+
     if (!verbose) {
       // What there is to commit: the top-level entries the picked agents wrote.
       const tops: string[] = [];
@@ -1875,7 +1892,8 @@ async function runInitCommand(dir: string, opts: InitOptions, progress?: InitPro
         const top = TRAIL && rel === ".claude/settings.json" ? rel : parts.length > 1 ? `${parts[0]}/` : parts[0]!;
         if (!tops.includes(top)) tops.push(top);
       }
-      console.error(`· restart your agents so a new session picks up ${brand()}`);
+      // The last lines' "start a new Claude Code session here" says it, for Claude Code.
+      if (!ending?.tryPrompt && !ending?.lookup) console.error(`· restart your agents so a new session picks up ${brand()}`);
       if (TRAIL && !tops.includes(".trail/")) tops.push(".trail/");
       // Only what git sees as new or changed: a teammate's init over committed files has nothing to commit.
       const changedTops = tops.filter((t) => {
@@ -1900,12 +1918,18 @@ async function runInitCommand(dir: string, opts: InitOptions, progress?: InitPro
     const graphs = (children.length ? children.map((c) => join(repo, c)) : [repo])
       .map((d) => loadGraphCached(contextDirFor(d, children.length ? undefined : globalDir)))
       .filter((g): g is NonNullable<typeof g> => g !== null);
+    if (ending) {
+      // y/n on each learning only for the person at their own terminal, who didn't ask for --yes.
+      const asks = tty && !opts.yes && lookBack?.reads.person.ok === true && !lookBack.reads.agent;
+      await sayEnding(ending, repo, { say: (l) => console.error(l), tryIt: !verbose, ...(asks ? { io: { stdin: process.stdin, stdout: process.stderr } } : {}) });
+    }
     if (verbose) console.error(
       "\n" +
         formatInitEpilogue({
           graphBuilt: graphs.length > 0,
           nodes: graphs.reduce((n, g) => n + g.meta.nodeCount, 0),
           edges: graphs.reduce((n, g) => n + g.meta.edgeCount, 0),
+          ...(ending?.tryPrompt ? { tryPrompt: ending.tryPrompt.prompt } : {}),
         }),
     );
     // Hand what was found to the review page, and leave a child waiting for

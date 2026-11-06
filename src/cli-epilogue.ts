@@ -48,6 +48,8 @@ export interface InitEpilogueOptions {
   nodes?: number;
   /** Edge count from the built graph — only meaningful when `graphBuilt`. */
   edges?: number;
+  /** Under trail: a first prompt checked to bring up one of the repo's learnings (init/first-minute.ts). graft never has one. */
+  tryPrompt?: string;
 }
 
 /** Renders the `graft init` next-steps epilogue (no trailing newline — the
@@ -65,11 +67,13 @@ export function formatInitEpilogue(opts: InitEpilogueOptions): string {
   const steps: Step[] = [
     ...(graphBuilt ? [] : [{ label: "build the graph", command: cmd("graft build") }]),
     { label: "restart your agent", command: `a new session picks up ${brand()} automatically` },
-    {
-      label: "code as usual",
-      command: "ask your agent to fix a bug or explain a flow:",
-      extra: ["it now answers from the graph"],
-    },
+    brand() === "trail" && opts.tryPrompt
+      ? { label: "try it", command: `paste "${opts.tryPrompt}"`, extra: ["Trail hands Claude a learning with it"] }
+      : {
+          label: "code as usual",
+          command: "ask your agent to fix a bug or explain a flow:",
+          extra: ["it now answers from the graph"],
+        },
     {
       label: "explore by hand",
       command: `${cmd("graft ask")} "where is auth handled?" · ${cmd("graft callers")} <fn> · ${cmd("graft viz")}`,

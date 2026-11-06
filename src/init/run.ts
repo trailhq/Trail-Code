@@ -213,7 +213,22 @@ function itemsOf(picked: Array<InitCandidate & { n: number }>, named: Named, env
  * PRs (null when the PR reviews weren't read). `skills`: the skills the look-back found this run, each kept (or not) on
  * this machine only, for the pair page to list by name and day count: never their steps.
  */
-export interface LookBackDone { kept: number; inRepo: boolean; team: number; teamKept?: TeamKept; read?: { sessions: number; prs: number | null }; skills?: FoundSkill[] }
+export interface LookBackDone { kept: number; inRepo: boolean; team: number; teamKept?: TeamKept; read?: { sessions: number; prs: number | null }; skills?: FoundSkill[];
+  /** The learnings saved from past sessions, screen or none, for init's last lines (first-minute.ts). */
+  fromSessions?: SessionsKept }
+
+/** Learnings saved from past sessions, with the sessions (ids, 8 characters) each one's quotes were found in, by learning id. */
+export interface SessionsKept { notes: Note[]; sources: Map<string, string[]> }
+
+/** finishSessionRead keeps the order: the nth saved note is the nth kept learning. */
+function sessionsKept(from: TeamKept['fromSessions']): SessionsKept | undefined {
+  if (!from?.saved.length) return undefined;
+  const sources = new Map<string, string[]>();
+  from.saved.forEach((n, i) => {
+    if (n.id) sources.set(n.id, from.kept[i]?.sources ?? []);
+  });
+  return { notes: from.saved, sources };
+}
 
 /** A skill the look-back found, as `init --pair` names it to Trail's page: its name and title, and on how many days it came up. */
 export interface FoundSkill { id: string; name: string; title: string; days: number }
@@ -368,6 +383,7 @@ export async function finishLookBack(repo: string, reads: LookBackReads,
     const final = shown.map((i) => ({ ...i, ...(answer.scopes[i.n] ?? {}) }));
     let result: KeepResult = { kept: [], notKept: [], refused: [] };
     let teamSaved = 0;
+    let fromSessions: SessionsKept | undefined;
     if (answer.how === 'esc') {
       if (looked) {
         updateInitRecord(repoKey, (r) => {
@@ -389,7 +405,9 @@ export async function finishLookBack(repo: string, reads: LookBackReads,
       const own = final.filter((i) => !isTeam(i));
       result = own.length ? keepItems(picked.filter((i) => !isTeam(i)), own, 'tty', env, now, place) : result;
       const keptTeam = picked.filter(isTeam);
-      teamSaved = (await keepTeam((rows) => rows.filter((r) => keptTeam.some((k) => k.id === r.id)))).team;
+      const teamDone = await keepTeam((rows) => rows.filter((r) => keptTeam.some((k) => k.id === r.id)));
+      teamSaved = teamDone.team;
+      fromSessions = sessionsKept(teamDone.fromSessions);
       result = { ...result, kept: [...keptTeam, ...result.kept], notKept: final.filter((i) => !picked.includes(i)) };
       const offeredRow = (i: Pick<InitItem, 'kind'>) => i.kind === 'review' || i.kind === 'session';
       const keptReviews = keptTeam.filter(offeredRow);
@@ -404,7 +422,7 @@ export async function finishLookBack(repo: string, reads: LookBackReads,
       tele('found', result.kept.filter((i) => !isTeam(i)).length);
     }
     for (const l of afterKeepLines({ ...result, how: answer.how }, facts)) say(l);
-    return { kept: result.kept.length, inRepo: result.kept.some((i) => i.scope === 'repo' || isTeam(i)), team: teamSaved, read, skills };
+    return { kept: result.kept.length, inRepo: result.kept.some((i) => i.scope === 'repo' || isTeam(i)), team: teamSaved, read, skills, ...(fromSessions ? { fromSessions } : {}) };
   }
 
   // No screen: the relay (agent) or the script's list for the look-back's items. A PR-review finding is model text
@@ -440,5 +458,6 @@ export async function finishLookBack(repo: string, reads: LookBackReads,
   if (looked && !reads.skills) say(INIT_COPY.skillsOff!);
   tele('relayed', kept);
   const teamKept = (fromTeam.fromReviews?.saved.length ?? 0) + (fromTeam.fromSessions?.saved.length ?? 0) + (fromTeam.fromMemory?.saved.length ?? 0);
-  return { kept: kept + teamKept, inRepo: fromTeam.team > 0, team: fromTeam.team, teamKept: { fromReviews: fromTeam.fromReviews, fromSessions: fromTeam.fromSessions, fromMemory: fromTeam.fromMemory }, read, skills };
+  const fromSessions = sessionsKept(fromTeam.fromSessions);
+  return { kept: kept + teamKept, inRepo: fromTeam.team > 0, team: fromTeam.team, teamKept: { fromReviews: fromTeam.fromReviews, fromSessions: fromTeam.fromSessions, fromMemory: fromTeam.fromMemory }, read, skills, ...(fromSessions ? { fromSessions } : {}) };
 }
