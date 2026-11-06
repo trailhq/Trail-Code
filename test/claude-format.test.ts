@@ -64,6 +64,10 @@ test('formatBlastRadius renders callers or null', () => {
   assert.match(strip(txt!), /blast radius for pkce\.ts/);
   assert.match(strip(txt!), /exchange \(client\.ts\)/);
   assert.equal(formatBlastRadius(wiring2, '/abs/repo/src/unknown.ts'), null);
+  // The edited path is the OS's: on Windows '\' separates, elsewhere it is part of a file name.
+  const backslashed = formatBlastRadius(wiring2, '/abs/repo/src\\pkce.ts');
+  if (process.platform === 'win32') assert.match(strip(backslashed ?? ''), /exchange \(client\.ts\)/, 'a Windows path');
+  else assert.equal(backslashed, null, 'a POSIX file name containing a backslash');
 });
 
 test('formatRetrieval renders top hits, trims snippet, first pointer only', () => {
