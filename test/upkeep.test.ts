@@ -76,6 +76,13 @@ test('DO_NOT_TRACK disables the automatic update check', () => {
   assert.equal(existsSync(updateCachePath(home)), false, 'a disabled check leaves no attempt stamp');
 });
 
+test('an attempt stamp that cannot be saved starts no update check', () => {
+  const home = tmpRepo('upkeep-unwritable');
+  mkdirSync(updateCachePath(home), { recursive: true });
+
+  assert.equal(maybeRefreshInBackground(home, 1_700_000_000_000, {}), false);
+});
+
 test('runningVersion resolves this package, not the caller depth', () => {
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string };
   assert.equal(runningVersion(), pkg.version);
