@@ -148,7 +148,7 @@ export function upsertCodexToml(id: string, path: string, name: Brand = 'graft')
   const text = existed ? readFileSync(path, 'utf8') : '';
   const { command, args } = serverEntry({ brand: name });
   const argList = args.map((a) => JSON.stringify(a)).join(", ");
-  const section = `${tomlHeader(name)}\ncommand = \"${command}\"\nargs = [${argList}]\n`;
+  const section = `${tomlHeader(name)}\ncommand = "${command}"\nargs = [${argList}]\n`;
 
   const own = stripTomlSection(text, name);
   // Under trail, graft's table goes: the same server, listed once.
@@ -220,6 +220,12 @@ export function mcpTargets(
         break;
       case 'kiro':
         out.push(json(id, id, join(repo, '.kiro', 'settings', 'mcp.json'), 'mcpServers', entry));
+        break;
+      case 'omp':
+        // omp's mcp-json provider reads a project-root `.mcp.json` in the Claude
+        // Desktop format (top-level `mcpServers`), confirmed against oh-my-pi's
+        // source (packages/coding-agent/src/discovery/mcp-json.ts).
+        out.push(json(id, id, join(repo, '.mcp.json'), 'mcpServers', entry));
         break;
       case 'grok':
         // Grok reads MCP from repo-level `.grok/config.toml` (`[mcp_servers.<name>]`),

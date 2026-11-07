@@ -30,6 +30,15 @@ export interface HostTarget {
   detect(probe: DetectProbe): boolean;
 }
 
+/**
+ * omp's agent config dir: `PI_CODING_AGENT_DIR` overrides the default
+ * `~/.omp/agent`. A leading `~` in the env value is expanded against `home`.
+ */
+function ompAgentDir(home: string): string {
+  const fromEnv = process.env.PI_CODING_AGENT_DIR;
+  return fromEnv ? fromEnv.replace(/^~(?=$|[/\\])/, home) : join(home, '.omp', 'agent');
+}
+
 export const HOSTS: HostTarget[] = [
   {
     id: 'agents',
@@ -116,6 +125,16 @@ export const HOSTS: HostTarget[] = [
     relPath: join('.kiro', 'steering', 'graft.md'),
     content: kiroSteering,
     detect: (p) => p.dirExists(join(p.home, '.kiro')) || p.dirExists(join(p.repo, '.kiro')),
+  },
+  {
+    id: 'omp',
+    name: 'oh-my-pi (omp)',
+    kind: 'section',
+    relPath: 'AGENTS.md',
+    content: instructionBody,
+    // omp reads AGENTS.md natively. Detect its config root — PI_CODING_AGENT_DIR
+    // overrides the default ~/.omp/agent — or a repo-local .omp.
+    detect: (p) => p.dirExists(ompAgentDir(p.home)) || p.dirExists(join(p.repo, '.omp')),
   },
   {
     id: 'windsurf',
