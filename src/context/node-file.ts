@@ -119,12 +119,13 @@ export function contextDirFor(root: string, override?: string): string {
  * Make sure the repo's root `.gitignore` ignores the graft output dir. The
  * graph is a local, regenerable cache (like `node_modules`), not a committed
  * artifact, so every `graft build` adds the entry itself the first time — the
- * user never has to think about it. No-ops when the entry is already present,
- * when git already ignores the dir by other means (`.git/info/exclude`, a parent
- * `.gitignore`, `core.excludesFile`), or when the dir lives outside `root` (a
- * custom `--dir` elsewhere, which can't be expressed as a repo-relative ignore).
- * Best-effort: an unwritable `.gitignore` must never abort a build, so write
- * failures are swallowed.
+ * user never has to think about it. No-ops when the entry is already present
+ * (anchored `/graft/` or a bare user-owned `graft`), when git already ignores
+ * the dir by other means (`.git/info/exclude`, a parent `.gitignore`,
+ * `core.excludesFile`), or when the dir lives outside `root`; migrates a
+ * legacy unanchored trailing-slash entry (`graft/`) to the anchored form in
+ * place (see below). Best-effort: an unwritable `.gitignore` must never abort
+ * a build, so write failures are swallowed.
  */
 const GRAPH_CACHE_NOTE = "graft's local graph cache — regenerable, not committed (run `graft build`).";
 
@@ -150,13 +151,33 @@ export function ensureGitignored(root: string, contextDir: string, note = GRAPH_
   const path = join(root, ".gitignore");
   let current = "";
   try { current = readFileSync(path, "utf8"); } catch { /* no .gitignore yet — we create one */ }
-  // Accept the anchored form AND the older unanchored `graft/` / `graft`, so existing
-  // repos aren't double-appended and a hand-anchored entry survives the next build.
-  const present = current.split("\n").some((l) => {
-    const t = l.trim();
-    return t === entry || t === `${bare}/` || t === bare;
-  });
-  if (present) return;
+  const lines = current.split("\n");
+  // Only the trailing-slash unanchored form is legacy trap bait (what graft wrote
+  // pre-#79). A bare `graft` / bare `<dir>` is a user rule — leave it alone (it may
+  // cover e.g. a built `graft` binary that `/graft/` would stop matching).
+  const isLegacy = (l: string) => l.trim() === `${bare}/`;
+  // A legacy unanchored entry (written pre-#79) is not merely tolerated — it IS the line
+  // that ignores `.claude/skills/graft/`, so every repo that adopted graft before the
+  // fix keeps the silent-skill-drop trap if "already present" means no-op. Rewrite the
+  // first legacy line in place (same position, under whatever comment sits above it),
+  // drop duplicates, and never add a second entry when an anchored one already exists
+  // alongside the stale one (pre-#79, a hand-anchored line didn't stop the hook-triggered
+  // build from re-appending the unanchored form, so both could sit in the same file).
+  if (lines.some(isLegacy)) {
+    const hasAnchored = lines.some((l) => l.trim() === entry);
+    const out: string[] = [];
+    let placed = hasAnchored;
+    for (const line of lines) {
+      if (isLegacy(line)) {
+        if (!placed) { out.push(entry); placed = true; }
+        continue; // drop the unanchored spelling
+      }
+      out.push(line);
+    }
+    try { writeFileSync(path, out.join("\n")); } catch { /* best-effort — build already succeeded */ }
+    return;
+  }
+  if (lines.some((l) => { const t = l.trim(); return t === entry || t === bare; })) return;
   // Not in `.gitignore` itself, but git may already ignore the dir through `.git/info/exclude`,
   // a parent `.gitignore` or `core.excludesFile`. Then there is nothing to add, and appending
   // would dirty the checkout again on every build for a user who keeps tooling noise out of
