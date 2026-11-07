@@ -203,3 +203,58 @@ test("A5: a go.mod under a persisted --include-dir override is found, so imports
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("Go extraction: a call through an interface-typed struct field resolves to the interface method (#618)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "graft-go-iface-"));
+  try {
+    writeFileSync(join(dir, "go.mod"), "module example.test/interface-repro\n\ngo 1.23\n");
+    writeFileSync(
+      join(dir, "client.go"),
+      "package example\n\ntype Client struct{}\nfunc (*Client) Containers() []int { return nil }\nfunc (*Client) ImageContainers(string) []int { return nil }\n",
+    );
+    writeFileSync(
+      join(dir, "worker.go"),
+      "package example\n\ntype API interface {\n\tContainers() []int\n\tImageContainers(string) []int\n}\ntype Worker struct { api API }\nfunc (w Worker) Inventory() []int { return w.api.Containers() }\nfunc (w Worker) Recheck(name string) []int { return w.api.ImageContainers(name) }\n",
+    );
+    writeFileSync(
+      join(dir, "fake_test.go"),
+      "package example\n\ntype Fake struct{}\nfunc (*Fake) Containers() []int { return nil }\nfunc (*Fake) ImageContainers(string) []int { return nil }\n",
+    );
+
+    await buildGraph(dir);
+    const graph = readGraph(wiringPath(join(dir, "graft")))!;
+
+    const spec = nodeById(graph, "worker.go#API.Containers");
+    assert.equal(spec?.kind, "method");
+    assert.equal(spec?.owner, "API");
+    assert.equal(spec?.exported, true);
+
+    const calls = (source: string) =>
+      graph.edges.filter((e) => e.relation === "calls" && e.source === source).map((e) => e.target);
+    assert.deepEqual(calls("worker.go#Worker.Inventory"), ["worker.go#API.Containers"]);
+    assert.deepEqual(calls("worker.go#Worker.Recheck"), ["worker.go#API.ImageContainers"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Go extraction: an inline interface type mints no method nodes", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "graft-go-inline-iface-"));
+  try {
+    writeFileSync(join(dir, "go.mod"), "module mymod\n\ngo 1.21\n");
+    writeFileSync(
+      join(dir, "main.go"),
+      "package main\n\ntype Holder struct { r interface{ Read() error } }\n\nfunc Use(r interface{ Close() error }) {}\n",
+    );
+
+    await buildGraph(dir);
+    const graph = readGraph(wiringPath(join(dir, "graft")))!;
+
+    assert.deepEqual(
+      graph.nodes.filter((n) => n.kind === "method").map((n) => n.id),
+      [],
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
