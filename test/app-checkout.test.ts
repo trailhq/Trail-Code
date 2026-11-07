@@ -265,3 +265,109 @@ test("redact: removes the token in both the shapes it appears in", () => {
   assert.ok(!clean.includes(encoded));
   assert.match(clean, /fatal: auth failed for \[token\] using Basic \[token\]/);
 });
+
+function fakeIndirectGitHub(integrate: boolean): { root: string; repo: string } {
+  const root = mkdtempSync(join(tmpdir(), "graft-indirect-origin-"));
+  const work = join(root, "work");
+  execFileSync("git", ["init", "--quiet", "-b", "main", work]);
+  const fixed = (...args: string[]): string => execFileSync("git", args, {
+    cwd: work, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@e",
+      GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@e",
+      GIT_AUTHOR_DATE: "@1700000000 +0000", GIT_COMMITTER_DATE: "@1700000000 +0000" },
+  });
+  writeFileSync(join(work, "base.txt"), "base\n");
+  fixed("add", "-A"); fixed("commit", "--quiet", "-m", "base");
+  fixed("checkout", "--quiet", "-b", "feature");
+  writeFileSync(join(work, "feature.txt"), "feature\n");
+  fixed("add", "-A"); fixed("commit", "--quiet", "-m", "feature");
+  fixed("update-ref", "refs/pull/7/head", "HEAD");
+  fixed("checkout", "--quiet", "-b", "unrelated", "main");
+  writeFileSync(join(work, "unrelated.txt"), "unrelated\n");
+  fixed("add", "-A"); fixed("commit", "--quiet", "-m", "unrelated");
+  if (integrate) {
+    fixed("checkout", "--quiet", "feature");
+    fixed("merge", "--quiet", "--no-ff", "-m", "feature-side merge", "unrelated");
+    fixed("checkout", "--quiet", "main");
+    writeFileSync(join(work, "base.txt"), "base\nmore\n");
+    fixed("add", "-A"); fixed("commit", "--quiet", "-m", "other work");
+    fixed("merge", "--quiet", "--no-ff", "-m", "base integration", "feature");
+  } else {
+    fixed("checkout", "--quiet", "main");
+    fixed("merge", "--quiet", "--ff-only", "feature");
+    fixed("merge", "--quiet", "--no-ff", "-m", "unrelated merge", "unrelated");
+  }
+  fixed("branch", "-D", "feature");
+  fixed("clone", "--quiet", "--mirror", work, join(root, "demo.git"));
+  return { root, repo: "demo" };
+}
+
+test("checkout: a fast-forward followed by another merge still has no diff base", () => {
+  const origin = fakeIndirectGitHub(false);
+  let c: ReturnType<typeof checkoutPullRequest> | undefined;
+  try {
+    assert.throws(() => { c = checkout(origin).c; }, /failed at diff base.*fast-forward merge/s);
+  } finally {
+    c?.cleanup();
+    rmSync(origin.root, { recursive: true, force: true });
+  }
+});
+
+test("checkout: skips feature-side first-parent merges to find base integration", () => {
+  const origin = fakeIndirectGitHub(true);
+  let c: ReturnType<typeof checkoutPullRequest> | undefined;
+  try {
+    c = checkout(origin).c;
+    assert.equal(c.ref, "head");
+    assert.equal(changed(c.dir, c.base), "feature.txt");
+  } finally {
+    c?.cleanup();
+    rmSync(origin.root, { recursive: true, force: true });
+  }
+});
+
+function fakeSecondParentGitHub(): { root: string; repo: string; mainParent: string } {
+  const root = mkdtempSync(join(tmpdir(), "graft-second-parent-origin-"));
+  const work = join(root, "work");
+  execFileSync("git", ["init", "--quiet", "-b", "main", work]);
+  const fixed = (...args: string[]): string => execFileSync("git", args, {
+    cwd: work, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@e",
+      GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@e",
+      GIT_AUTHOR_DATE: "@1700000000 +0000", GIT_COMMITTER_DATE: "@1700000000 +0000" },
+  });
+  writeFileSync(join(work, "base.txt"), "base\n");
+  fixed("add", "-A"); fixed("commit", "--quiet", "-m", "root");
+  const rootSha = fixed("rev-parse", "HEAD").trim();
+  writeFileSync(join(work, "already.txt"), "already on main\n");
+  fixed("add", "-A"); fixed("commit", "--quiet", "-m", "shared base");
+  fixed("checkout", "--quiet", "-b", "feature");
+  writeFileSync(join(work, "feature.txt"), "feature\n");
+  fixed("add", "-A"); fixed("commit", "--quiet", "-m", "feature");
+  fixed("update-ref", "refs/pull/7/head", "HEAD");
+  fixed("checkout", "--quiet", "-b", "unrelated", rootSha);
+  writeFileSync(join(work, "unrelated.txt"), "unrelated\n");
+  fixed("add", "-A"); fixed("commit", "--quiet", "-m", "unrelated");
+  fixed("merge", "--quiet", "--no-ff", "-m", "feature-side second-parent merge", "feature");
+  fixed("checkout", "--quiet", "main");
+  writeFileSync(join(work, "base.txt"), "base\nmore\n");
+  fixed("add", "-A"); fixed("commit", "--quiet", "-m", "other work");
+  const mainParent = fixed("rev-parse", "HEAD").trim();
+  fixed("merge", "--quiet", "--no-ff", "-m", "base integration", "unrelated");
+  fixed("branch", "-D", "feature");
+  fixed("clone", "--quiet", "--mirror", work, join(root, "demo.git"));
+  return { root, repo: "demo", mainParent };
+}
+
+test("checkout: chooses the base landing instead of a feature-side second-parent merge", () => {
+  const origin = fakeSecondParentGitHub();
+  let c: ReturnType<typeof checkoutPullRequest> | undefined;
+  try {
+    c = checkout(origin).c;
+    assert.equal(changed(c.dir, c.base), "feature.txt");
+    assert.equal(git(c.dir, "rev-parse", c.base).trim(), origin.mainParent);
+  } finally {
+    c?.cleanup();
+    rmSync(origin.root, { recursive: true, force: true });
+  }
+});

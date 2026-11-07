@@ -238,18 +238,28 @@ function resolveHeadBase(dir: string, req: CheckoutRequest): string | null {
   if (head === null || shared === null) return null;
   if (shared !== head) return `${req.baseRef} (merge base ${short(shared)})`;
 
-  // The head commit is in the base branch: find the merge that put it there. The
-  // EARLIEST merge on the ancestry path is the one — a later one is some other
-  // branch's merge that happens to sit above it.
-  const merge = line(dir, ["rev-list", "--reverse", "--ancestry-path", "--merges", "refs/graft/head..refs/graft/base"]);
-  if (merge === null) return null;
-  const parent = line(dir, ["rev-parse", `${merge}^1`]);
-  if (parent === null) return null;
-  // Only worth using if it is diffable: a shallow boundary can hold the merge
-  // commit while leaving the fork point below it out of the repository.
-  if (line(dir, ["merge-base", parent, "refs/graft/head"]) === null) return null;
-  if (!git(dir, ["update-ref", "refs/graft/base", parent]).ok) return null;
-  return `${req.baseRef} as it stood at the merge (${short(parent)})`;
+  // A feature-side merge can also be on the head's ancestry path. Restrict
+  // candidates to the base's first-parent history, which records its landings.
+  // Keep the ancestry walk separate: combining --first-parent and
+  // --ancestry-path would lose a head reached through a landing's second parent.
+  const ancestry = git(dir, ["rev-list", "--ancestry-path", "--merges", "refs/graft/head..refs/graft/base"]);
+  if (!ancestry.ok) return null;
+  const relevant = new Set(ancestry.out.split("\n").filter(Boolean));
+  // Choose in base first-parent order, oldest first, independent of timestamps.
+  const merges = git(dir, ["rev-list", "--first-parent", "--topo-order", "--reverse", "--merges", "refs/graft/base"]);
+  if (!merges.ok) return null;
+  for (const merge of merges.out.split("\n").filter(Boolean)) {
+    if (!relevant.has(merge)) continue;
+    const parent = line(dir, ["rev-parse", `${merge}^1`]);
+    if (parent === null) return null;
+    // A missing fork point can be a shallow boundary: deepen before deciding.
+    const fork = line(dir, ["merge-base", parent, "refs/graft/head"]);
+    if (fork === null) return null;
+    if (fork === head) continue;
+    if (!git(dir, ["update-ref", "refs/graft/base", parent]).ok) return null;
+    return `${req.baseRef} as it stood at the merge (${short(parent)})`;
+  }
+  return null;
 }
 
 /** Never let a token reach a log line, even inside git's own error text. */
