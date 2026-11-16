@@ -7,6 +7,30 @@ import { join } from 'node:path';
 import { once } from 'node:events';
 import { buildGraph } from '../src/graph/build.js';
 
+/**
+ * How long to wait for the server's replies. Generous on purpose: the loop below
+ * leaves the moment the replies are in — or the moment the child quits — so this
+ * is only ever paid by a server that is up and genuinely silent.
+ */
+const RPC_TIMEOUT_MS = 60_000;
+
+/**
+ * Drive the MCP server over stdio and return its replies.
+ *
+ * Throws rather than returning short. Returning the partial array meant every
+ * caller dereferenced into `undefined` — `Cannot read properties of undefined
+ * (reading 'result')` — which named neither the timeout nor the request, and
+ * read the same whether the server had been slow, had crashed on startup, or had
+ * answered something unparseable. The child's stderr is kept for the same
+ * reason: it is the only place a crash says why, and it was being piped and then
+ * dropped.
+ *
+ * A crashed server used to be worse than badly reported, it hung the run: with
+ * the child already gone, `await once(child, 'exit')` waits for an event that
+ * has fired and will not fire again. The `close` promise below is created while
+ * the child is still alive, so it settles whenever the child ends, whether that
+ * is a crash of its own or the kill at the end.
+ */
 async function rpc(messages: object[], dir: string, expected: number): Promise<any[]> {
   // A fresh HOME: the server's boot upkeep reads the machine's own wiring and
   // update cache, and its lines ride in `instructions`, so the real HOME would
@@ -14,8 +38,13 @@ async function rpc(messages: object[], dir: string, expected: number): Promise<a
   const home = mkdtempSync(join(tmpdir(), 'graft-mcpsrv-home-'));
   const { TRAIL_HOME: _t, GRAFT_HOME: _g, ...env } = process.env;
   const child = spawn(process.execPath, ['--import', 'tsx', 'src/cli.ts', 'mcp', dir], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...env, HOME: home } });
+  const closed = once(child, 'close');
   const responses: any[] = [];
   let buf = '';
+  let stderr = '';
+  // `close`, not `exit`: it fires once the child's stdio is drained, so a server
+  // that answers and then quits is not read as having quit without answering.
+  let died: string | null = null;
   child.stdout.on('data', (d) => {
     buf += d.toString();
     let i;
@@ -25,11 +54,25 @@ async function rpc(messages: object[], dir: string, expected: number): Promise<a
       if (line) responses.push(JSON.parse(line));
     }
   });
+  child.stderr.on('data', (d) => (stderr += d.toString()));
+  child.on('close', (code, signal) => (died ??= `exit code ${code}, signal ${signal}`));
   for (const m of messages) child.stdin.write(`${JSON.stringify(m)}\n`);
-  const deadline = Date.now() + 15000;
-  while (responses.length < expected && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+  const started = Date.now();
+  const deadline = started + RPC_TIMEOUT_MS;
+  while (responses.length < expected && died === null && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  const waited = ((Date.now() - started) / 1000).toFixed(1);
+  const quitFirst = died;
   child.kill();
-  await once(child, 'exit').catch(() => {});
+  await closed.catch(() => {});
+  if (responses.length < expected) {
+    throw new Error(
+      `mcp server answered ${responses.length} of ${expected} in ${waited}s — ` +
+        (quitFirst ? `it quit first (${quitFirst})` : 'it was still running') +
+        (stderr.trim() ? `\n--- its stderr ---\n${stderr.trim()}` : '\nIt wrote nothing to stderr.'),
+    );
+  }
   return responses;
 }
 
@@ -62,6 +105,37 @@ test('initialize → tools/list → tools/call round-trip', async () => {
   const call = rs.find((r) => r.id === 3);
   assert.equal(call.result.isError, true); // unbuilt repo → soft error content
   assert.match(call.result.content[0].text, /graft build/);
+});
+
+test('MCP server exits cleanly when its stdio host disconnects', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'graft-mcp-epipe-'));
+  const home = mkdtempSync(join(tmpdir(), 'graft-mcp-epipe-home-'));
+  const { TRAIL_HOME: _t, GRAFT_HOME: _g, ...env } = process.env;
+  const child = spawn(process.execPath, ['--import', 'tsx', 'src/cli.ts', 'mcp', dir], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: { ...env, HOME: home },
+  });
+  let stderr = '';
+  child.stderr.setEncoding('utf8').on('data', (chunk) => { stderr += chunk; });
+  await once(child, 'spawn');
+
+  // Buffer a real MCP reply request, then close the host's read end before the
+  // server can write the response. This goes through startMcpServer itself.
+  child.stdout.destroy();
+  child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} })}\n`);
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`MCP child did not exit: ${stderr}`)), 15_000);
+  });
+  try {
+    const [code, signal] = await Promise.race([once(child, 'exit'), timeout]) as [number | null, NodeJS.Signals | null];
+    assert.equal(code, 0, stderr);
+    assert.equal(signal, null, stderr);
+    assert.doesNotMatch(stderr, /EPIPE/);
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (child.exitCode === null && child.signalCode === null) child.kill();
+  }
 });
 
 const ALL_TOOLS = [

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mergeGraftSettings } from '../src/claude/settings-merge.js';
+import { mergeGraftSettings, mergeGraftHooks } from '../src/claude/settings-merge.js';
 
 const SL = 'node "${CLAUDE_PROJECT_DIR:-.}/.claude/helpers/graft-statusline.cjs"';
 
@@ -19,13 +19,21 @@ test('empty settings gets the full Graft blocks', () => {
   const savings = merged.hooks.PostToolUse[1];
   assert.equal(savings.matcher, 'Bash|mcp__graft__|mcp__trail__|Read|Grep|Glob|Skill');
   assert.ok(savings.hooks[0].command.includes('tool-savings'), 'savings hook wired');
-  assert.ok(merged.footerLinksRegexes.includes('graft/[\\w./-]+\\.md'));
+  assert.equal(merged.footerLinksRegexes, undefined);
   assert.deepEqual(warnings, []);
 });
 
 test('foreign statusLine is preserved with a warning; Graft not forced in', () => {
   const { merged, warnings } = mergeGraftSettings({ statusLine: { type: 'command', command: 'my-bar.sh' } });
   assert.equal(merged.statusLine.command, 'my-bar.sh');
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /statusLine/);
+});
+
+test('user wrapper statusLine mentioning helper path is preserved as foreign', () => {
+  const customCmd = 'input=$(cat); printf "%s" "$input" | "$HOME/.claude/statusline.sh"; printf "%s" "$input" | node "${CLAUDE_PROJECT_DIR:-.}/.trail/statusline.cjs"';
+  const { merged, warnings } = mergeGraftSettings({ statusLine: { type: 'command', command: customCmd } });
+  assert.equal(merged.statusLine.command, customCmd);
   assert.equal(warnings.length, 1);
   assert.match(warnings[0], /statusLine/);
 });
@@ -93,8 +101,30 @@ test('re-running is idempotent (no duplicate Graft entries or footer)', () => {
   const twice = mergeGraftSettings(once).merged;
   assert.equal(twice.hooks.PostToolUse.length, 2); // post-edit + tool-savings, not duplicated
   assert.equal(twice.hooks.Stop.length, 1);
-  assert.equal(twice.footerLinksRegexes.filter((r: string) => r === 'graft/[\\w./-]+\\.md').length, 1);
+  assert.equal(twice.footerLinksRegexes, undefined);
 });
+
+for (const [scope, merge] of [
+  ['project', (settings: Record<string, any>) => mergeGraftSettings(settings).merged],
+  ['user', (settings: Record<string, any>) => mergeGraftHooks(settings, '/tmp/helpers').merged],
+] as const) {
+  test(`${scope} merge removes legacy graft footers and preserves foreign entries`, () => {
+    const foreign = { type: 'regex', pattern: 'docs/(.*)', url: 'https://example.test/docs/$1' };
+    const existing = {
+      footerLinksRegexes: ['graft/[\\w./-]+\\.md', 'graft/OLD-PATTERN\\.md', 'docs/.*', foreign],
+    };
+    const original = structuredClone(existing);
+    const once = merge(existing);
+    assert.deepEqual(once.footerLinksRegexes, ['docs/.*', foreign]);
+    assert.deepEqual(merge(once), once, 'refresh converges without a graft footer');
+    assert.deepEqual(existing, original, 'the input is not mutated');
+  });
+
+  test(`${scope} merge removes a graft-only footer key and never adds one`, () => {
+    assert.equal(merge({ footerLinksRegexes: ['graft/[\\w./-]+\\.md'] }).footerLinksRegexes, undefined);
+    assert.equal(merge({}).footerLinksRegexes, undefined);
+  });
+}
 
 test('foreign top-level keys survive', () => {
   const { merged } = mergeGraftSettings({ model: 'claude-sonnet-5', permissions: { allow: ['Bash(ls)'] } });

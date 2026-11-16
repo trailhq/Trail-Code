@@ -211,7 +211,7 @@ test("Windows: a server Windows refuses to start (a .cmd that isn't an npm shim)
     };
     const r = await enrichWithLsp(graph, dir);
     assert.equal(r.added, 0);
-    assert.match(String(r.server), /typescript-language-server\.cmd$/i, "the .cmd was found, then skipped");
+    assert.match(String(r.servers[0]), /typescript-language-server\.cmd$/i, "the .cmd was found, then skipped");
     assert.equal(graph.edges.length, 0, "graph untouched");
   } finally {
     process.env.PATH = savedPath;

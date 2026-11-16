@@ -84,7 +84,12 @@ export interface RawEdge {
   relation: Relation;
   file: string; // the file this edge originates in (scopes name resolution)
   targetId?: string; // already-resolved target (contains)
-  specifier?: string; // module path to resolve (imports / imported-symbol references / Gleam calls)
+  /** module path to resolve (imports / imported-symbol references / Gleam and Go
+   * package calls). On a `calls` edge (TypeScript): the callee is a named import
+   * from this module, and `name` is its EXPORTED name; resolve.ts then confines
+   * resolution to that module instead of guessing from a unique repo-wide name
+   * match (#330). */
+  specifier?: string;
   name?: string; // symbol name to resolve (extends/implements/calls)
   viaMember?: boolean; // calls: was it `obj.foo()` (→ prefer method targets)?
   /** calls with viaMember: the receiver's resolved type name (from bindings /
@@ -267,6 +272,15 @@ const KINDS_BY_LANG: Record<Language, Record<string, Kind>> = {
   php: PHP_KINDS,
 };
 
+/** The two element shapes a JSX component usage takes. Named once so the call table
+ * and `calleeName` cannot drift apart. `jsx_closing_element` is deliberately absent:
+ * `</Widget>` is the tail of the same usage the opening tag already recorded, and
+ * counting it would double every JSX edge. */
+const JSX_ELEMENT_TYPES: ReadonlySet<string> = new Set([
+  "jsx_opening_element",
+  "jsx_self_closing_element",
+]);
+
 /**
  * The node type(s) that constitute a call site, per language.
  *
@@ -275,10 +289,19 @@ const KINDS_BY_LANG: Record<Language, Record<string, Kind>> = {
  * codebase's constructor calls are a large share of its real edges. PHP is
  * likewise multi-shape: a call is a function / member / nullsafe-member / scoped
  * call, never a single `call_expression`.
+ *
+ * JSX is that same argument in a React codebase (#382). `<Widget/>` is how a
+ * component gets invoked — the runtime calls the function and passes it props —
+ * but it parses as `jsx_opening_element` / `jsx_self_closing_element`, so a
+ * component's consumers produced no edges at all and `callers`/`blast` went
+ * structurally blind across the whole component layer, the one place a "you
+ * changed this, these break" answer is worth most. Only the `tsx` grammar can
+ * reach these node types; `.ts` and `.js` are parsed by `typescript`, which has
+ * no JSX at all, so widening it would be dead weight.
  */
 const CALL_TYPES: Record<Language, ReadonlySet<string>> = {
   typescript: new Set(["call_expression"]),
-  tsx: new Set(["call_expression"]),
+  tsx: new Set(["call_expression", ...JSX_ELEMENT_TYPES]),
   python: new Set(["call"]),
   go: new Set(["call_expression"]),
   java: new Set(["method_invocation", "object_creation_expression"]),
@@ -314,6 +337,8 @@ export interface WalkCtx {
   enclosingClass: string | null; // nearest enclosing class (py/ts `self`/`this`)
   goReceiverVar: string | null; // Go receiver var, e.g. `w` in `func (w *Worker)`
   importedSymbols: ReadonlyMap<string, { name: string; specifier: string }>;
+  goImports: ReadonlyMap<string, string>;
+  goLocals: ReadonlyMap<string, number>;
   // R6 (Phase 2): which list we're inside while walking an `R6Class(...)` call's
   // arguments — set only for the direct span of a `public =`/`private =`/
   // `active =` `list(...)`'s own entries (see walk()'s special-cased `argument`
@@ -363,6 +388,7 @@ export function extractFile(rel: string, source: string, lang: Language): Extrac
 function extractTree(rel: string, source: string, lang: Language, root: SyntaxNode): ExtractResult {
   const bindings = collectBindings(root, lang);
   const importedSymbols = collectImportedSymbols(root, lang);
+  const goImports = lang === "go" ? collectGoImports(root) : new Map<string, string>();
   const rGenerics = lang === "r" ? collectRGenerics(root) : EMPTY_SET;
 
   const nodes: NodeV1[] = [
@@ -396,6 +422,8 @@ function extractTree(rel: string, source: string, lang: Language, root: SyntaxNo
     enclosingClass: null,
     goReceiverVar: null,
     importedSymbols,
+    goImports,
+    goLocals: new Map(),
     rR6Access: null,
     rGenerics,
     rSuperClass: null,
@@ -594,7 +622,10 @@ function walk(node: SyntaxNode, ctx: WalkCtx, out: NodeV1[], edges: RawEdge[], m
     const javaTypeDecl = ctx.lang === "java" && JAVA_TYPE_KINDS.has(desc.kind);
     const kotlinTypeDecl = ctx.lang === "kotlin" && KOTLIN_TYPE_KINDS.has(desc.kind);
     const swiftTypeDecl = ctx.lang === "swift" && SWIFT_TYPE_KINDS.has(desc.kind);
-    if (desc.kind === "class" || javaTypeDecl || kotlinTypeDecl || swiftTypeDecl)
+    // A TS interface's `extends A, B` is heritage too: it is what lets a call on a
+    // `LockingStore` find `save` declared on the `Store` it extends.
+    const tsInterfaceDecl = (ctx.lang === "typescript" || ctx.lang === "tsx") && desc.kind === "interface";
+    if (desc.kind === "class" || javaTypeDecl || kotlinTypeDecl || swiftTypeDecl || tsInterfaceDecl)
       edges.push(...heritageEdges(node, id, ctx));
     if (ctx.lang === "php") edges.push(...phpAttributeReferenceEdges(node, id, ctx));
     if (ctx.lang === "java") edges.push(...javaAnnotationReferenceEdges(node, id, ctx));
@@ -612,6 +643,7 @@ function walk(node: SyntaxNode, ctx: WalkCtx, out: NodeV1[], edges: RawEdge[], m
       parentId: id,
       enclosingClass,
       goReceiverVar: isGoMethod ? goReceiverVarOf(node) : ctx.goReceiverVar,
+      goLocals: ctx.lang === "go" && (desc.kind === "function" || desc.kind === "method") ? collectGoLocals(node) : ctx.goLocals,
       importedSymbols:
         desc.kind === "function" || desc.kind === "method"
           ? withoutShadowedImports(ctx.importedSymbols, node)
@@ -673,6 +705,12 @@ function walk(node: SyntaxNode, ctx: WalkCtx, out: NodeV1[], edges: RawEdge[], m
   }
 
   // not a definition — capture calls/imports/references, then descend with the same context
+  if (ctx.lang === "php") {
+    const ref = phpTypeReference(node, ctx);
+    if (ref) {
+      edges.push({ source: ctx.parentId, relation: "references", ...ref, file: ctx.rel });
+    }
+  }
   // R's `call` node is also its ONLY vehicle for library()/require()/source() —
   // there's no separate import-statement grammar construct to key off, so isImport
   // must be checked before the generic calls path or every import call would be
@@ -696,12 +734,23 @@ function walk(node: SyntaxNode, ctx: WalkCtx, out: NodeV1[], edges: RawEdge[], m
       consumedCallee === "R6Class" || (consumedCallee === "list" && rIsMixinContainer(node));
     const callee = isConsumedRClassCall ? null : calleeName(node, ctx.lang);
     if (callee) {
+      // A bare TypeScript call through a named import carries where the callee
+      // comes from. `ctx.importedSymbols` already excludes bindings shadowed by
+      // a local declaration in scope, so `useRouter()` under a local
+      // `function useRouter` stays a bare name. Without this, resolve.ts's
+      // unique-name fallback bound a call to `useRouter` from "next/navigation"
+      // to an unrelated test mock of the same name (#330).
+      const imported =
+        !callee.viaMember && (ctx.lang === "typescript" || ctx.lang === "tsx")
+          ? ctx.importedSymbols.get(callee.name)
+          : undefined;
       const callEdge: RawEdge = {
         source: ctx.parentId,
         relation: "calls",
-        name: callee.name,
+        name: imported ? imported.name : callee.name,
         viaMember: callee.viaMember,
         file: ctx.rel,
+        ...(imported ? { specifier: imported.specifier } : {}),
         ...(callee.kinds ? { kinds: callee.kinds } : {}),
       };
       // Overloading languages: the call site's argument count, to pick the right
@@ -740,7 +789,11 @@ function walk(node: SyntaxNode, ctx: WalkCtx, out: NodeV1[], edges: RawEdge[], m
         });
       } else {
         const recvType = resolveRecvType(callee.receiver, ctx);
-        edges.push(recvType ? { ...callEdge, recvType } : callEdge);
+        const goPackage =
+          !recvType && callee.receiver && node.startIndex < (ctx.goLocals.get(callee.receiver) ?? Infinity)
+            ? ctx.goImports.get(callee.receiver)
+            : undefined;
+        edges.push(recvType ? { ...callEdge, recvType } : goPackage ? { ...callEdge, specifier: goPackage } : callEdge);
       }
     }
   } else if (ctx.lang === "php" && node.type === "use_declaration") {
@@ -849,6 +902,40 @@ function collectImportedSymbols(
   return new Map();
 }
 
+function collectGoLocals(definition: SyntaxNode): Map<string, number> {
+  const out = new Map<string, number>();
+  const declare = (holder: SyntaxNode | null, end: number): void => {
+    for (const c of holder?.namedChildren ?? []) if (c.type === "identifier" && !out.has(c.text)) out.set(c.text, end);
+  };
+  const visit = (node: SyntaxNode): void => {
+    if (node.type === "parameter_declaration" || node.type === "variadic_parameter_declaration" || node.type === "var_spec") {
+      declare(node, node.endIndex);
+    } else if (node.type === "short_var_declaration" || node.type === "range_clause" || node.type === "receive_statement") {
+      declare(node.childForFieldName("left"), node.endIndex);
+    } else if (node.type === "type_switch_statement") {
+      declare(node.childForFieldName("alias"), node.childForFieldName("value")?.endIndex ?? node.endIndex);
+    }
+    node.namedChildren.forEach(visit);
+  };
+  visit(definition);
+  return out;
+}
+
+function collectGoImports(root: SyntaxNode): Map<string, string> {
+  const out = new Map<string, string>();
+  const visit = (node: SyntaxNode): void => {
+    if (node.type === "import_spec") {
+      const spec = importSpecifier(node, "go");
+      const local = node.childForFieldName("name")?.text ?? spec?.split("/").at(-1);
+      if (spec && local) out.set(local, spec);
+      return;
+    }
+    if (node.type === "source_file" || node.type.startsWith("import_")) node.namedChildren.forEach(visit);
+  };
+  visit(root);
+  return out;
+}
+
 /** PHP `use` bindings: local alias → { exported name, FQN specifier }. */
 function collectPhpImportedSymbols(root: SyntaxNode): Map<string, { name: string; specifier: string }> {
   const out = new Map<string, { name: string; specifier: string }>();
@@ -942,7 +1029,36 @@ function phpAttributeClassRef(
   const nameNode =
     attr.childForFieldName("name") ??
     attr.namedChildren.find((c) => c.type === "name" || c.type === "qualified_name");
-  if (!nameNode) return null;
+  return phpClassRef(nameNode, ctx);
+}
+
+/** Only class-name positions count: a variable, member name or declaration is not a type use. */
+function phpTypeReference(node: SyntaxNode, ctx: WalkCtx): { name: string; specifier?: string } | null {
+  let nameNode: SyntaxNode | null | undefined;
+  switch (node.type) {
+    case "named_type":
+    case "object_creation_expression":
+    case "class_constant_access_expression":
+      nameNode = node.namedChildren[0];
+      break;
+    case "scoped_call_expression":
+    case "scoped_property_access_expression":
+      nameNode = node.childForFieldName("scope");
+      break;
+    case "binary_expression":
+      if (node.childForFieldName("operator")?.text === "instanceof") nameNode = node.childForFieldName("right");
+      break;
+  }
+  // This grammar also parses object and relative class keywords as named_type.
+  if (nameNode?.type === "name" && /^(object|self|parent|static)$/i.test(nameNode.text)) return null;
+  return phpClassRef(nameNode, ctx);
+}
+
+function phpClassRef(
+  nameNode: SyntaxNode | null | undefined,
+  ctx: WalkCtx,
+): { name: string; specifier?: string } | null {
+  if (!nameNode || (nameNode.type !== "name" && nameNode.type !== "qualified_name")) return null;
   if (nameNode.type === "qualified_name") {
     const fqn = nameNode.text.replace(/^\\/, "");
     return { name: fqn.replace(/^.*\\/, ""), specifier: fqn };
@@ -1116,6 +1232,23 @@ function describe(node: SyntaxNode, ctx: WalkCtx): DefDescriptor | null {
     };
   }
 
+  // TS: a method signature in a NAMED interface is a method owned by that interface,
+  // so a call through an interface-typed receiver (`store: Store` → `store.save()`)
+  // has a node to land on — the TS twin of Go's `method_elem` (#687). Signatures in
+  // anonymous object types (`type T = { m(): void }`, `(x: { m(): void })`) have no
+  // name to own them and mint nothing.
+  if ((ctx.lang === "typescript" || ctx.lang === "tsx") && node.type === "method_signature") {
+    const owner = tsInterfaceName(node);
+    const nameNode = node.childForFieldName("name");
+    // A computed (`[Symbol.iterator]()`) or string-literal name is not a name a member
+    // call can spell; skip it rather than mint a node under its source text.
+    if (!owner || nameNode?.type !== "property_identifier") return null;
+    // An overload set is one method: mint its first signature only. Two nodes for
+    // `Store.get` would make every call to it ambiguous, and resolveTypedMember drops those.
+    if (isRepeatedTsSignature(node, nameNode.text)) return null;
+    return { name: nameNode.text, kind: "method", headerEnd: node.endIndex, hashNode: node, owner };
+  }
+
   const mapped = ctx.kinds[node.type];
   if (mapped) {
     const name = node.childForFieldName("name")?.text;
@@ -1177,6 +1310,13 @@ function describeGo(node: SyntaxNode, _ctx: WalkCtx): DefDescriptor | null {
       headerEnd: body ? body.startIndex : node.endIndex,
       hashNode: node,
     };
+  }
+
+  if (node.type === "method_elem") {
+    const name = node.childForFieldName("name")?.text;
+    const owner = goInterfaceName(node);
+    if (!name || !owner) return null;
+    return { name, kind: "method", headerEnd: node.endIndex, hashNode: node, owner };
   }
 
   // `type Name <shape>` — one type_spec per name (grouped `type ( … )` yields several).
@@ -1942,6 +2082,31 @@ function goReceiverType(node: SyntaxNode): string | null {
   return type?.type === "type_identifier" ? type.text : null;
 }
 
+function goInterfaceName(node: SyntaxNode): string | null {
+  const spec = node.parent?.parent;
+  return spec?.type === "type_spec" ? (spec.childForFieldName("name")?.text ?? null) : null;
+}
+
+/** The interface a TS `method_signature` belongs to, or null when it sits in an
+ * anonymous object type (`object_type`) or anywhere else that is not a named
+ * `interface_declaration`'s own body. */
+function tsInterfaceName(node: SyntaxNode): string | null {
+  const body = node.parent;
+  const decl = body?.parent;
+  if (body?.type !== "interface_body" || decl?.type !== "interface_declaration") return null;
+  return decl.childForFieldName("name")?.text ?? null;
+}
+
+/** Whether an earlier signature in the same interface body already declares `name`
+ * (a TS overload set: `get(id: string): T; get(id: number): T;`). */
+function isRepeatedTsSignature(node: SyntaxNode, name: string): boolean {
+  for (const sib of node.parent?.namedChildren ?? []) {
+    if (sib.startIndex >= node.startIndex) return false;
+    if (sib.type === "method_signature" && sib.childForFieldName("name")?.text === name) return true;
+  }
+  return false;
+}
+
 /** Go visibility: a symbol is exported iff its own name starts with an uppercase
  * letter. For a receiver-qualified method name, the own name is the part after the dot. */
 function goExported(name: string): boolean {
@@ -2085,6 +2250,16 @@ function heritageEdges(node: SyntaxNode, classId: string, ctx: WalkCtx): RawEdge
     }
     return edges;
   }
+  // `interface A extends B<T>, ns.C` — the clause is a direct child of the
+  // declaration (a class wraps its clauses in `class_heritage` instead).
+  if (node.type === "interface_declaration") {
+    const clause = node.namedChildren.find((c) => c.type === "extends_type_clause");
+    for (const t of clause?.namedChildren ?? []) {
+      const name = tsSupertypeName(t);
+      if (name) edges.push({ source: classId, relation: "extends", name, file: ctx.rel });
+    }
+    return edges;
+  }
   const heritage = node.namedChildren.find((c) => c.type === "class_heritage");
   for (const clause of heritage?.namedChildren ?? []) {
     const relation: Relation | null =
@@ -2095,12 +2270,38 @@ function heritageEdges(node: SyntaxNode, classId: string, ctx: WalkCtx): RawEdge
           : null;
     if (!relation) continue;
     for (const t of clause.namedChildren) {
-      if (t.type === "identifier" || t.type === "type_identifier") {
-        edges.push({ source: classId, relation, name: t.text, file: ctx.rel });
-      }
+      const name = tsSupertypeName(t);
+      if (name) edges.push({ source: classId, relation, name, file: ctx.rel });
     }
   }
   return edges;
+}
+
+/**
+ * The bare name a TS/JS heritage entry refers to, with generic arguments and
+ * namespace qualification erased: `Router<T>` → `Router`, `ns.Base` → `Base`.
+ *
+ * Taking only a direct `identifier` child misses every generic supertype,
+ * because `implements Router<T>` puts a `generic_type` there instead — measured
+ * on honojs/hono, that left the whole repo with 2 `implements` edges and none
+ * of the five routers connected to the `Router` interface they implement.
+ */
+function tsSupertypeName(node: SyntaxNode): string | null {
+  if (node.type === "identifier" || node.type === "type_identifier") return node.text;
+  if (node.type === "generic_type") {
+    const head = node.namedChildren.find(
+      (c) => c.type === "type_identifier" || c.type === "nested_type_identifier" || c.type === "identifier",
+    );
+    return head ? tsSupertypeName(head) : null;
+  }
+  // `ns.Base` — the last segment is the type itself.
+  if (node.type === "nested_type_identifier" || node.type === "member_expression") {
+    const ids = node.namedChildren.filter(
+      (c) => c.type === "type_identifier" || c.type === "identifier" || c.type === "property_identifier",
+    );
+    return ids.length ? ids[ids.length - 1].text : null;
+  }
+  return null;
 }
 
 /**
@@ -2242,6 +2443,48 @@ if (lang === "kotlin") {
 
   if (lang === "php") return phpCallee(node);
 
+  if (lang === "tsx" && JSX_ELEMENT_TYPES.has(node.type)) {
+    // `<Widget>…</Widget>` and `<Widget/>`: the element's `name` field is the
+    // callee. React calls the component with the props as its argument, so this
+    // is the same "X invokes Y" fact as `Widget({children})` — it just does not
+    // spell it as a `call_expression`. There is no receiver to type: an element
+    // name is a value in lexical scope, exactly like a bare call's callee.
+    //
+    // Casing is not a heuristic, and the test is deliberately for the INTRINSIC
+    // side rather than the component side. JSX's rule, as TypeScript's own
+    // `isIntrinsicJsxName` states it, is `ch >= 'a' && ch <= 'z' || name.includes("-")`:
+    // a name starting with an ASCII lowercase letter is a host element React
+    // forwards to the DOM as a string, and so is any hyphenated name (a custom
+    // element). EVERYTHING else is an ordinary binding in lexical scope.
+    //
+    // Asking "does it start A-Z" instead is not the same question, and gets three
+    // real cases wrong: `<Écran/>` (uppercase, but not ASCII), `<_Widget/>` and
+    // `<$Widget/>` — all three are bindings the grammar hands back as plain
+    // `identifier`, and all three would vanish silently. The ASCII range is correct
+    // here precisely because it is the lowercase half: TypeScript restricts the
+    // intrinsic test to a-z, so a non-ASCII initial is a component by definition.
+    //
+    // A namespaced name (`<svg:circle/>`) arrives as `jsx_namespace_name`, not
+    // `identifier`, so the type check above already excludes it — which is right,
+    // since TypeScript treats those as intrinsic too.
+    //
+    // A dotted element name (`<UI.Button/>`, `<Widget.Slot/>`) is a
+    // `member_expression`, not an `identifier`, and is left alone on purpose: it
+    // needs a receiver type the way `ui.button()` does, and the namespace import
+    // it usually comes from binds none — the same wall qualified construction
+    // hits in Java (see javaConstructedTypeName). Resolving the trailing segment
+    // on its own is the guess this module does not make.
+    //
+    // `kinds` rather than the function-only default: a class component
+    // (`class Boundary extends React.Component`) is as much a component as a
+    // function one, and this is scoped to element names, so an ordinary
+    // `Widget()` call in the same file still resolves against functions alone.
+    const name = node.childForFieldName("name");
+    if (name?.type !== "identifier") return null;
+    if (/^[a-z]/.test(name.text) || name.text.includes("-")) return null;
+    return { name: name.text, viaMember: false, kinds: ["function", "class"] };
+  }
+
   const fn = node.childForFieldName("function");
   if (!fn) return null;
   if (fn.type === "identifier") return { name: fn.text, viaMember: false };
@@ -2252,8 +2495,7 @@ if (lang === "kotlin") {
   if (lang === "go" && fn.type === "selector_expression") {
     // `pkg.Fn()` / `recv.Method()` — the called name is the trailing field.
     const p = fn.childForFieldName("field") ?? fn.namedChildren.at(-1);
-    const operand = fn.childForFieldName("operand");
-    const receiver = operand?.type === "identifier" ? operand.text : undefined;
+    const receiver = goReceiver(fn.childForFieldName("operand"));
     return p ? { name: p.text, viaMember: true, receiver } : null;
   }
   if ((lang === "typescript" || lang === "tsx") && fn.type === "member_expression") {
@@ -2423,6 +2665,14 @@ function phpScopeReceiver(scope: SyntaxNode | null): string | undefined {
   return undefined;
 }
 
+function goReceiver(operand: SyntaxNode | null): string | undefined {
+  if (operand?.type === "identifier") return operand.text;
+  if (operand?.type !== "selector_expression") return undefined;
+  const head = operand.childForFieldName("operand");
+  const field = operand.childForFieldName("field");
+  return head?.type === "identifier" && field ? `${head.text}.${field.text}` : undefined;
+}
+
 /** ts `member_expression` node's receiver text: `this`, `this.x`, or a bare identifier. */
 function tsReceiver(fn: SyntaxNode): string | undefined {
   const obj = fn.childForFieldName("object");
@@ -2458,6 +2708,13 @@ if (lang === "kotlin") return node.type === "import_header";
   // PHP: one edge per imported symbol — the clause leaf inside a (possibly
   // grouped) `use A\B, C\D;` / `use A\{B, C};` declaration.
   if (lang === "php") return node.type === "namespace_use_clause";
+  // A re-export (`export { X } from "./x"`, `export * from "./x"`) is an import
+  // edge wearing an export's clothes: a barrel file defines nothing, so without
+  // this its node has no outgoing edges and a traversal arriving there stops
+  // dead, never reaching the module that holds the code. Only the `from` form
+  // qualifies — a plain `export const x = 1` has no source and must keep
+  // descending, or the definitions inside it are lost.
+  if (node.type === "export_statement") return node.childForFieldName("source") !== null;
   return node.type === "import_statement" || node.type === "import_from_statement";
 }
 
@@ -2508,8 +2765,11 @@ function importSpecifier(node: SyntaxNode, lang: Language): string | null {
     // frameworks stay as unresolved (but truthful) import intents.
     return node.namedChildren.find((c) => c.type === "identifier")?.text ?? null;
   }
-  const str = node.namedChildren.find((c) => c.type === "string");
-  if (!str) return null;
+  // `source` is the module string on both an import_statement and a re-export's
+  // export_statement; fall back to the first string child for grammars that do
+  // not name the field.
+  const str = node.childForFieldName("source") ?? node.namedChildren.find((c) => c.type === "string");
+  if (!str || str.type !== "string") return null;
   const frag = str.namedChildren.find((c) => c.type === "string_fragment");
   return frag?.text ?? str.text.replace(/^['"]|['"]$/g, "");
 }

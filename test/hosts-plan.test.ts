@@ -115,3 +115,32 @@ test('selectedWrites filters to the chosen hosts only', () => {
   const writes = selectedWrites(plan, ['claude', 'adal']);
   assert.deepEqual([...new Set(writes.map((w) => w.hostId))].sort(), ['adal', 'claude']);
 });
+
+test('planInit honors --no-mcp / --no-hooks / --no-global like runHostsInit does (#329)', () => {
+  const repo = fresh(); const home = fullHome();
+  const byId = (plan: ReturnType<typeof planInit>, id: string) => plan.find((p) => p.id === id)!.writes;
+
+  const full = planInit(repo, { home });
+  assert.ok(byId(full, 'agents').some((w) => w.scope === 'global'), 'default plan lists the ~/.codex writes');
+  assert.ok(byId(full, 'cursor').some((w) => w.path.endsWith('hooks.json')), 'default plan lists the Cursor hooks');
+
+  const noMcp = planInit(repo, { home, mcp: false });
+  for (const p of noMcp) for (const w of p.writes) {
+    if (p.id === 'claude') continue;
+    assert.ok(!/mcp|config\.toml|settings\.json/.test(w.path) || w.path.endsWith('hooks.json'), `--no-mcp still plans ${w.path}`);
+  }
+
+  const noHooks = planInit(repo, { home, hooks: false });
+  assert.ok(!byId(noHooks, 'agents').some((w) => /hooks/.test(w.path)), '--no-hooks drops the Codex hooks');
+  assert.ok(!byId(noHooks, 'cursor').some((w) => w.path.endsWith('hooks.json')), '--no-hooks drops the Cursor hooks');
+
+  const noGlobal = planInit(repo, { home, global: false });
+  for (const p of noGlobal) for (const w of p.writes) {
+    assert.notEqual(w.scope, 'global', `--no-global still plans ${w.path}`);
+    assert.ok(!toPosixPath(w.path).startsWith(toPosixPath(home)), `--no-global still plans ${w.path} under ~`);
+  }
+  assert.ok(byId(noGlobal, 'cursor').some((w) => w.path.endsWith('hooks.json')), 'Cursor hooks are repo-local and survive --no-global');
+
+  const suppressed = planInit(repo, { home, mcp: false, hooks: false, global: false });
+  assert.deepEqual(byId(suppressed, 'agents').map((w) => toPosixPath(w.path)), [toPosixPath(join(repo, 'AGENTS.md'))]);
+});

@@ -79,6 +79,18 @@ test('the instruction text under trail names trail commands only; under graft it
   assert.match(instructionBody(), /^## Graft — repo context graph/);
 });
 
+test('under trail, AGENTS.md says where the learnings are and how to save one; graft\'s text has none of it', () => {
+  // Codex reads AGENTS.md whether or not its hooks are trusted: this is all it hears of learnings until they are.
+  const trail = instructionBody('trail');
+  assert.match(trail, /### Learnings/);
+  assert.match(trail, /`\.trail\/learnings\/`/);
+  assert.match(trail, /`trail note --title "/);
+  assert.match(trail, /--personal/);
+  assert.match(trail, /`trail check`/);
+  assert.doesNotMatch(trail, GRAFT_COMMAND);
+  assert.doesNotMatch(instructionBody(), /learning/i);
+});
+
 test('trail init for every agent: trail-named files, trail commands, a trail server', () => {
   const home = agentHome();
   const repo = tmpRepo('trail-hosts');
@@ -232,7 +244,7 @@ test('a session start that moves a graft repo to trail moves the other agents to
     runHostsInit(repo, { agents: ['agents', 'cursor', 'gemini', 'kiro'], home, global: false });
     runUpkeep(repo, runningVersion(), { background: false, home });
     const hosts = readStamp(repo)?.hosts;
-    assert.deepEqual(hosts, ['agents', 'antigravity', 'claude', 'cursor', 'gemini', 'hermes', 'kiro'], 'AGENTS.md reads as all three of its hosts');
+    assert.deepEqual(hosts, ['agents', 'antigravity', 'claude', 'cursor', 'gemini', 'hermes', 'kiro', 'pi'], 'AGENTS.md reads as all four of its hosts');
 
     const bin = mkdtempSync(join(tmpdir(), 'bin-trail-'));
     writeFileSync(join(bin, 'trail'), '#!/bin/sh\nexit 0\n');

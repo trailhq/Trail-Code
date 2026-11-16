@@ -55,6 +55,10 @@ test('the repo copy stands down only for a host that also runs the ~/.claude cop
   assert.equal(globalCopyCovers('prompt', shim, home, {}), true, 'no payload given: as before');
 });
 
+// Run from the Claude desktop app, the suite inherits its entrypoint, and the hooks would report claude-desktop.
+delete process.env.CLAUDE_CODE_ENTRYPOINT;
+delete process.env.TRAIL_AGENT_HOST;
+
 /** Runs `fn` as the repo's copy of the hooks, with `home` as the home folder; returns stdout. */
 async function asRepoCopy(repo: string, home: string, stdin: object, fn: () => Promise<void>): Promise<string> {
   const saved = { argv1: process.argv[1], home: process.env.HOME, profile: process.env.USERPROFILE, stdin: process.env.GRAFT_TEST_STDIN, project: process.env.CLAUDE_PROJECT_DIR, config: process.env.CLAUDE_CONFIG_DIR };

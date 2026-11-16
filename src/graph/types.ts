@@ -59,6 +59,11 @@ export interface NodeV1 {
   // index) key off a stored field instead of re-deriving it by slicing `id`,
   // which breaks once ids can carry a dedup ordinal (`Cache.get~2`).
   owner?: string;
+  // Elixir modules: the full module name (`Shop.Payments.Gateway`). A nested `defmodule
+  // Inner` is named by its bare last segment, and `defmodule Payments.Gateway` after an
+  // `alias Shop.Payments` is named as written; resolve.ts's moduleByFqn index needs the
+  // name the compiler would give it. Stamped by generic.ts's extractElixir.
+  fqn?: string;
 
   // location (Tier-1, deterministic)
   path: string; // repo-relative: "src/cache.ts"
@@ -123,6 +128,8 @@ export interface GraphV1 {
     nodeCount: number;
     edgeCount: number;
     languages: string[];
+    /** Normalized source selection, retained independently of extractor caches. */
+    extensions?: string[];
     /** Ranking scopes: posix path prefixes relative to the graph root, "" = root scope.
      * Absent (old graphs) ≡ [{ prefix: "", label: "" }]. Sorted by prefix length desc. */
     scopes?: ScopeV1[];

@@ -3,7 +3,8 @@ import { join, dirname, resolve, isAbsolute } from 'node:path';
 import { homedir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { disableGraftServerIn, installClaudeGlobal, type GlobalWrite } from '../hosts/claude-global.js';
-import { mergeGraftSettings, mergeTrailShared, mergeTrailLocal } from './settings-merge.js';
+import { mergeGraftSettings, mergeTrailShared, mergeTrailLocal, withoutOurs } from './settings-merge.js';
+import { isJustMe } from '../notes/just-me.js';
 import { statuslineShim, hooksShim, rememberInstall } from './shim-template.js';
 import { skillTemplate } from './skill-template.js';
 import { mergeJsonKey, serverEntry, type McpWrite } from '../hosts/mcp-config.js';
@@ -128,6 +129,8 @@ export interface InitResult {
   global: GlobalWrite[];
   warnings: string[];
   built: boolean;
+  /** Whose status line Claude Code shows here: trail's, one the person or team set, or none asked for. Trail only. */
+  statusline?: 'trail' | 'theirs' | 'off';
 }
 
 export function runInit(
@@ -210,16 +213,24 @@ function runTrailInit(
 
   // Either file, when it isn't plain JSON, is the person's and stays as it is
   // (see runInit): rewriting it would drop their own hooks and settings.
-  const existingShared = readSettings(settings);
+  // Just for this person (notes/just-me.ts), the shared file gets nothing: `~/.claude` runs the hooks.
+  const justMe = isJustMe(dir);
+  if (justMe) dropTrailShared(dir, settings);
+  const existingShared = justMe ? {} : readSettings(settings);
   if (existingShared) {
     mkdirSync(dirname(settings), { recursive: true });
-    writeFileSync(settings, `${JSON.stringify(mergeTrailShared(existingShared), null, 2)}\n`);
+    if (!justMe) writeFileSync(settings, `${JSON.stringify(mergeTrailShared(existingShared), null, 2)}\n`);
   }
 
   // Hooks for every other event come from `~/.claude`. Only when that's off do
   // they go in the personal file, beside the status line.
   const existingLocal = readSettings(local);
-  const { merged, warnings } = mergeTrailLocal(existingLocal ?? {}, { statusline: opts.statusline, hooks: !global });
+  const theirs = [readSettings(join(home, '.claude', 'settings.json')), existingShared];
+  // Just for this person with `~/.claude` off, nothing else runs SessionStart: it goes in the personal file too,
+  // unless a settings.json git tracks already has trail's.
+  const sharedNow = justMe ? readSettings(settings) : null;
+  const sessionStart = justMe && !global && !(sharedNow && JSON.stringify(withoutOurs(sharedNow)) !== JSON.stringify(sharedNow));
+  const { merged, warnings, statusline: shown } = mergeTrailLocal(existingLocal ?? {}, { statusline: opts.statusline, hooks: !global, sessionStart, theirs });
   if (existingLocal) writeFileSync(local, `${JSON.stringify(merged, null, 2)}\n`);
   else warnings.push(notPlainJson('.claude/settings.local.json', "trail's status line and allowlist"));
   if (!existingShared) warnings.unshift(notPlainJson('.claude/settings.json', "trail's session-start hook"));
@@ -241,7 +252,7 @@ function runTrailInit(
   if (global) globalWrites.push(disableGraftServerIn(home, resolve(dir)));
 
   const built = buildGraphIfMissing(dir, opts);
-  return { settingsPath: settings, shims: [statusline, hook], skill: skillPath, mcp: null, global: globalWrites, warnings, built };
+  return { settingsPath: settings, shims: [statusline, hook], skill: skillPath, mcp: null, global: globalWrites, warnings, built, statusline: shown };
 }
 
 /**
@@ -263,6 +274,33 @@ function clearOldLayout(dir: string, opts: { keepShims?: boolean } = {}): void {
     try { rmdirSync(d); } catch { /* holds the user's files, or was never there */ }
   }
   dropServer(join(dir, '.mcp.json'), ['trail', 'graft']);
+}
+
+/**
+ * Take what an earlier init put in `.claude/settings.json` back out, for a repo
+ * on trail just for this person. The file goes if nothing else was in it. One
+ * git tracks is the team's and stays as it is.
+ */
+function dropTrailShared(dir: string, path: string): void {
+  try {
+    const existing = readSettings(path);
+    if (!existing || !existsSync(path)) return;
+    const kept = withoutOurs(existing);
+    if (JSON.stringify(kept) === JSON.stringify(existing)) return;
+    if (gitTracks(dir, join('.claude', 'settings.json'))) return;
+    if (Object.keys(kept).length === 0) rmSync(path, { force: true });
+    else writeFileSync(path, `${JSON.stringify(kept, null, 2)}\n`);
+  } catch { /* leave it as the user has it */ }
+}
+
+/** Git tracks `rel` in the checkout at `dir`. False outside git. */
+function gitTracks(dir: string, rel: string): boolean {
+  try {
+    execFileSync('git', ['ls-files', '--error-unmatch', '--', rel], { cwd: dir, stdio: 'ignore', windowsHide: true });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Take trail's (or graft's) server out of an `.mcp.json`; the file goes if nothing else was in it. */
@@ -301,4 +339,16 @@ export function keepOutOfGit(dir: string, rel: string): void {
     mkdirSync(dirname(exclude), { recursive: true });
     appendFileSync(exclude, `${text && !text.endsWith('\n') ? '\n' : ''}${line}\n`);
   } catch { /* best-effort: git status shows the file, and nothing else breaks */ }
+}
+
+/** Undo `keepOutOfGit`: `rel`'s line comes out of `.git/info/exclude`, so git sees it again. */
+export function letGitSee(dir: string, rel: string): void {
+  try {
+    let exclude = execFileSync('git', ['rev-parse', '--git-path', 'info/exclude'], { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }).trim();
+    if (!isAbsolute(exclude)) exclude = join(dir, exclude);
+    const line = `/${rel.split('\\').join('/')}`;
+    const text = readFileSync(exclude, 'utf8');
+    const kept = text.split('\n').filter((l) => l.trim() !== line);
+    if (kept.length !== text.split('\n').length) writeFileSync(exclude, kept.join('\n'));
+  } catch { /* not a git checkout, or no exclude file: nothing hides it */ }
 }

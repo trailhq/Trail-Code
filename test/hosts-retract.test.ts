@@ -32,6 +32,16 @@ function byPath(rs: ReturnType<typeof runRetract>): Map<string, string> {
 
 const BLOCK = '<!-- graft:start -->\n## Graft — old text\nstale guidance\n<!-- graft:end -->';
 
+test('uninstall removes both TOML table families without consuming foreign multiline content', () => {
+  const repo = fresh(); const home = fresh();
+  const foreign = '[mcp_servers.other.env]\nSCRIPT = \'\'\'\n[mcp_servers.trail]\n\n\n[mcp_servers.graft.env]\n\'\'\'\nKEEP = "yes"\n';
+  const path = write(home, '.codex/config.toml', '[mcp_servers.trail]\ncommand = "trail"\n'
+    + foreign + '[mcp_servers.graft.env]\nOLD = "remove"\n[mcp_servers.trail.env]\nOLD = "remove"\n');
+  const result = byPath(runRetract(repo, { apply: true, home }));
+  assert.equal(result.get(path), 'removed');
+  assert.equal(readFileSync(path, 'utf8'), foreign);
+});
+
 // --------------------------------------------------------------------------
 // instruction files
 // --------------------------------------------------------------------------
@@ -162,6 +172,59 @@ test('a statusline the user actually wrote is left alone', () => {
   runRetract(d, { apply: true, global: false });
   const root = JSON.parse(readFileSync(settings, 'utf8'));
   assert.equal(root.statusLine.command, 'my-prompt.sh');
+});
+
+test('trail\'s own statusline in settings.local.json is removed', () => {
+  const d = fresh();
+  const local = write(d, join('.claude', 'settings.local.json'), JSON.stringify({
+    statusLine: { type: 'command', command: 'node "${CLAUDE_PROJECT_DIR:-.}/.trail/statusline.cjs"' },
+  }));
+  const r = byPath(runRetract(d, { apply: true, global: false }));
+  assert.equal(r.get(local), 'deleted', 'the file held only trail\'s statusline');
+  assert.ok(!existsSync(local));
+});
+
+test('a user wrapper that calls trail\'s helper is kept, and so is its file', () => {
+  // init keeps these (#760), so uninstall must too.
+  for (const command of [
+    'input=$(cat); printf "%s" "$input" | "$HOME/.claude/statusline.sh"; printf "%s" "$input" | node "${CLAUDE_PROJECT_DIR:-.}/.trail/statusline.cjs"',
+    'GRAFT_DIR=/opt/graft node "/abs/repo/.trail/statusline.cjs"',
+    'node /abs/repo/.claude/helpers/trail-statusline.cjs',
+  ]) {
+    const d = fresh();
+    const local = write(d, join('.claude', 'settings.local.json'), JSON.stringify({
+      statusLine: { type: 'command', command },
+      permissions: { allow: ['Bash(trail:*)'] },
+    }));
+    const r = byPath(runRetract(d, { apply: true, global: false }));
+    assert.equal(r.get(local), 'removed', `only the allowlist entry is ours: ${command}`);
+    const root = JSON.parse(readFileSync(local, 'utf8'));
+    assert.equal(root.statusLine.command, command, 'wrapper kept byte for byte');
+    assert.equal(root.permissions, undefined);
+  }
+});
+
+test('every statusline form graft/trail has written is still removed', () => {
+  for (const command of [
+    'node "${CLAUDE_PROJECT_DIR:-.}/.claude/helpers/graft-statusline.cjs"',
+    'node "${CLAUDE_PROJECT_DIR:-.}/.claude/helpers/trail-statusline.cjs"',
+    'node "${CLAUDE_PROJECT_DIR:-.}/.trail/statusline.cjs"',
+    'node .claude/helpers/graft-statusline.cjs',
+    'node ".claude/helpers/graft-statusline.cjs"',
+    'sh -c \'node .claude/helpers/graft-statusline.cjs\'',
+  ]) {
+    const d = fresh();
+    const settings = write(d, join('.claude', 'settings.json'), JSON.stringify({
+      statusLine: { type: 'command', command },
+      subagentStatusLine: { type: 'command', command },
+      model: 'opus',
+    }));
+    runRetract(d, { apply: true, global: false });
+    const root = JSON.parse(readFileSync(settings, 'utf8'));
+    assert.equal(root.statusLine, undefined, command);
+    assert.equal(root.subagentStatusLine, undefined, command);
+    assert.equal(root.model, 'opus');
+  }
 });
 
 // --------------------------------------------------------------------------
@@ -305,13 +368,13 @@ test('a renamed allowlist entry is dropped; the user\'s own rules stay', () => {
   assert.equal(allow.filter((a) => a === 'Bash(graft-dev:*)').length, 1, 'no duplicate of graft\'s own entry');
 });
 
-test('a superseded footer regex is replaced rather than stacked', () => {
+test('a superseded footer regex is stripped from project settings; the user\'s stays', () => {
   const { merged } = mergeGraftSettings({
     footerLinksRegexes: ['graft/OLD-PATTERN\\.md', 'docs/.*'],
   });
   assert.ok(!merged.footerLinksRegexes.includes('graft/OLD-PATTERN\\.md'), 'old graft pattern gone');
   assert.ok(merged.footerLinksRegexes.includes('docs/.*'), 'user pattern kept');
-  assert.equal(merged.footerLinksRegexes.filter((r: string) => r.startsWith('graft/')).length, 1);
+  assert.equal(merged.footerLinksRegexes.filter((r: string) => r.startsWith('graft/')).length, 0);
 });
 
 test('mergeGraftSettings stays idempotent over repeated runs', () => {
@@ -334,4 +397,41 @@ test('hosts sharing one path produce a single retraction, not one each', () => {
   const agents = write(d, 'AGENTS.md', `# Notes\n\n${BLOCK}\n`);
   const rs = runRetract(d, { global: false }).filter((r) => r.path === agents);
   assert.equal(rs.length, 1, `AGENTS.md should be queued once, got ${rs.length}`);
+});
+
+// ---------------------------------------------------------------------------
+// Issue #546: retract removes dotted subtables, not just the parent table
+// ---------------------------------------------------------------------------
+
+test('[mcp_servers.graft.env] orphan does not survive retract', () => {
+  const d = fresh();
+  const toml = write(d, join('.grok', 'config.toml'),
+    '[mcp_servers.graft]\ncommand = "npx"\nargs = ["-y","@nanonets/graft","mcp"]\n\n[mcp_servers.graft.env]\nDO_NOT_TRACK = "1"\n\n[mcp_servers.keepme]\ncommand = "y"\n');
+  runRetract(d, { apply: true, global: false });
+  const text = readFileSync(toml, 'utf8');
+  assert.ok(!text.includes('mcp_servers.graft'), 'no graft residue of any depth');
+  assert.ok(text.includes('[mcp_servers.keepme]'), 'foreign table preserved');
+});
+
+test('orphan-only graft subtable is removed by retract', () => {
+  const d = fresh();
+  const toml = write(d, join('.grok', 'config.toml'),
+    '[mcp_servers.other]\ncommand = "x"\n\n[mcp_servers.graft.env]\nDO_NOT_TRACK = "1"\n');
+  runRetract(d, { apply: true, global: false });
+  const text = readFileSync(toml, 'utf8');
+  assert.ok(!text.includes('mcp_servers.graft'), 'orphan gone via uninstall path');
+  assert.ok(text.includes('[mcp_servers.other]'), 'foreign preserved');
+});
+
+test('Codex retract preserves table-looking text inside a foreign multiline string', () => {
+  const repo = fresh(); const home = fresh();
+  const foreign = '[mcp_servers.other.env]\nSCRIPT = \'\'\'\n[mcp_servers.graft.env]\ntext\n\'\'\'\nKEEP = "2"\n';
+  const toml = write(home, join('.codex', 'config.toml'),
+    '[mcp_servers.graft]\ncommand = "graft"\n' + foreign);
+  const result = byPath(runRetract(repo, { apply: true, home }));
+  assert.equal(result.get(toml), 'removed');
+  assert.equal(readFileSync(toml, 'utf8'), foreign);
+  const again = byPath(runRetract(repo, { apply: true, home }));
+  assert.equal(again.get(toml), 'absent', 'string content does not trigger another removal');
+  assert.equal(readFileSync(toml, 'utf8'), foreign);
 });

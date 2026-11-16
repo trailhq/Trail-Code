@@ -10,9 +10,9 @@
  */
 import { spawnSync } from "node:child_process";
 import "dotenv/config";
-import { Command } from "commander";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import { Command, Option } from "commander";
+import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Graft } from "./engine.js";
 import { resolveConfig, type EngineConfig } from "./ai/providers.js";
@@ -30,7 +30,7 @@ import { asksForTrail, brand, cmd, graftNotice, PACKAGE_FOR, setBrand, strandedR
 import { branchDiff } from "./cloud/diff.js";
 import { openBrowser } from "./util/browser.js";
 import { committedAtBase, learningsAtBase, teammateEdits, withBaseLearnings } from "./check/learning-edits.js";
-import { contextDirFor } from "./context/node-file.js";
+import { CACHE_DIR, contextDirFor } from "./context/node-file.js";
 import { loadGraphCached } from "./graph/load.js";
 import { ensureFreshChildren, ensureFreshGraph, refreshNote } from "./graph/refresh.js";
 import { isWorkspaceBuildRoot, readWorkspace } from "./graph/workspace.js";
@@ -54,9 +54,12 @@ import { buildGraphWithProgress } from "./claude/build-progress.js";
 import { installBrainsServer, installCursorBrainsServer, removeBrainsServer, removeCursorBrainsServer } from "./hosts/claude-global.js";
 import { upsertCodexToml } from "./hosts/mcp-config.js";
 import { homedir } from "node:os";
+import { createInterface } from "node:readline";
+import { createHash } from "node:crypto";
 import { formatUpgradeReport, formatVersionReport, getNpmViewVersion, readCurrentVersion, readPackageName, runUpgrade } from "./cli-meta.js";
 import { nativeFallbackNotice } from "./graph/native.js";
-import { patchBuildConfig, type BuildConfig } from "./util/state.js";
+import { lockHeldByOther, patchBuildConfig, type BuildConfig } from "./util/state.js";
+import { NEVER_INCLUDE_DIRS } from "./ingest/fs.js";
 import { normalizePathPrefix } from "./util/paths.js";
 import { latestSession, formatSessionStats, sessionInputRate } from "./claude/session-metrics.js";
 import { listSessionIds, readSession, sessionDir } from "./claude/state.js";
@@ -70,11 +73,12 @@ import { finishPair, PairRun, validPairCode } from "./cloud/pair.js";
 import { currentBranch, noteAuthor, teammatesOn } from "./notes/git-facts.js";
 import { listSkills } from "./skills/skills.js";
 import { registerSkillCommands } from "./skills/cli-skills.js";
+import { setSummaryView, summaryView } from "./claude/summary-view.js";
 import { gateNote, namesRepoSymbol, symbolCandidates, trackedFiles } from "./notes/note-gate.js";
 import { recordLookup } from "./cloud/lookup-activity.js";
 import { clearPending, cloudLines, loginLines, loginLink, sessionKey, startWaiting, WAIT_MS, waitForConnect } from "./cloud/nudge.js";
 import { teamWorkspace } from "./cloud/team-file.js";
-import { addRepo, claimLoginCode, clearCloud, cloudEnabled, cloudForRepo, cloudIn, failPair, fetchMe, fetchTeam, isError, readCloud, readClouds, sameWorkspace, serverUrl, trailUrl, useServer, writeCloud, type Cloud, type Me, type SetupFailure } from "./cloud/workspace.js";
+import { addRepo, claimLoginCode, clearCloud, cloudEnabled, cloudForRepo, cloudIn, deleteSharedBundle, failPair, fetchMe, fetchTeam, isError, readCloud, readClouds, sameWorkspace, serverUrl, shareAllowed, shareSession, trailUrl, useServer, writeCloud, type Cloud, type Me, type SetupFailure } from "./cloud/workspace.js";
 import {
   claimConnectCode,
   connectAgain,
@@ -91,15 +95,18 @@ import {
 import { dropActivity, inWorkspace, maybeSyncInBackground, recordActivity, runSyncChild, syncRepo, syncWorkspaceRepos, workspaceLearnings } from "./cloud/workspace-sync.js";
 import type { CheckResult } from "./check/types.js";
 import { checkLocally } from "./check/local-check.js";
+import { askJustMe, isJustMe, setJustMe } from "./notes/just-me.js";
+import { keepOutOfGit, letGitSee } from "./claude/init.js";
 import { findLearning, learningFileName, liveLearnings } from "./notes/learning-fields.js";
 import { savedIdLine } from "./notes/replace.js";
+import { addToLearning, rememberSessionLearning, sessionLearning } from "./notes/session-learning.js";
 import { ALWAYS_FOLLOW, isAlwaysFollow } from "./notes/units.js";
 import { alwaysFollowBacked } from "./notes/always-follow-gate.js";
 import { formatOverlap, maybeRefreshBranches, overlapsWith, pushedWhen, readBranchCache, refreshBranches } from "./notes/branches.js";
 import { ensureRepoTrail, LEARNINGS_DIR } from "./notes/repo-trail.js";
 import type { AskResult } from "./ask/ask.js";
 import { setInputRate } from "./context/savings.js";
-import { formatUpdateNudge, maybeRefreshInBackground, readStamp, readUpdateCache, refreshUpdateCache, wiredHostIds, wiringOpts, writeStamp } from "./upkeep.js";
+import { formatUpdateNudge, maybeRefreshInBackground, readStamp, readUpdateCache, refreshUpdateCache, runningVersion, wiredHostIds, wiringOpts, writeStamp } from "./upkeep.js";
 import { shouldMoveToTrail } from "./upkeep-run.js";
 import {
   countBucket,
@@ -115,9 +122,18 @@ import {
   maybeFlushInBackground,
   patchState,
   runFlush,
+  sessionMessagesBucket,
+  sessionSizeBucket,
+  shareItemsBucket,
+  shareSizeBucket,
   track,
   trackFirstRunIfNew,
 } from "./telemetry/index.js";
+import { bundleSession, listLines, MAX_GZ_BYTES, pickSession, previewLines, redactedCount, sessionsHere, shareSessionEnabled, shortId, sizeLabel, whoIAm } from "./cloud/share-session.js";
+import { bundlePreviewLines, deleteCode, deleteHash, itemPayload, leaveOut, newCopyDir, newSentState, parseDeleteCode, parseLeaveOut, prepareBundle, readSent, unfinishedCopy, writeSent, type Manifest, type SentState } from "./cloud/share-bundle.js";
+import { trailHome } from "./notes/trail-home.js";
+import { readSyncState, runSync, syncDir, writeSyncState, type SyncState } from "./cloud/share-sync.js";
+import { hasShareSyncHook, installShareSyncHook, removeShareSyncHook, settingsPath, type HookResult } from "./cloud/share-hook.js";
 
 const program = new Command();
 const currentVersion = readCurrentVersion(import.meta.url);
@@ -157,7 +173,7 @@ function grouped(c: Command, heading: string): Command {
  * centrally — and because a command that calls `process.exit` should simply
  * report nothing, which falls out of never emitting until postAction.
  */
-let queryNote: { repo?: string; hit?: "yes" | "no"; command?: string; notes?: string } = {};
+let queryNote: { repo?: string; hit?: "yes" | "no"; command?: string; notes?: string; stale?: string } = {};
 
 /** Record the repo a query ran against, and pass it straight through so call
  *  sites stay one line. */
@@ -187,6 +203,12 @@ program
   .option("--dir <path>", "context graph directory (default: <repo>/graft)")
   .option("--provider <name>", "LLM wire format: openai | anthropic | litellm | orcarouter (env GRAFT_PROVIDER)")
   .option("--model <id>", "model id for the LLM pass (env GRAFT_MODEL)")
+  .option(
+    "--synth-model <id>",
+    "model id for the --deep concept-synthesis pass alone (env GRAFT_SYNTH_MODEL; default: the --model id). " +
+      "A fast non-reasoning model here writes the concept nodes while per-file summaries keep the main model; " +
+      "a build's synthesis cache is keyed by this model, so switching it re-synthesizes",
+  )
   .option("--api-key <key>", "provider API key (env GRAFT_API_KEY)")
   .option("--base-url <url>", "OpenAI-compatible endpoint URL (env GRAFT_BASE_URL)");
 
@@ -194,6 +216,7 @@ interface GlobalOpts {
   dir?: string;
   provider?: string;
   model?: string;
+  synthModel?: string;
   apiKey?: string;
   baseUrl?: string;
 }
@@ -205,6 +228,7 @@ function cliConfig(): EngineConfig {
     contextDir: o.dir,
     provider: o.provider as ProviderKind | undefined,
     model: o.model,
+    synthModel: o.synthModel,
     apiKey: o.apiKey,
     baseUrl: o.baseUrl,
   };
@@ -235,12 +259,13 @@ const DIR_ARG = ["[dir]", "repository root (default: nearest ancestor with a gra
  * The root a query runs against: the dir the user named, else the nearest
  * ancestor holding a graft index (`graph/root.ts`) so a shell or agent session
  * in a subdirectory still finds the graph. The walk is announced on stderr —
- * answering from an ancestor's graph must never be silent.
+ * answering from an ancestor's graph must never be silent. A walk that stopped at
+ * a Git checkout root with no graph there answers from nothing, so it says nothing.
  */
 function queryRoot(dir?: string): string {
   if (dir !== undefined) return resolve(dir);
   const { root, levels } = nearestGraftRoot(process.cwd(), program.opts<GlobalOpts>().dir);
-  if (levels > 0) console.error(`${tag()} no code map here: answering from ${contextDirFor(root, program.opts<GlobalOpts>().dir)}`);
+  if (levels > 0 && hasGraftIndex(root)) console.error(`${tag()} no code map here: answering from ${contextDirFor(root, program.opts<GlobalOpts>().dir)}`);
   return root;
 }
 
@@ -291,9 +316,9 @@ function parseTabs(raw: string | undefined): VizTab[] | undefined {
 /**
  * Commands that own the upgrade story themselves (`version`, `upgrade`) or must
  * not editorialize on stderr at startup (`mcp` runs its own upkeep at boot, and
- * `_update-check` IS the fetch).
+ * internal helpers must not schedule another copy of themselves).
  */
-const UPKEEP_SKIP = new Set(["version", "upgrade", "_update-check", "mcp"]);
+const UPKEEP_SKIP = new Set(["version", "upgrade", "_update-check", "_telemetry-flush", "mcp"]);
 
 /**
  * Every other command: top up the cached registry answer in the background and,
@@ -332,7 +357,7 @@ program.hook("postAction", (_parent, action) => {
   // `trail build --check` is graft's `check`, and counts as it always has.
   const name = queryNote.command ?? action.name();
   if (!isTrackedCommand(name)) return;
-  track("query", { command: name, surface: "cli", hit: queryNote.hit, notes: queryNote.notes }, { repo: queryNote.repo });
+  track("query", { command: name, surface: "cli", hit: queryNote.hit, notes: queryNote.notes, stale: queryNote.stale }, { repo: queryNote.repo });
 });
 
 /** `graft ask`, `graft build`: a command as graft spells it, whatever ran it. */
@@ -396,6 +421,28 @@ program
   .description("internal: POST the queued anonymous usage events")
   .action(async () => {
     await runFlush();
+  });
+
+// Hidden: spawned detached by maybeShareSyncInBackground from the session-start
+// hook, once someone has said yes to `share-session`'s keep-sending. By hand it just
+// sends what changed, quietly.
+program
+  .command("_share-sync", { hidden: true })
+  .description("internal: send the Claude Code sessions that changed since the last share")
+  .action(async () => {
+    const s = readSyncState();
+    const cloud = s ? readClouds().find((c) => c.url === s.url) : undefined;
+    if (!s || !cloud) return;
+    await runSync({
+      home: homedir(),
+      who: whoIAm([cloud.user.name, cloud.user.email]),
+      trailVersion: runningVersion(),
+      repoOf: (cwd) => {
+        const r = workspaceRepo(cwd);
+        return r.git && !r.key.startsWith("local/") ? r.key : "";
+      },
+      send: (body) => shareSession(cloud, body),
+    });
   });
 
 grouped(program.command("telemetry"), GROUP.setup)
@@ -482,9 +529,18 @@ grouped(program.command("build"), GROUP.setup)
     "concept synthesis batches in flight at once during --deep (default 4). Separate from -j: " +
       "each synthesis call carries a whole batch of summaries, not one file",
   )
+  .option(
+    "--synth-batch-chars <n>",
+    "char budget of summary text per concept-synthesis call during --deep (default 48000). " +
+      "Lower it to trade fewer larger calls for more, smaller, parallel ones — worth it only " +
+      "when --synth-concurrency already exceeds the batch count. A budget low enough to " +
+      "overflow the batch an edit lands in splits its neighbour too, so that edit " +
+      "re-synthesizes two batches instead of one",
+  )
   .option("--no-reuse", "re-parse every file instead of replaying unchanged ones from the extraction cache")
   .option("--lsp", "add compiler-grade call edges via a language server if one is installed (opt-in, slower; e.g. rust-analyzer, clangd)")
   .option("--allow-partial", "with --deep: exit 0 even when some files' summaries failed (default: a degraded meaning tier exits 1)")
+  .option("--strict", "fail with exit code 1 if any structural parsing or extraction errors occur")
   .option(
     "--follow-submodules",
     "include initialized Git submodules recursively; persisted for later builds and automatic refreshes",
@@ -504,8 +560,9 @@ grouped(program.command("build"), GROUP.setup)
   )
   .option(
     "--include-dir <name>",
-    "override SKIP_DIRS for this repo's walks, repeatable (e.g. --include-dir build --include-dir tools); " +
-      "persisted, so a later build (and the hooks/refresh path) include it without the flag; dot-dirs are never overridable",
+    "override SKIP_DIRS (and named hidden directories) for this repo's walks, repeatable " +
+      "(e.g. --include-dir build --include-dir .kb); persisted, so a later build (and the " +
+      "hooks/refresh path) include it without the flag; .git, .trail and .graft are never overridable",
     (val: string, prev: string[]) => [...prev, val],
     [] as string[],
   )
@@ -530,7 +587,9 @@ grouped(program.command("build"), GROUP.setup)
       reuse?: boolean;
       lsp?: boolean;
       allowPartial?: boolean;
+      strict?: boolean;
       synthConcurrency?: string;
+      synthBatchChars?: string;
       includeDir?: string[];
       onlyDir?: string[];
       followSubmodules?: boolean;
@@ -560,20 +619,32 @@ grouped(program.command("build"), GROUP.setup)
       console.error(`✗ --synth-concurrency must be a number, got "${opts.synthConcurrency}"`);
       process.exit(1);
     }
+    // Validated RAW, before any flooring: `Math.max(1, …)` used to run first, so
+    // a budget of 0 or less was floored into a 1-char budget — one synthesis
+    // call per file, the per-file call storm the batch pass exists to prevent —
+    // and the guard below never saw the values it existed for.
+    let synthBatchChars: number | undefined;
+    if (opts.synthBatchChars !== undefined) {
+      const raw = Number(opts.synthBatchChars);
+      if (!Number.isFinite(raw) || raw < 1) {
+        console.error(`✗ --synth-batch-chars must be a positive number, got "${opts.synthBatchChars}"`);
+        process.exit(1);
+      }
+      synthBatchChars = Math.floor(raw);
+    }
     warnUnsupportedExtensions(opts.extensions);
     // Persisted BEFORE the build itself runs, so this invocation's walks (and
     // every later no-flag build / hooks refresh) see it identically — the
     // walkDir call sites read it from state, not from a threaded option.
     const buildConfigPatch: BuildConfig = {};
     if (opts.includeDir && opts.includeDir.length > 0) {
-      // --include-dir takes bare SKIP_DIRS-style directory NAMES (shouldSkipDir
-      // compares a single path segment), never paths, and dot-dirs are never
-      // overridable at all (see the option's own help text) — reject anything
-      // else up front instead of silently persisting a value that can never
-      // match a real directory name.
+      // --include-dir takes bare directory NAMES (shouldSkipDir compares a
+      // single path segment), never paths. Named hidden directories (.kb) are
+      // the same opt-in as SKIP_DIRS names; NEVER_INCLUDE_DIRS (.git, .trail,
+      // .graft) stay forbidden — reject those up front instead of persisting a no-op.
       for (const name of opts.includeDir) {
-        if (name.startsWith(".")) {
-          console.error(`✗ --include-dir "${name}": dot-directories are never overridable`);
+        if (NEVER_INCLUDE_DIRS.has(name)) {
+          console.error(`✗ --include-dir "${name}": ${name} is never overridable`);
           process.exit(1);
         }
         if (name.includes("/") || name.includes("\\")) {
@@ -638,13 +709,17 @@ grouped(program.command("build"), GROUP.setup)
     // Workspace parent: build each child into its OWN graft/ + a workspace index.
     const buildRoot = resolve(dir);
     const buildGlobalDir = program.opts<GlobalOpts>().dir;
+    // Another build or sync of this map already running as this one starts.
+    const overlap = lockHeldByOther(join(contextDirFor(buildRoot, buildGlobalDir), CACHE_DIR));
     if (isWorkspaceBuildRoot(buildRoot, buildGlobalDir)) {
       await runWorkspaceBuild(buildRoot, {
         deep: !!deep,
         extensions: opts.extensions,
         concurrency,
         synthConcurrency,
+        synthBatchChars,
         childConfig: cliConfig(),
+        strict: opts.strict,
         override: buildGlobalDir,
         includeDirs: opts.includeDir,
         followSubmodules: followSubmodulesWasExplicit ? opts.followSubmodules : undefined,
@@ -661,7 +736,9 @@ grouped(program.command("build"), GROUP.setup)
       const c = await engine.init(dir, {
         extensions: opts.extensions,
         onlyDirs,
+        concurrency,
         synthConcurrency,
+        synthBatchChars,
         onProgress: ({ phase, index, total, file }) =>
           process.stderr.write(
             `\r${phase === "summarize" ? "reading" : "writing"} concepts ${index + 1}/${total}: ${file.slice(0, 40).padEnd(40)}`,
@@ -672,7 +749,9 @@ grouped(program.command("build"), GROUP.setup)
         throw err;
       });
       process.stderr.write("\n");
-      const conceptLine = `concepts: ${c.nodes} nodes, ${c.links} links from ${c.files} files (${c.summarized} read, ${c.cached} cached)`;
+      // Named only when it differs, so the common single-model build says nothing new.
+      const synthNote = resolved.synthModel !== resolved.model ? ` [synthesis: ${resolved.synthModel}]` : "";
+      const conceptLine = `concepts: ${c.nodes} nodes, ${c.links} links from ${c.files} files (${c.summarized} read, ${c.cached} cached)${synthNote}`;
       if (c.nodes === 0) console.error(`⚠ ${conceptLine}`);
       else console.log(`✓ ${conceptLine}`);
       for (const e of c.errors) console.error(`✗ ${e}`);
@@ -682,6 +761,7 @@ grouped(program.command("build"), GROUP.setup)
 
     // Wiring graph — always; LLM meaning only with --deep.
     const g = await engine.graph(dir, {
+      extensions: opts.extensions,
       llm: deep,
       concurrency,
       reuse: opts.reuse,
@@ -696,7 +776,16 @@ grouped(program.command("build"), GROUP.setup)
       throw err;
     });
     process.stderr.write("\n");
-    console.log(`✓ wiring: ${g.nodes} nodes (${fmt(g.byKind)}), ${g.edges} edges, ${g.cards} cards [${g.languages.join(", ")}]`);
+    const structuralFailed = Boolean(opts.strict && g.structuralErrors > 0);
+    if (structuralFailed) {
+      console.error(
+        `✗ wiring incomplete: ${g.structuralErrors} structural error(s), ` +
+          `${g.nodes} nodes, ${g.edges} edges, ${g.cards} cards.`,
+      );
+      process.exitCode = 1;
+    } else {
+      console.log(`✓ wiring: ${g.nodes} nodes (${fmt(g.byKind)}), ${g.edges} edges, ${g.cards} cards [${g.languages.join(", ")}]`);
+    }
     console.log(`  parsed: ${g.parsed} of ${g.files} files (${g.reused} replayed from cache)`);
     // Worth one line: this build started from a graph the user never built *here*.
     if (g.seededFrom) console.log(`  seeded: copied a starting graph from ${g.seededFrom} (git worktree)`);
@@ -707,17 +796,22 @@ grouped(program.command("build"), GROUP.setup)
     console.log(`  → ${g.contextDir}`);
     // The activation event. Everything here is a bucket or a fixed label: repo
     // scale rather than a file count, a language set rather than file names.
-    track(
-      "build_completed",
-      {
-        files_bucket: filesBucket(g.files),
-        langs: langsValue(g.languages),
-        mode: deep ? "deep" : "fast",
-        duration_bucket: durationBucket(Date.now() - buildStartedAt),
-        incremental: String(g.reused > 0),
-      },
-      { repo: buildRoot },
-    );
+    if (structuralFailed) {
+      track("build_failed", { stage: "graph", code: errorCode(new Error(g.errors[0])) }, { repo: buildRoot });
+    } else {
+      track(
+        "build_completed",
+        {
+          files_bucket: filesBucket(g.files),
+          langs: langsValue(g.languages),
+          mode: deep ? "deep" : "fast",
+          duration_bucket: durationBucket(Date.now() - buildStartedAt),
+          incremental: String(g.reused > 0),
+          overlap: String(overlap),
+        },
+        { repo: buildRoot },
+      );
+    }
     for (const e of g.errors) console.error(`✗ ${e}`);
     // A language whose depth grammar didn't load was parsed by its breadth stand-in:
     // say which, and the install that fixes it. Nothing when everything loaded.
@@ -823,6 +917,8 @@ grouped(program.command("ask"), GROUP.find)
     if (TRAIL) afterAsk(r, dir);
     // How many notes reached the agent: the demand side of `trail note`.
     if (r.notesChecked) queryNote.notes = String(Math.min(r.notes?.length ?? 0, 2));
+    // And how many of those may be stale: they name code that's gone (notes/stale.ts).
+    if (r.notesChecked) queryNote.stale = String(Math.min(r.notes?.filter((h) => h.note.stale?.length).length ?? 0, 2));
     if (opts.json) {
       console.log(JSON.stringify(r, null, 2));
     } else {
@@ -903,7 +999,9 @@ async function runCheckCommand(
       if (!g.missing) console.log("\n" + formatGraphCheckReport(g));
     }
 
-    if (bothMissing || markdownFail || wiringFail) process.exit(1);
+    // exitCode, not exit(): exit() drops whatever of the JSON is still queued for a
+    // pipe, and a stale graph's pendingIds alone can run to hundreds of KB.
+    if (bothMissing || markdownFail || wiringFail) process.exitCode = 1;
 }
 
 // Under trail this is part of `status`; the old name still runs, unlisted.
@@ -1174,6 +1272,17 @@ grouped(program.command("note", { hidden: !TRAIL }), GROUP.memory)
     await runNoteCommand(resolve(dir), opts);
   });
 
+// `trail summary one-line`: the learnings and blast radius the hooks add, one line each (summary-view.ts).
+grouped(program.command("summary", { hidden: !TRAIL }), GROUP.memory)
+  .description("How long the learnings and blast radius under each prompt and edit are: full (the default) or one-line")
+  .argument("[view]", "full or one-line; leave it out to see the one in force")
+  .action((view?: string) => {
+    if (view) setSummaryView(view);
+    const now = summaryView();
+    const fromEnv = process.env.TRAIL_SUMMARY === now ? " (from TRAIL_SUMMARY)" : "";
+    console.log(`${tag()} summary: ${now}${fromEnv}. The next prompt and edit use it; nothing to restart.`);
+  });
+
 // `trail skills` (design 1.7): the skills Trail kept for you, held ones to keep, offers and the switch; and
 // `trail forget <name>`, the undo every save line names. The person-only ones refuse an agent (cli-skills.ts).
 registerSkillCommands(program);
@@ -1187,7 +1296,7 @@ grouped(program.command("init"), GROUP.setup)
   )
   .argument("[dir]", "target repo directory", ".")
   .option("--no-build", "skip building the graph (wire files only)")
-  .option("--agents <ids...>", `only these agents (${hostIds().join(", ")}, claude), or auto: repo files for Claude Code, Cursor, Codex and OpenCode, plus files and laptop settings for the agents installed here`)
+  .option("--agents <ids...>", `wire only these; removes ${brand()}'s wiring for unlisted agents, including user-level files (unless --no-global); pass every agent you use (${hostIds().join(", ")}, claude), or auto: repo files for Claude Code, Cursor, Codex and OpenCode, plus files and laptop settings for the agents installed here`)
   .option("--all-agents", "write instruction files for every known agent, detected or not")
   .option("--no-agents", "Claude Code wiring only; skip other agents")
   .option("--list-agents", "list known agent ids and exit")
@@ -1195,8 +1304,10 @@ grouped(program.command("init"), GROUP.setup)
   .option("--no-hooks", "skip hook installation for other agents")
   .option("--no-statusline", "skip writing Claude Code statusLine (keep a user-defined one)")
   .option("--dry-run", "print every file init would touch, then exit without writing")
+  .option("--just-me", "trail just for you here: git sees none of it, your learnings stay in ~/.trail, and nothing asks you to commit or share")
+  .option("--team", "share trail with your team here: you commit .trail/ and .claude/settings.json once, and teammates' Claude reads your learnings")
   .option("-y, --yes", "skip the picker and wire every detected agent (the pre-0.8 default)")
-  .option("--no-global", "skip writes outside this repo (the ~/.codex/ config + hooks)")
+  .option("--no-global", "skip writes and removals outside this repo")
   .option("--verbose", "print every file written, the graph build's own output and the closing banner")
   .option(
     "--connect <code>",
@@ -1206,6 +1317,10 @@ grouped(program.command("init"), GROUP.setup)
   .option("--server <url>", "the Trail that gave the code (default: Trail cloud, https://team.trailhq.com)")
   .option("--plain", "look back without asking Claude to name what it finds")
   .option("--look-back", "look back at your past sessions again, for what isn't kept or closed yet")
+  .option(
+    "--claude-memory <file>",
+    "a memory export from Claude.ai (ask it to write out your memories, save its answer; - reads stdin): init offers the parts about code, just for you",
+  )
   .action(async (dir: string, opts: InitOptions) => {
     if (opts.connect !== undefined && opts.pair !== undefined) {
       console.error("✗ --connect and --pair are two ways in: use the one your Trail page gave you");
@@ -1300,6 +1415,17 @@ async function runNoteCommand(repo: string, opts: NoteOptions): Promise<void> {
   for (const t of targets) t.touches = real(t.dir, t.touches);
   const scope = opts.personal ? "personal" : "repo";
   const primary = targets[0]!;
+  // One learning per session: a later save on the same branch adds to the file
+  // this session already wrote, and another branch (another PR) starts a new one.
+  const session = sessionKey(repo);
+  const branches = new Map(targets.map((t) => [t.dir, currentBranch(t.dir)]));
+  const ongoing = new Map<string, Note>();
+  if (session && !opts.replaces && !opts.alwaysFollow) {
+    for (const t of targets) {
+      const n = sessionLearning(t.dir, session, scope, branches.get(t.dir));
+      if (n) ongoing.set(t.dir, n);
+    }
+  }
   const existing = listNotes(primary.dir, { branches: false });
   let old: Note | undefined;
   if (opts.replaces) {
@@ -1324,7 +1450,8 @@ async function runNoteCommand(repo: string, opts: NoteOptions): Promise<void> {
       touches: primary.touches,
       replaces,
     },
-    liveLearnings(existing).filter((n) => (n.scope ?? "repo") === scope),
+    // This session's own learning isn't one it could repeat: the save adds to it.
+    liveLearnings(existing).filter((n) => (n.scope ?? "repo") === scope && n.id !== ongoing.get(primary.dir)?.id),
   );
   if (gate.problems.length && !opts.anyway) {
     console.error("✗ not saved yet:");
@@ -1339,17 +1466,24 @@ async function runNoteCommand(repo: string, opts: NoteOptions): Promise<void> {
   // Saved by `trail note`, which is how an agent saves: src says so, and no flag changes it.
   const earlier: Note[] = [];
   const saved: Note[] = [];
+  const added = new Set<Note>();
   for (const t of targets) {
     earlier.push(...listNotes(t.dir));
     // Always follow is a mark on the learning: written as kind guardrail (what older files and the cloud read), and
     // standing, so every session starts with it. Only on the person's word (always-follow-gate.ts).
     const mark = always.ok ? { kind: "guardrail" as const, standing: true } : {};
-    saved.push(writeNote(t.dir, { title: opts.title, body, author, date, branch: currentBranch(t.dir), cost, touches: t.touches, replaces, src: "agent", ...mark }, scope));
+    const into = ongoing.get(t.dir);
+    const n = into
+      ? addToLearning(into, { body, cost, touches: t.touches })
+      : writeNote(t.dir, { title: opts.title, body, author, date, branch: branches.get(t.dir), cost, touches: t.touches, replaces, src: "agent", ...mark }, scope);
+    if (session) rememberSessionLearning(t.dir, session, scope, n, branches.get(t.dir));
+    if (into) added.add(n);
+    saved.push(n);
   }
   const touches = targets.flatMap((t) => t.touches);
   track(
     "note_saved",
-    { has_cost: String(cost?.tokens !== undefined || cost?.minutes !== undefined), touches_bucket: countBucket(touches.length), scope: saved[0]?.scope ?? scope },
+    { has_cost: String(cost?.tokens !== undefined || cost?.minutes !== undefined), touches_bucket: countBucket(touches.length), scope: saved[0]?.scope ?? scope, into: added.size ? "session" : "new" },
     { repo },
   );
 
@@ -1357,8 +1491,12 @@ async function runNoteCommand(repo: string, opts: NoteOptions): Promise<void> {
     console.log(JSON.stringify(saved.length === 1 ? saved[0] : saved, null, 2));
     return;
   }
-  for (const n of saved) console.log(`✓ ${n.scope === "personal" ? "saved just for you" : "added to this repo"}${isAlwaysFollow(n) ? `, ${ALWAYS_FOLLOW}` : ""} · ${notePlace(n)}`);
+  for (const n of saved) {
+    const how = added.has(n) ? "added to the learning this session already saved" : n.scope === "personal" ? "saved just for you" : "added to this repo";
+    console.log(`✓ ${how}${isAlwaysFollow(n) ? `, ${ALWAYS_FOLLOW}` : ""} · ${notePlace(n)}`);
+  }
   console.log(savedIdLine(saved));
+  if (added.size) console.log("· one learning per session: later saves on this branch go into the same file, and a new branch starts a new one");
   if (opts.alwaysFollow && !always.ok)
     console.log(
       `· not marked always follow: nothing the person typed this session says it must always hold. Saved as a learning; if they want it always followed, ask them, then save it again with --replaces ${saved[0]!.id} --always-follow`,
@@ -1416,7 +1554,7 @@ function printLines(lines: string[]): void {
 }
 
 /** `graft init`'s flags, as commander hands them over. */
-interface InitOptions { build?: boolean; agents?: string[]; allAgents?: boolean; listAgents?: boolean; mcp?: boolean; hooks?: boolean; statusline?: boolean; dryRun?: boolean; yes?: boolean; global?: boolean; verbose?: boolean; connect?: string; pair?: string; server?: string; plain?: boolean; lookBack?: boolean }
+interface InitOptions { build?: boolean; agents?: string[]; allAgents?: boolean; listAgents?: boolean; mcp?: boolean; hooks?: boolean; statusline?: boolean; dryRun?: boolean; yes?: boolean; global?: boolean; verbose?: boolean; connect?: string; pair?: string; server?: string; plain?: boolean; lookBack?: boolean; claudeMemory?: string }
 
 /** What `init --connect` and `--pair` hear from a run of init, as it happens: the stages the web page ticks off. */
 interface InitProgress {
@@ -1470,6 +1608,16 @@ const AGENT_ALIASES: Record<string, string> = { codex: "agents", opencode: "agen
  * The `init --pair` run Trail's page is following, while it runs: a crash then
  * tells the page the run stopped (see the end of this file).
  */
+/** A Claude.ai memory export's text, from a file or stdin (`-`); undefined, said, when it can't be read: init goes on. */
+async function readClaudeExport(file: string): Promise<string | undefined> {
+  try {
+    return file === "-" ? await readStdin() : readFileSync(resolve(file), "utf8");
+  } catch {
+    console.error(`· couldn't read ${file}, so nothing from your Claude.ai memory this time`);
+    return undefined;
+  }
+}
+
 let livePair: PairRun | null = null;
 
 /** `graft init`. */
@@ -1530,7 +1678,7 @@ async function runInitCommand(dir: string, opts: InitOptions, progress?: InitPro
     // guessing (pre-0.8 this silently wired every agent the machine had ever
     // installed — see --yes to get that back).
     const home = homedir();
-    const plan = planInit(repo, { home });
+    const plan = planInit(repo, { home, mcp: opts.mcp, hooks: opts.hooks, global: opts.global });
     const detectedIds = plan.filter((p) => p.detected).map((p) => p.id);
     const noAgents = (opts as { agents?: unknown }).agents === false;
 
@@ -1586,12 +1734,48 @@ async function runInitCommand(dir: string, opts: InitOptions, progress?: InitPro
         console.error(`· --agents auto: repo files for Claude Code, Cursor, Codex and OpenCode; laptop settings for ${autoSel.agents.length ? agentList(autoSel.agents) : "none (no agent found here)"}\n`);
       console.error(formatPlan(laptopOnly(plan, laptop), ids, repo, home));
       for (const child of children)
-        console.error(`\n· ${child}/ (workspace child)\n` + formatPlan(laptopOnly(planInit(join(repo, child), { home }), laptop), ids, join(repo, child), home));
+        console.error(`\n· ${child}/ (workspace child)\n` + formatPlan(laptopOnly(planInit(join(repo, child), { home, mcp: opts.mcp, hooks: opts.hooks, global: opts.global }), laptop), ids, join(repo, child), home));
       return null;
     }
     if (ids.length === 0) {
       console.error("· no agents selected, nothing written");
       return null;
+    }
+
+    // Who trail is for here (notes/just-me.ts), settled before anything is written. Asked on a terminal, in a repo
+    // whose team hasn't committed `.trail/`; a repo already on trail just for this person stays so until --team.
+    const scopeFlags = opts as { justMe?: boolean; team?: boolean };
+    if (scopeFlags.justMe && scopeFlags.team) {
+      console.error("✗ --just-me and --team are the two answers to one question: give one");
+      process.exitCode = 1;
+      return null;
+    }
+    let justMe = false;
+    let scope: "just_me" | "team" | "unasked" = scopeFlags.justMe ? "just_me" : scopeFlags.team ? "team" : "unasked";
+    if (TRAIL && isGitWorkTree(repo) && opts.pair === undefined && opts.connect === undefined) {
+      if (scope !== "unasked") justMe = scope === "just_me";
+      else if (trailCommitted(repo)) justMe = false;
+      else if (isJustMe(repo)) justMe = true;
+      else if (process.stdin.isTTY && process.stderr.isTTY && !opts.yes) {
+        const answer = await askJustMe();
+        if (answer === null) {
+          console.error("· cancelled, nothing written");
+          return null;
+        }
+        justMe = answer;
+        scope = justMe ? "just_me" : "team";
+      }
+      for (const target of targets) {
+        if (!isGitWorkTree(target)) continue;
+        // This clone's own `.git/info/exclude`: never committed, so nobody else's checkout changes.
+        if (justMe) {
+          setJustMe(target, true);
+          keepOutOfGit(target, ".trail");
+        } else if (isJustMe(target)) {
+          setJustMe(target, false);
+          letGitSee(target, ".trail");
+        }
+      }
     }
 
     // With --pair, Trail's onboarding page is waiting on this run: tell it
@@ -1658,7 +1842,10 @@ async function runInitCommand(dir: string, opts: InitOptions, progress?: InitPro
     // up at the end. Nothing is kept without a tick (see src/init/review.ts).
     const tty = Boolean(process.stdin.isTTY && process.stderr.isTTY);
     // Past Claude sessions are on this laptop only where Claude Code is.
-    const lookBack = TRAIL && wantClaude && (!laptop || laptop.includes("claude")) ? beginLookBack(repo, { plain: opts.plain === true, again: opts.lookBack === true, pair: pair !== null }) : null;
+    const claudeExport = opts.claudeMemory === undefined ? undefined : await readClaudeExport(opts.claudeMemory);
+    const lookBack = TRAIL && wantClaude && (!laptop || laptop.includes("claude"))
+      ? beginLookBack(repo, { plain: opts.plain === true, again: opts.lookBack === true, pair: pair !== null, ...(claudeExport !== undefined ? { claudeExport } : {}) })
+      : null;
     for (const line of lookBack?.lines ?? []) console.error(line);
     if (pair) {
       const sessions = lookBack?.reads.sessions;
@@ -1787,17 +1974,22 @@ async function runInitCommand(dir: string, opts: InitOptions, progress?: InitPro
         // saveReviewFindings keeps the findings' order.
         fromReviews.saved.forEach((note, i) => {
           const prs = fromReviews.kept[i]?.prs ?? [];
-          console.error(`    for your team · ${note.title}${prs.length ? ` (${prs.map((n) => `#${n}`).join(", ")})` : ""}`);
+          console.error(`    ${note.scope === "personal" ? "just for you " : "for your team"} · ${note.title}${prs.length ? ` (${prs.map((n) => `#${n}`).join(", ")})` : ""}`);
         });
       }
       if (fromSessions?.saved.length) {
         const n = fromSessions.saved.length;
         console.error(`✓ ${n < fromSessions.offered ? `kept ${n} of the ${fromSessions.offered} learnings` : `${n} learning${n === 1 ? "" : "s"}`} from your past Claude sessions here`);
-        for (const note of fromSessions.saved) console.error(`    for your team · ${note.title}`);
+        for (const note of fromSessions.saved) console.error(`    ${note.scope === "personal" ? "just for you " : "for your team"} · ${note.title}`);
       }
       if (fromMemory?.saved.length) {
         console.error(`✓ kept ${fromMemory.saved.length} of the ${fromMemory.offered} notes your Claude keeps about this repo`);
         for (const note of fromMemory.saved) console.error(`    ${note.scope === "personal" ? "just for you " : "for your team"} · ${note.title}`);
+      }
+      const fromClaudeAi = learned.teamKept?.fromClaudeAi;
+      if (fromClaudeAi?.saved.length) {
+        console.error(`✓ kept ${fromClaudeAi.saved.length} thing${fromClaudeAi.saved.length === 1 ? "" : "s"} Claude.ai knows about you, just for you · in ~/.trail, never committed`);
+        for (const note of fromClaudeAi.saved) console.error(`    just for you  · ${note.title}`);
       }
       sessionsRead = learned.read?.sessions ?? 0;
       skillsFound = learned.skills ?? [];
@@ -1813,19 +2005,32 @@ async function runInitCommand(dir: string, opts: InitOptions, progress?: InitPro
       teamSaved = learned.team;
       if (learnedNow) {
         console.error("· Claude follows them from your next session");
-        if (learned.inRepo) console.error(commitLines({}, teammatesOn(repo), "repo").uncommitted);
+        if (learned.inRepo && !justMe) console.error(commitLines({}, teammatesOn(repo), "repo").uncommitted);
       }
     }
     // Not looked back (not trail, or not Claude Code): the page still gets its stage.
     if (!lookBack) report?.learned?.({ notes: [], sessions: 0 });
     if (TRAIL && !learnedNow) {
       const home = notesHome.get(repo);
-      if (home) {
+      if (home && justMe) console.error(`✓ learnings  ${shownPath(trailHome())} · just for you: a session that fixes a bug, takes a correction or opens a PR leaves one there`);
+      else if (home) {
         const learnings = liveLearnings(listNotes(repo, { branches: false })).filter((n) => n.scope === "repo");
         if (learnings.length === 0) console.error(`✓ learnings  ${LEARNINGS_DIR}/ · a session that fixes a bug, takes a correction or opens a PR leaves one there, for your whole team`);
         else console.error(`✓ learnings  ${learnings.length} in ${LEARNINGS_DIR}/, from ${new Set(learnings.map((n) => n.author || "someone")).size} ${new Set(learnings.map((n) => n.author)).size === 1 ? "person" : "people"}`);
       }
     }
+
+    // Just for this person: what init added for the other agents stays out of git too. A file git already
+    // tracks can't be kept out, so it's named.
+    const inGit: string[] = [];
+    if (justMe)
+      for (const w of selectedWrites(plan, ids)) {
+        if (w.scope !== "repo") continue;
+        const rel = shown(repo, w.path);
+        const r = spawnSync("git", ["status", "--porcelain", "--", rel], { cwd: repo, encoding: "utf8", windowsHide: true });
+        if (r.stdout.startsWith("??")) keepOutOfGit(repo, rel);
+        else if (r.stdout.trim()) inGit.push(rel);
+      }
 
     if (!verbose) {
       // What there is to commit: the top-level entries the picked agents wrote.
@@ -1843,14 +2048,17 @@ async function runInitCommand(dir: string, opts: InitOptions, progress?: InitPro
       if (TRAIL && !tops.includes(".trail/")) tops.push(".trail/");
       // Only what git sees as new or changed: a teammate's init over committed files has nothing to commit.
       const changedTops = tops.filter((t) => {
-        const r = spawnSync("git", ["status", "--porcelain", "--", t], { cwd: repo, encoding: "utf8" });
+        const r = spawnSync("git", ["status", "--porcelain", "--", t], { cwd: repo, encoding: "utf8", windowsHide: true });
         return r.status !== 0 || r.stdout.trim().length > 0;
       });
       tops.splice(0, tops.length, ...changedTops);
       // Outside git there is nothing to commit to, and `git status` failing above
       // made every path look changed.
       if (TRAIL && !children.length && !isGitWorkTree(repo)) console.error(NOT_GIT_LINE);
-      else if (tops.length)
+      else if (justMe) {
+        for (const f of inGit) console.error(`⚠ git tracks ${f}, so trail's change to it shows in git status: leave it out of your commits`);
+        console.error(`· just for you: git sees nothing trail added, so there's nothing to commit. To share it with your team later, run ${cmd("graft init")} --team`);
+      } else if (tops.length)
         console.error(
           TRAIL
             ? `· commit ${tops.slice(0, 5).join(" and ")}${tops.length > 5 ? ` +${tops.length - 5} more` : ""} once: after that, teammates' Claude reads your learnings even before they install trail`
@@ -1895,17 +2103,28 @@ async function runInitCommand(dir: string, opts: InitOptions, progress?: InitPro
     // Run by an agent, not a person: the last line tells it to ask about the
     // commit, since the person never saw the picker and Claude Code folds the rest.
     // With --pair the person reviews them on the Trail page first, so no ask here.
-    if (teamSaved && !pair && !process.stderr.isTTY)
+    if (teamSaved && !pair && !justMe && !process.stderr.isTTY)
       console.error(
         `→ ${teamSaved} team learning${teamSaved === 1 ? "" : "s"} in ${LEARNINGS_DIR}/ ${teamSaved === 1 ? "isn't" : "aren't"} committed yet. Ask the user: "Commit ${teamSaved === 1 ? "it" : `the ${teamSaved}`} so your teammates' Claude starts from ${teamSaved === 1 ? "it" : "them"}? (yes / no)"`,
       );
     // Sorted so `claude,cursor` and `cursor,claude` aggregate as one value.
     track(
       "init_completed",
-      { agents: [...ids].sort().join(","), consent: consent === undefined ? "unasked" : String(consent) },
+      {
+        agents: [...ids].sort().join(","),
+        consent: consent === undefined ? "unasked" : String(consent),
+        scope,
+        ...(reports[0]?.statusline ? { statusline: reports[0].statusline } : {}),
+      },
       { repo },
     );
     return { ids, laptop: laptop ?? ids };
+}
+
+/** The repo's team committed `.trail/`: trail is shared here already. */
+function trailCommitted(repo: string): boolean {
+  const r = spawnSync("git", ["ls-files", "--", ".trail"], { cwd: repo, encoding: "utf8", windowsHide: true });
+  return r.status === 0 && r.stdout.trim().length > 0;
 }
 
 /** A plan with the out-of-repo writes only for `laptop`'s hosts; the plan itself when every host may write there. */
@@ -2013,6 +2232,8 @@ interface WireReport {
   retracted: string[];
   /** ⚠ lines, printed in full. */
   warnings: string[];
+  /** Whose status line Claude Code shows in the repo (trail only). */
+  statusline?: 'trail' | 'theirs' | 'off';
 }
 
 /** One repo's worth of `init` writes — the parent, then each workspace child. */
@@ -2075,6 +2296,7 @@ function wireTarget(
       say(res.built ? `✓ built the graph (${cmd("graft build")})` : "· skipped graph build");
       if (!wantStatusline) say("· skipped Claude Code statusLine (--no-statusline)");
       for (const w of res.warnings) say(`⚠ ${w}`);
+      report.statusline = res.statusline;
     }
 
     // `ids` is already resolved, so hosts init is always driven by an explicit
@@ -2100,7 +2322,12 @@ function wireTarget(
         if (trust) say(`⚠ ${trust}`);
       }
       // Only worth saying when there was actually something out-of-repo to skip.
-      if (opts.global === false && selectedWrites(plan, ids).some((w) => w.scope === "global"))
+      // `plan` already reflects --no-global, so ask the unsuppressed plan whether
+      // there was anything out-of-repo to skip.
+      if (
+        opts.global === false &&
+        selectedWrites(planInit(repo, { home, mcp: opts.mcp, hooks: opts.hooks }), ids).some((w) => w.scope === "global")
+      )
         say("· skipped out-of-repo writes (--no-global)");
     }
 
@@ -2214,7 +2441,7 @@ grouped(program.command("uninstall"), GROUP.setup)
  */
 function loginCommand(name = "login"): Command {
   return new Command(name)
-    .description("Sign this laptop in to your Trail workspace, in the browser: every coding agent here gets its brand, skills and learnings")
+    .description("Sign this laptop in to Trail (team.trailhq.com), in the browser: every coding agent here gets your workspace's brand, skills and learnings")
     .argument("[dir]", "the repo to add", ".")
     .option("--code <code>", "a one-time sign-in code from Trail's web app (TRL-…): signs in with no browser step")
     .option("--workspace <slug>", "the workspace to sign in to, as its page names it (default: this repo's, if it has one)")
@@ -2253,9 +2480,9 @@ function loginCommand(name = "login"): Command {
         startWaiting();
         return;
       }
-      console.error(`· sign in and allow this laptop:\n  ${url}`);
+      console.error(`· sign in to Trail in your browser:\n  ${url}`);
       openBrowser(url);
-      console.error("· waiting for you to finish in the browser (ctrl-c stops; the next trail command picks it up too)");
+      console.error("· waiting for you to sign in · ctrl-c stops");
       const got = await waitForConnect({ waitMs: 10 * 60 * 1000 });
       if (got && "cloud" in got) {
         addAgentEntries();
@@ -2347,6 +2574,382 @@ function logoutCommand(name = "logout"): Command {
       const names = all.map((c) => c.workspace.name).join(", ");
       console.error(`✓ disconnected from workspace${all.length > 1 ? "s" : ""} ${names} · learnings stay in your repos' .trail/`.replace("  ", " "));
     });
+}
+
+const INTERNAL_ONLY = "✗ internal only: share-session is for the Trail team, signed in to team.trailhq.com with a trailhq.com or nanonets.com email";
+
+/**
+ * The connection that may send sessions: one Trail says yes to, which it
+ * decides by the signed-in email. This repo's workspace is asked first. Null
+ * after saying why there is none.
+ */
+async function shareCloud(repoKey: string | null): Promise<Cloud | null> {
+  const all = readClouds();
+  const mine = repoKey ? cloudIn(all, repoKey) : null;
+  let failed: string | null = null;
+  for (const c of mine ? [mine, ...all.filter((x) => x !== mine)] : all) {
+    const ok = await shareAllowed(c);
+    if (ok === true) return c;
+    if (isError(ok)) failed = ok.error;
+  }
+  console.error(failed ? `✗ couldn't check with Trail · ${failed}` : INTERNAL_ONLY);
+  process.exitCode = 1;
+  return null;
+}
+
+/** Ask on the terminal for a line; a closed input is null. */
+function askLine(question: string): Promise<string | null> {
+  const rl = createInterface({ input: process.stdin, output: process.stderr });
+  return new Promise((done) => {
+    let answered = false;
+    rl.on("close", () => answered || done(null));
+    rl.question(question, (a) => {
+      answered = true;
+      rl.close();
+      done(a.trim());
+    });
+  });
+}
+
+/** Ask on the terminal; only `y` or `yes` is a yes, and a closed input is a no. */
+async function askYes(question: string): Promise<boolean> {
+  return /^y(es)?$/i.test((await askLine(question)) ?? "");
+}
+
+/** `~/…` for a path in the home folder, as the person reads it. */
+function homePath(p: string): string {
+  const home = homedir();
+  return p === home || p.startsWith(home + sep) ? `~${p.slice(home.length)}` : p;
+}
+
+/** A copy prepared longer ago than this isn't what the person saw today: it's prepared again. */
+const COPY_FRESH_MS = 24 * 60 * 60 * 1000;
+
+function shareSessionCommand(name = "share-session"): Command {
+  return new Command(name)
+    .description("Send your Claude to the Trail team for the team-memory experiment, and keep sending: the last 30 days of sessions, your setup and memory, then each new session, secrets and your name taken out (Trail team only)")
+    .argument("[session]", "send only this one of this folder's sessions: its number in --list, or its id")
+    .option("--list", "list this folder's sessions, newest first")
+    .option("--days <n>", "how many days of sessions to take", "30")
+    .option("--leave-out <numbers>", 'with --yes: folder numbers from the summary to leave out, like "3 7"')
+    .option("--yes", "send without asking: only after the person said yes to what it showed")
+    .option("--once", "send once: the last 30 days, and nothing after")
+    // Sending on is the default now; --sync, its old switch, still works.
+    .addOption(new Option("--sync").hideHelp())
+    .option("--stop", "stop sending: nothing more goes after this")
+    .option("--delete <code>", "take back everything sent under this delete code, and stop sending")
+    .action(async (pick: string | undefined, opts: { list?: boolean; days: string; leaveOut?: string; yes?: boolean; delete?: string; once?: boolean; stop?: boolean }) => {
+      const dir = process.cwd();
+      const here = workspaceRepo(dir);
+      // Taking back and stopping work without the flag: someone who tried it must always be able to undo it.
+      if (opts.stop) return stopSync(here.checkout);
+      if (!opts.delete && !shareSessionEnabled()) {
+        console.error(`✗ share-session isn't on in this release yet; to try it, run TRAIL_SHARE_SESSION=1 ${cmd("graft share-session")}`);
+        process.exitCode = 1;
+        return;
+      }
+      const repoKey = here.git && !here.key.startsWith("local/") ? here.key : null;
+      const cloud = await shareCloud(repoKey);
+      if (!cloud) return;
+      if (opts.delete) return deleteShared(cloud, opts.delete, here.checkout);
+      if (opts.list) {
+        const sessions = sessionsHere(dir);
+        console.log(listLines(sessions).join("\n"));
+        if (sessions.length) console.log(`· send one: ${cmd("graft share-session")} <number>`);
+        return;
+      }
+      if (pick) return shareOneSession(cloud, pick, !!opts.yes, here.checkout, repoKey);
+      const days = Number(opts.days);
+      if (!Number.isInteger(days) || days < 1 || days > 365) {
+        console.error("✗ --days takes a whole number of days, 1 to 365");
+        process.exitCode = 1;
+        return;
+      }
+      const sync = !opts.once;
+      if (sync) {
+        const on = readSyncState();
+        if (on && !on.stoppedAt) return console.log(syncStatusLines(on).join("\n"));
+      }
+      return shareWholeClaude(cloud, { days, leaveOut: opts.leaveOut, yes: !!opts.yes, sync }, here.checkout);
+    });
+}
+
+/** One session from this folder, as before: shown, then sent on a yes. */
+async function shareOneSession(cloud: Cloud, pick: string, yes: boolean, checkout: string, repoKey: string | null): Promise<void> {
+  const sessions = sessionsHere(process.cwd());
+  const session = pickSession(sessions, pick);
+  if (!session) {
+    console.error(sessions.length ? `✗ no session "${pick}" here · ${cmd("graft share-session")} --list shows them` : "✗ no Claude Code sessions for this folder yet");
+    process.exitCode = 1;
+    return;
+  }
+  const bundle = bundleSession(session, whoIAm([cloud.user.name, cloud.user.email]));
+  if (bundle.gz.length > MAX_GZ_BYTES) {
+    console.error(`✗ this session is too big to send: ${sizeLabel(bundle.gz.length)} zipped, and Trail takes up to ${sizeLabel(MAX_GZ_BYTES)}`);
+    process.exitCode = 1;
+    return;
+  }
+  console.log(previewLines(bundle, { workspace: cloud.workspace.name, url: cloud.url }).join("\n"));
+  console.log("");
+  const interactive = process.stdin.isTTY && process.stderr.isTTY;
+  if (!yes && !interactive) {
+    console.log(`· nothing sent. Show the person what's above; only if they say yes, run ${cmd("graft share-session")} ${shortId(session)} --yes`);
+    return;
+  }
+  if (!yes && !(await askYes("Send this whole session, every message, tool call and result, to the Trail team? [y/N] "))) {
+    console.error("· nothing sent");
+    return;
+  }
+  const s = newSentState();
+  const sent = await shareSession(cloud, {
+    bundle_id: s.bundleId,
+    kind: "session",
+    delete_hash: deleteHash(s.secret),
+    session_id: session.id,
+    repo: repoKey ?? "",
+    trail_version: runningVersion(),
+    title: bundle.title,
+    messages: bundle.messages,
+    subagents: bundle.subagents,
+    bytes: bundle.bytes,
+    redacted: redactedCount(bundle),
+    transcript_gz: bundle.gz.toString("base64"),
+  });
+  if (isError(sent)) {
+    console.error(`✗ couldn't send it · ${sent.error}`);
+    process.exitCode = 1;
+    return;
+  }
+  track("session_shared", { size_bucket: sessionSizeBucket(bundle.bytes), messages_bucket: sessionMessagesBucket(bundle.messages) }, { repo: checkout });
+  console.error(`✓ sent ${shortId(session)} to the Trail team (${sizeLabel(bundle.gz.length)}) · thank you: it goes into the team-memory experiment`);
+  console.error(`· take it back any time: ${cmd("graft share-session")} --delete ${deleteCode(s)}`);
+}
+
+/**
+ * The whole Claude: every session from the last `days` days, the setup and
+ * the memory notes. Scrubbed into a copy under `~/.trail/share/` first; the
+ * person reads it and says yes, no, or which folders to leave out. Without a
+ * terminal (an agent ran it) it stops after the summary, and `--yes` later
+ * sends that same copy.
+ */
+async function shareWholeClaude(cloud: Cloud, opts: { days: number; leaveOut?: string; yes: boolean; sync: boolean }, checkout: string): Promise<void> {
+  const root = join(trailHome(), "share");
+  const tty = !!(process.stdin.isTTY && process.stderr.isTTY);
+  const earlier = unfinishedCopy(root);
+
+  if (earlier?.sent && tty && !opts.yes) {
+    const left = earlier.manifest.items.filter((it) => !earlier.sent!.sent.includes(it.id)).length;
+    console.log(`An earlier send stopped with ${left} of ${earlier.manifest.items.length} items left (${homePath(earlier.dir)}).`);
+    if (await askYes("Send the rest? [y/N] ")) await sendCopy(cloud, earlier.dir, earlier.manifest, earlier.sent, checkout, opts.sync);
+    else console.error("· nothing sent");
+    return;
+  }
+  if (opts.yes && earlier && (earlier.sent || Date.now() - earlier.manifest.createdAt < COPY_FRESH_MS)) {
+    let m = earlier.manifest;
+    if (opts.leaveOut && !earlier.sent) {
+      const ns = parseLeaveOut(opts.leaveOut, m);
+      if (!ns) {
+        console.error(`✗ --leave-out takes folder numbers from the summary, like "3 7"; nothing sent`);
+        process.exitCode = 1;
+        return;
+      }
+      m = leaveOut(earlier.dir, m, ns);
+    }
+    await sendCopy(cloud, earlier.dir, m, earlier.sent ?? newSentState(), checkout, opts.sync);
+    return;
+  }
+
+  // Nothing prepared yet, so it's prepared and shown: never sent unseen, --yes or not.
+  const out = newCopyDir(root);
+  const who = whoIAm([cloud.user.name, cloud.user.email]);
+  if (!tty) console.error(`· scrubbing your Claude Code sessions from the last ${opts.days} days, your setup and memory…`);
+  let m = prepareBundle({
+    days: opts.days,
+    home: homedir(),
+    who,
+    out,
+    repoOf: (cwd) => {
+      const r = workspaceRepo(cwd);
+      return r.git && !r.key.startsWith("local/") ? r.key : "";
+    },
+    onProgress: tty ? (done, total) => process.stderr.write(`\r· scrubbing sessions: ${done} of ${total}`) : undefined,
+  });
+  if (tty) process.stderr.write("\n");
+  const again = `${cmd("graft share-session")}${opts.sync ? "" : " --once"}`;
+  const show = () => {
+    console.log(bundlePreviewLines(m, homePath(out), cloud, opts.sync ? { sync: `${cmd("graft share-session")} --stop` } : {}).join("\n"));
+    console.log("");
+  };
+  show();
+  if (!tty) {
+    console.log(`· nothing sent. Show the person what's above and the copy at ${homePath(out)}; only if they say yes, run ${again} --yes, with --leave-out "<numbers>" for any folders they want out`);
+    return;
+  }
+  const declined = () => {
+    rmSync(out, { recursive: true, force: true });
+    track("share_bundle", { outcome: "declined", items_bucket: shareItemsBucket(m.items.length), size_bucket: shareSizeBucket(bundleGz(m)) }, { repo: checkout });
+    console.error("· nothing sent, and the copy is deleted");
+  };
+  const all = opts.sync ? "Send all of this, and keep sending?" : "Send all of this?";
+  for (;;) {
+    const a = await askLine(`${all} y · n · or folder numbers to leave out (like 3 7): `);
+    if (a === null || /^(n|no)?$/i.test(a)) return declined();
+    if (/^y(es)?$/i.test(a)) return void (await sendCopy(cloud, out, m, newSentState(), checkout, opts.sync));
+    const ns = parseLeaveOut(a, m);
+    if (!ns) {
+      console.error("· answer y, n, or folder numbers from the list");
+      continue;
+    }
+    m = leaveOut(out, m, ns);
+    show();
+    if (await askYes(opts.sync ? "Send the rest, and keep sending? [y/N] " : "Send the rest? [y/N] ")) return void (await sendCopy(cloud, out, m, newSentState(), checkout, opts.sync));
+    return declined();
+  }
+}
+
+function bundleGz(m: Manifest): number {
+  return m.items.reduce((n, it) => n + it.gzBytes, 0);
+}
+
+/** Send what's left of a copy, one item at a time, writing down each as it lands. */
+async function sendCopy(cloud: Cloud, dir: string, m: Manifest, sent: SentState, checkout: string, sync = false): Promise<boolean> {
+  writeSent(dir, sent);
+  const tty = process.stderr.isTTY;
+  const total = m.items.length;
+  let n = sent.sent.length;
+  for (const it of m.items) {
+    if (sent.sent.includes(it.id)) continue;
+    const r = await shareSession(cloud, {
+      bundle_id: sent.bundleId,
+      kind: it.kind,
+      delete_hash: deleteHash(sent.secret),
+      session_id: it.id,
+      repo: it.repo,
+      trail_version: runningVersion(),
+      title: it.title,
+      messages: it.messages,
+      subagents: it.subagents,
+      bytes: it.bytes,
+      redacted: it.redacted,
+      transcript_gz: itemPayload(dir, it),
+    });
+    if (isError(r)) {
+      if (tty) process.stderr.write("\n");
+      console.error(`✗ couldn't send it · ${r.error}`);
+      console.error(`· ${n} of ${total} went; run ${cmd("graft share-session")} again to send the rest${n ? `, or take back what went with --delete ${deleteCode(sent)}` : ""}`);
+      process.exitCode = 1;
+      return false;
+    }
+    sent.sent.push(it.id);
+    writeSent(dir, sent);
+    n++;
+    if (tty) process.stderr.write(`\r· sent ${n} of ${total}`);
+  }
+  if (tty) process.stderr.write("\n");
+  sent.finishedAt = Date.now();
+  writeSent(dir, sent);
+  const gz = bundleGz(m);
+  track("share_bundle", { outcome: m.dropped.length ? "partial" : "sent", items_bucket: shareItemsBucket(total), size_bucket: shareSizeBucket(gz) }, { repo: checkout });
+  console.error(`✓ sent your Claude to the Trail team: ${total} item${total === 1 ? "" : "s"}, ${sizeLabel(gz)} · thank you, it goes into the team-memory experiment`);
+  if (sync) {
+    const setup = readFileSync(join(dir, "setup.json"), "utf8");
+    writeSyncState({
+      bundleId: sent.bundleId,
+      secret: sent.secret,
+      since: Date.now(),
+      days: m.days,
+      url: cloud.url,
+      excluded: m.dropped,
+      dirs: m.dirs ?? [],
+      sessions: Object.fromEntries(m.items.filter((it) => it.kind === "session").map((it) => [it.id, it.mtime])),
+      setupHash: createHash("sha256").update(setup).digest("hex"),
+      lastRunAt: Date.now(),
+    });
+    console.error(`· and from now on: each Claude Code session you start, in any folder, sends what changed since, kept in ${homePath(syncDir())}`);
+    console.error(hookLine(installShareSyncHook(homedir())));
+    console.error(`· stop any time: ${cmd("graft share-session")} --stop`);
+  }
+  console.error(`· take it all back any time: ${cmd("graft share-session")} --delete ${deleteCode(sent)}`);
+  console.error(`· the code is also kept in ${homePath(join(dir, "sent.json"))}`);
+  return true;
+}
+
+/** What happened to the hook in `~/.claude/settings.json`, in one line. */
+function hookLine(r: HookResult): string {
+  const where = homePath(settingsPath(homedir()));
+  if (r === "added") return `· added one hook to ${where} so this runs in every folder, in the terminal and in Claude Desktop; --stop takes it out`;
+  if (r === "already") return `· its hook is in ${where}, so this runs in every folder`;
+  if (r === "removed") return `· took its hook out of ${where}`;
+  if (r === "absent") return "";
+  return `✗ couldn't add its hook to ${where}${r === "unparseable" ? " (the file isn't valid JSON)" : ""}, so this runs only in repos where trail is set up`;
+}
+
+/** Where a running sync stands, and its hook put back if something took it out. */
+function syncStatusLines(s: SyncState): string[] {
+  const n = Object.keys(s.sessions).length;
+  const at = (ms: number) => new Date(ms).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  const last = s.lastRun;
+  const lastLine = !last
+    ? "· no background run yet: the next Claude Code session you start sends what changed"
+    : last.error
+      ? `✗ the last run, ${at(last.at)}, stopped: ${last.error}. The next session you start tries again`
+      : `· last run ${at(last.at)}: ${last.sent ? `sent ${last.sent}` : "nothing new to send"}`;
+  const put = hasShareSyncHook(homedir()) ? "already" : installShareSyncHook(homedir());
+  const hook = put === "added" ? `· put its hook back in ${homePath(settingsPath(homedir()))}, so this runs in every folder again` : hookLine(put);
+  return [
+    `Sending to the Trail team since ${at(s.since)}: ${n} session${n === 1 ? "" : "s"} so far.`,
+    lastLine,
+    hook,
+    `· what went is kept in ${homePath(syncDir())}`,
+    `· stop: ${cmd("graft share-session")} --stop · take it all back: ${cmd("graft share-session")} --delete ${deleteCode(s)}`,
+  ];
+}
+
+/** `--stop`: nothing more is sent; what went stays until it's deleted. */
+function stopSync(checkout: string): void {
+  const s = readSyncState();
+  if (!s || s.stoppedAt) {
+    console.error("· nothing to stop: you aren't sending sessions");
+    return;
+  }
+  writeSyncState({ ...s, stoppedAt: Date.now() });
+  track("share_bundle", { outcome: "stopped", items_bucket: shareItemsBucket(Object.keys(s.sessions).length + 1) }, { repo: checkout });
+  console.error("✓ stopped: nothing more is sent");
+  const hook = hookLine(removeShareSyncHook(homedir()));
+  if (hook) console.error(hook);
+  console.error(`· what already went stays with the Trail team until you take it back: ${cmd("graft share-session")} --delete ${deleteCode(s)}`);
+}
+
+/** `--delete <code>`: Trail deletes everything sent under it. */
+async function deleteShared(cloud: Cloud, code: string, checkout: string): Promise<void> {
+  const p = parseDeleteCode(code);
+  if (!p) {
+    console.error("✗ that isn't a delete code: it's the <id>.<secret> share-session printed when it sent");
+    process.exitCode = 1;
+    return;
+  }
+  const r = await deleteSharedBundle(cloud, p.bundleId, p.secret);
+  if (isError(r)) {
+    console.error(`✗ couldn't delete it · ${r.error}`);
+    process.exitCode = 1;
+    return;
+  }
+  const root = join(trailHome(), "share");
+  try {
+    for (const name of readdirSync(root)) {
+      const s = readSent(join(root, name));
+      if (s?.bundleId === p.bundleId) writeSent(join(root, name), { ...s, deletedAt: Date.now() });
+    }
+  } catch {
+    // no copies on this laptop
+  }
+  const on = readSyncState();
+  if (on?.bundleId === p.bundleId && !on.stoppedAt) {
+    writeSyncState({ ...on, stoppedAt: Date.now() });
+    removeShareSyncHook(homedir());
+  }
+  track("share_bundle", { outcome: "deleted", items_bucket: shareItemsBucket(r.deleted) }, { repo: checkout });
+  console.error(`✓ deleted ${r.deleted} item${r.deleted === 1 ? "" : "s"} from the Trail team`);
 }
 
 /** The repo at `repo`, as the workspace names it. */
@@ -2780,7 +3383,7 @@ function statusCommand(name = "status"): Command {
         row("learnings", parts.join(" · "));
       }
       if (!cloud) {
-        if (cloudEnabled()) row("workspace", "not connected · Claude offers a link once there are learnings to share");
+        if (cloudEnabled()) row("workspace", `not signed in · run ${cmd("graft login")} to share learnings with your team`);
       } else if (cloud.via === "connect") {
         row("workspace", `${cloud.workspace.name} · gets a summary of the repos you run ${cmd("graft init")} --connect in · ${cloud.workspace.url}`);
       } else
@@ -2796,10 +3399,11 @@ function statusCommand(name = "status"): Command {
 
 if (TRAIL) {
   for (const c of [teamCheckCommand(), teamCommand()]) program.addCommand(c.helpGroup(GROUP.memory));
-  // Signing in waits until it gives a team more than committing .trail/ does.
   // Signing in is how every coding agent here gets the team's workspace: always listed.
   program.addCommand(loginCommand().helpGroup(GROUP.cloud));
   for (const c of [workspaceCommand(), logoutCommand()]) program.addCommand(c.helpGroup(GROUP.cloud), { hidden: !cloudEnabled() });
+  // The Trail team's own: never listed, and anyone else is told so in one line.
+  program.addCommand(shareSessionCommand(), { hidden: true });
   program.addCommand(statusCommand().helpGroup(GROUP.setup));
 
   // Help lists the groups in this order, and the commands within each.

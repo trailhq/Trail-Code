@@ -53,7 +53,7 @@ export function claudeProjectDir(repo: string, home: string = homedir()): string
  * the nearest ancestor's. A note saved from a subfolder, or from one repo of
  * a session started in the folder above several, still finds its session.
  */
-function sessionProjectDir(dir: string, home?: string): string | null {
+export function sessionProjectDir(dir: string, home?: string): string | null {
   for (let d = resolve(dir); ; d = dirname(d)) {
     const p = claudeProjectDir(d, home);
     if (existsSync(p)) return p;

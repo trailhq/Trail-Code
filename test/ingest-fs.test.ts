@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve, sep, isAbsolute } from "node:path";
-import { shouldSkipDir, walkDir, SKIP_DIRS } from "../src/ingest/fs.js";
+import { shouldSkipDir, walkDir, SKIP_DIRS, NEVER_INCLUDE_DIRS } from "../src/ingest/fs.js";
 import { discoverScopes, discoverWorkspaceChildren } from "../src/graph/scopes.js";
 
 function fixture(tag: string): string {
@@ -181,6 +181,66 @@ test("walkDir retains fixed skips and filesystem fallback outside Git", () => {
   }
 });
 
+test("walkDir collects a large nested subtree outside Git without dropping paths", () => {
+  const dir = mkdtempSync(join(tmpdir(), "graft-walk-bigsubtree-"));
+  try {
+    // The non-git walker accumulates a child subtree into the parent array.
+    // Spreading the child in did that in one push() call, whose argument list
+    // V8 caps at ~128k — see the comment in walkFilesystem. This pins the
+    // accumulation itself: every path from a deep, wide subtree comes back, in
+    // one flat list, with none lost at a directory boundary.
+    const expected: string[] = [];
+
+    for (let branch = 0; branch < 8; branch += 1) {
+      for (let leaf = 0; leaf < 120; leaf += 1) {
+        const rel = `data/branch-${branch}/nested/deep/file-${leaf}.ts`;
+        write(dir, rel);
+        expected.push(rel);
+      }
+    }
+
+    write(dir, "src/app.ts");
+    expected.push("src/app.ts");
+    expected.sort();
+
+    assert.deepEqual(walked(dir), expected);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/**
+ * The crash this guards against needs a child subtree larger than V8's argument
+ * cap (~128k), which is a real cost to set up: ~2.5s to create the files on
+ * Linux. CI also runs windows-latest, where creating that many files is far
+ * slower, so this is POSIX-only — the cheap semantic test above runs everywhere.
+ */
+test("walkDir survives a subtree larger than V8's argument limit (#314)", { skip: process.platform === "win32" ? "POSIX-only: file creation cost on Windows CI" : false }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "graft-walk-argcap-"));
+
+  try {
+    const bulk = join(dir, "data");
+    mkdirSync(bulk, { recursive: true });
+
+    // Above the cap, so spreading the child array into push() throws. Files are
+    // empty and flat: the walker stats each one, and depth is not the issue.
+    const count = 150_000;
+
+    for (let i = 0; i < count; i += 1) {
+      writeFileSync(join(bulk, `f${i}.ts`), "");
+    }
+
+    write(dir, "src/app.ts");
+
+    const found = walkDir(dir);
+
+    assert.equal(found.length, count + 1);
+    assert.ok(found.includes(join(dir, "src", "app.ts")));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 /**
  * A5 — `shouldSkipDir` and its `--include-dir` override.
  *
@@ -190,8 +250,8 @@ test("walkDir retains fixed skips and filesystem fallback outside Git", () => {
  * git-child filter (src/graph/scopes.ts). This introduces `shouldSkipDir` as
  * the single source of truth, with an optional `includes` param: a name in it
  * is removed from the effective skip set for this repo's walks (persisted via
- * `graft build --include-dir`), while a dot-directory stays non-overridable
- * regardless.
+ * `graft build --include-dir`), including a named hidden directory such as
+ * `.kb`. Names in NEVER_INCLUDE_DIRS (`.git`) stay skipped even when listed.
  *
  * `--include-dir` lifts only graft's OWN skip list. In a Git repo, Git's
  * ignore rules stay authoritative: an ignored directory remains excluded even
@@ -203,16 +263,23 @@ test("shouldSkipDir: every SKIP_DIRS name and any dot-prefixed name is skipped; 
   for (const name of SKIP_DIRS) assert.equal(shouldSkipDir(name), true, `${name} should be skipped`);
   assert.equal(shouldSkipDir(".git"), true);
   assert.equal(shouldSkipDir(".github"), true);
+  assert.equal(shouldSkipDir(".vscode"), true);
+  assert.equal(shouldSkipDir(".kb"), true);
   assert.equal(shouldSkipDir("."), true);
   assert.equal(shouldSkipDir("src"), false);
   assert.equal(shouldSkipDir("app"), false);
 });
 
-test("A5: shouldSkipDir(name, includes) removes a SKIP_DIRS name from the skip set, but never a dot-dir", () => {
-  const includes = new Set(["build", ".git"]);
+test("A5: shouldSkipDir(name, includes) removes a SKIP_DIRS name from the skip set, and a named hidden dir except .git", () => {
+  const includes = new Set(["build", ".kb", ".git"]);
   assert.equal(shouldSkipDir("build", includes), false, "an included SKIP_DIRS name is no longer skipped");
   assert.equal(shouldSkipDir("vendor", includes), true, "a SKIP_DIRS name NOT in includes is still skipped");
-  assert.equal(shouldSkipDir(".git", includes), true, "a dot-dir is never overridable, even if explicitly included");
+  assert.equal(shouldSkipDir(".kb", includes), false, "a named hidden dir is walked once included");
+  assert.equal(shouldSkipDir(".github", includes), true, ".github stays skipped unless it is the named include");
+  assert.equal(shouldSkipDir(".git", includes), true, ".git is never overridable, even if explicitly included");
+  for (const name of NEVER_INCLUDE_DIRS) {
+    assert.equal(shouldSkipDir(name, new Set([name])), true, `${name} is never overridable`);
+  }
   assert.equal(shouldSkipDir("src", includes), false);
 });
 
@@ -230,6 +297,33 @@ test("A5: walkDir(dir, includes) descends into an included SKIP_DIRS-named direc
     const withIncludes = walkDir(dir, new Set(["build"])).map((f) => f.slice(dir.length + 1));
     assert.ok(withIncludes.some((f) => f.startsWith("build")), "build/ is walked once included");
     assert.ok(!withIncludes.some((f) => f.startsWith("vendor")), "vendor/ stays skipped — only the named dir is included");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("A5: walkDir(dir, includes) descends into a named hidden directory; .git stays skipped (filesystem fallback)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "graft-walkdir-hidden-"));
+  try {
+    mkdirSync(join(dir, ".kb"), { recursive: true });
+    writeFileSync(join(dir, ".kb", "engine.ts"), "export const X = 1;\n");
+    mkdirSync(join(dir, ".github"), { recursive: true });
+    writeFileSync(join(dir, ".github", "ci.ts"), "export const Y = 1;\n");
+    mkdirSync(join(dir, ".git"), { recursive: true });
+    writeFileSync(join(dir, ".git", "HEAD"), "ref: refs/heads/main\n");
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(join(dir, "src", "app.ts"), "export const Z = 1;\n");
+
+    const withoutIncludes = walkDir(dir).map((f) => f.slice(dir.length + 1));
+    assert.ok(withoutIncludes.some((f) => f.endsWith("app.ts")), "src/ is walked");
+    assert.ok(!withoutIncludes.some((f) => f.startsWith(".kb")), "default: .kb/ is skipped");
+    assert.ok(!withoutIncludes.some((f) => f.startsWith(".github")), "default: .github/ is skipped");
+    assert.ok(!withoutIncludes.some((f) => f.startsWith(".git")), "default: .git/ is skipped");
+
+    const withIncludes = walkDir(dir, new Set([".kb", ".git"])).map((f) => f.slice(dir.length + 1));
+    assert.ok(withIncludes.some((f) => f.startsWith(".kb")), ".kb/ is walked once included");
+    assert.ok(!withIncludes.some((f) => f.startsWith(".github")), ".github/ stays skipped — only the named dir is included");
+    assert.ok(!withIncludes.some((f) => f.startsWith(".git")), ".git stays skipped even when named in includes");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -256,6 +350,32 @@ test("A5: --include-dir does not override gitignore — an ignored directory sta
     write(dir, "build/gen.ts");
 
     assert.deepEqual(walked(dir, new Set(["build"])), ["src/app.ts"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("A5: in a Git repo, --include-dir .kb lifts the built-in skip for git-visible files", () => {
+  const dir = fixture("include-hidden-git");
+  try {
+    write(dir, "src/app.ts");
+    write(dir, ".kb/engine.ts");
+
+    assert.ok(!walked(dir).includes(".kb/engine.ts"), "default: .kb/ is skipped by the built-in list");
+    assert.deepEqual(walked(dir, new Set([".kb"])), [".kb/engine.ts", "src/app.ts"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("A5: --include-dir .kb does not override gitignore — an ignored hidden directory stays excluded even when named", () => {
+  const dir = fixture("include-hidden-ignored");
+  try {
+    write(dir, ".gitignore", ".kb/\n");
+    write(dir, "src/app.ts");
+    write(dir, ".kb/engine.ts");
+
+    assert.deepEqual(walked(dir, new Set([".kb"])), ["src/app.ts"]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

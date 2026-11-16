@@ -1,5 +1,42 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Structural graph failures can now fail the build command with `--strict`**
+  instead of printing a successful wiring banner. Partial graph artifacts remain
+  available, workspace builds report failed children, and `--allow-partial`
+  continues to waive only incomplete LLM meaning passes.
+
+- **`graft build --include-dir` can opt a named hidden directory into the
+  repo-root walk** (#221). Default is unchanged: `.github`, `.vscode`, `.kb`
+  and every other dot-directory stay skipped. Pass `--include-dir .kb` (a
+  bare name, same switch as `build/` / `vendor/`) and the walk descends into
+  that directory so its nodes land on the same root graph the MCP server and
+  hooks already point at. The choice persists in `.graft/config.json`, so a
+  later no-flag build still includes it. `.git`, `.trail` and `.graft` are
+  never overridable: the CLI rejects them with a non-zero exit. Git's ignore
+  rules stay authoritative; the flag only lifts graft's own skip.
+
+### Fixed
+
+- Prevent telemetry helpers from repeatedly starting new copies when a sandbox
+  blocks writes to the telemetry state. Internal flush commands skip startup
+  upkeep, and background flushes require a saved timestamp before spawning.
+
+- **Elixir remote calls resolve through `alias`** (#351) in the generic tree-sitter tier, so
+  `graft callers` and `graft_trace_calls` work on Elixir. `Cart.total(x)` used to be
+  captured as a bare `total` and dropped as ambiguous the moment another `total` existed
+  anywhere in the repo — which in Elixir is always. A per-file `defmodule`/`alias` scope
+  pass now emits the call receiver-typed (`alias A.B.C`, `as:`, `alias A.{B, C}`,
+  `__MODULE__`, nested-module auto-aliases, `defmodule` under an aliased prefix,
+  `&Mod.fun/N`, pipes), stamps defs with their module and arity, and resolves through the
+  existing owner-qualified index. A bare `foo()` in Elixir is same-file only; a call to a
+  macro-generated function (`use Ecto.Repo`) lands on the module node instead of vanishing;
+  multi-clause heads collapse to one target. Measured on a 219-file app against
+  `mix xref graph`: cross-file call-edge precision 0.38 → 0.93, recall 0.41 → 0.64.
+
 ## 0.28.0
 
 ### Added

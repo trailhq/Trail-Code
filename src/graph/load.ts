@@ -1,23 +1,20 @@
 /**
- * mtime-keyed in-process cache over the two readers `ask()` calls on every
+ * File-metadata-keyed in-process cache over the two readers `ask()` calls on every
  * query: the wiring graph (`readGraph`) and the ask sidecar (`readAskIndex`).
  * `graft ask` re-parses these from disk on every invocation; in a long-lived
  * process — the MCP server, or `graft ask` invoked repeatedly in one process —
  * that means re-parsing the same ~tens-of-MB JSON on every tool call.
  *
- * Keyed by `(path, mtimeMs, size)` from `statSync`, so a rebuild (`graft
- * build`) is picked up on the very next call with no polling and no TTL: the
- * stat is cheap relative to the parse it guards, and a changed mtime or size
- * invalidates the entry. A missing file returns null and is never cached — the
- * next call re-stats, so a file created after a prior miss is picked up
- * immediately (no negative caching).
+ * Keyed by `(path, dev, ino, ctimeMs, mtimeMs, size)` from `statSync`.
+ * Device/inode detect an atomic replacement even when its mtime and size are
+ * preserved; ctime, mtime and size detect observable in-place changes. A
+ * missing file returns null and drops any prior entry, so a file created after
+ * a miss is picked up on the next call (no negative caching).
  *
- * **Cache invalidation assumption:** This strategy assumes filesystem mtime
- * resolution is finer than build cadence. This is safe because `graft build`
- * rewrites the entire output file atomically, so same-size rewrites within a
- * single mtime tick (which would serve stale data) are infeasible in practice.
- * On APFS (macOS) mtime is nanosecond-granular and a build takes milliseconds,
- * so invalidation is immediate and reliable.
+ * Stat metadata is not a content hash: an in-place rewrite whose entire
+ * observed signature remains unchanged can still look like a warm entry.
+ * Same-process rebuild callers therefore continue to invalidate explicitly
+ * rather than depending on filesystem timestamp resolution.
  *
  * Dependency-free by design: this module imports only `node:fs`, `./write.js`,
  * and `../ask/index-file.js`, so it can be imported from both `ask.ts` and
@@ -28,9 +25,15 @@ import { readGraph, wiringPath } from "./write.js";
 import { readAskIndex, askIndexPath, type AskIndex } from "../ask/index-file.js";
 import type { GraphV1 } from "./types.js";
 
-interface CacheEntry<T> {
+interface FileStamp {
+  dev: number;
+  ino: number;
+  ctimeMs: number;
   mtimeMs: number;
   size: number;
+}
+
+interface CacheEntry<T> extends FileStamp {
   value: T | null;
 }
 
@@ -47,10 +50,10 @@ export function __resetParseCounts(): void {
   __parseCount.askIndex = 0;
 }
 
-function statOf(path: string): { mtimeMs: number; size: number } | null {
+function statOf(path: string): FileStamp | null {
   try {
     const s = statSync(path);
-    return { mtimeMs: s.mtimeMs, size: s.size };
+    return { dev: s.dev, ino: s.ino, ctimeMs: s.ctimeMs, mtimeMs: s.mtimeMs, size: s.size };
   } catch {
     return null;
   }
@@ -66,22 +69,29 @@ function loadCached<T>(
   if (!st) {
     // Missing file: don't negatively cache, and drop any stale entry so a
     // subsequently-created file at the same path is re-parsed, not served
-    // from a cache keyed to the old (mtime, size).
+    // from a cache keyed to the old file identity/metadata.
     cache.delete(path);
     return null;
   }
   const cached = cache.get(path);
-  if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) {
+  if (
+    cached &&
+    cached.dev === st.dev &&
+    cached.ino === st.ino &&
+    cached.ctimeMs === st.ctimeMs &&
+    cached.mtimeMs === st.mtimeMs &&
+    cached.size === st.size
+  ) {
     return cached.value;
   }
   onParse();
   const value = parse();
-  cache.set(path, { mtimeMs: st.mtimeMs, size: st.size, value });
+  cache.set(path, { ...st, value });
   return value;
 }
 
 /** Cached `readGraph(wiringPath(outDir))` — same null-on-missing/unparseable
- * semantics, re-reads only when the wiring file's `(mtimeMs, size)` changed.
+ * semantics, re-reads only when the wiring file's identity/metadata changed.
  * Returns a shared cached reference; callers must not mutate the returned graph. */
 export function loadGraphCached(outDir: string): GraphV1 | null {
   const path = wiringPath(outDir);
@@ -102,12 +112,10 @@ export function loadAskIndexCached(outDir: string): AskIndex | null {
 /**
  * Drop the cached graph + sidecar for `outDir`, forcing the next load to re-read.
  *
- * The `(mtimeMs, size)` key above is a good invalidator for a build that happened
- * in *another* process, but not for one this process just performed: the
- * pre-query auto-refresh (`refresh.ts`) rewrites the graph and then immediately
- * queries it, and on a filesystem with coarse mtime resolution a same-tick rewrite
- * of the same size would be served from the stale entry. Callers that rebuild must
- * therefore invalidate explicitly rather than trust the clock.
+ * The file identity/metadata key detects external atomic replacements, but
+ * cannot guarantee detection of an in-place rewrite with an unchanged stat
+ * signature. The pre-query auto-refresh (`refresh.ts`) rebuilds and immediately
+ * queries the graph, so callers that rebuild must still invalidate explicitly.
  */
 export function invalidateGraphCaches(outDir: string): void {
   graphCache.delete(wiringPath(outDir));

@@ -14,7 +14,7 @@ export function homeFolderRefusal(dir: string, home: string = homedir()): string
 
 /** Whether `dir` is inside a git work tree, so there is something to commit learnings to. */
 export function isGitWorkTree(dir: string): boolean {
-  const r = spawnSync("git", ["rev-parse", "--is-inside-work-tree"], { cwd: dir, encoding: "utf8" });
+  const r = spawnSync("git", ["rev-parse", "--is-inside-work-tree"], { cwd: dir, encoding: "utf8", windowsHide: true });
   return r.status === 0 && r.stdout.trim() === "true";
 }
 

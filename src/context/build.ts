@@ -25,7 +25,7 @@ import { readFollowNestedRepos, readFollowSubmodules, readIncludeDirs } from "..
 import type { Summarizer } from "../ai/summarize.js";
 import { LlmFailureGate } from "../ai/failure.js";
 import type { FileSummary, SynthNode, Synthesizer } from "../ai/synthesize.js";
-import { planSynthesis, type SynthesisBatch } from "./batches.js";
+import { planSynthesis, BATCH_CHAR_BUDGET, MAX_BATCH_CHAR_BUDGET, type SynthesisBatch } from "./batches.js";
 import {
   CACHE_DIR,
   MANIFEST_VERSION,
@@ -83,6 +83,19 @@ export interface BuildOptions {
   /** Synthesis batches synthesized in parallel during phase 2. Default
    * {@link DEFAULT_SYNTH_CONCURRENCY}. Raised via `graft build --synth-concurrency`. */
   synthConcurrency?: number;
+  /** Char budget of summary text one synthesis call may carry. Default
+   * {@link BATCH_CHAR_BUDGET}. Thrown out of range — below 1, or not a finite
+   * number — the same values the CLI rejects in `--synth-batch-chars`: a
+   * degenerate budget plans one synthesis call per file. Clamped down to
+   * {@link MAX_BATCH_CHAR_BUDGET}: the synthesizer truncates a call's input past
+   * that, so a larger budget only loses text. Lowered via `graft build
+   * --synth-batch-chars` to trade fewer larger calls for more, smaller, parallel
+   * ones. */
+  synthBatchChars?: number;
+  /** Model id the synthesis calls run under, folded into every batch's cache key so
+   *  a different model never serves another's nodes. Defaults to {@link model},
+   *  which is what synthesis uses when no separate model is configured. */
+  synthModel?: string;
   onProgress?: (info: BuildProgress) => void;
 }
 
@@ -137,7 +150,11 @@ export function listContextFiles(
 /** The gitignored LLM-call cache: per-file summaries + per-batch synthesis. */
 interface BuildCache {
   summaries: Record<string, { hash: string; summary: string }>;
-  synth: Record<string, SynthNode[]>;
+  /** Synthesis results, keyed by the char budget the plan was cut under (as
+   *  `budget-<n>`), then by batch key. One map per budget: a budget change
+   *  re-cuts every batch, and the maps coexist so a `--synth-batch-chars` toggle
+   *  never discards the plan it toggles away from (see {@link retainSynthBudgets}). */
+  synth: Record<string, Record<string, SynthNode[]>>;
 }
 
 interface FileWork {
@@ -165,6 +182,15 @@ interface BatchOutcome {
 }
 
 export async function buildContext(dir: string, opts: BuildOptions): Promise<BuildResult> {
+  // Rejected raw, exactly as the CLI rejects its `--synth-batch-chars` flag, and
+  // before the walk so a refused build costs nothing. Not clamped up: the floor a
+  // clamp would land on (1) is itself the degenerate plan — a 1-char budget is one
+  // synthesis call per file, the call storm the batch pass exists to prevent — and
+  // clamping to the default would silently build under a budget nobody asked for.
+  // The ceiling below, by contrast, is a physical limit of one call, and is clamped.
+  if (opts.synthBatchChars !== undefined && (!Number.isFinite(opts.synthBatchChars) || opts.synthBatchChars < 1)) {
+    throw new Error(`synthBatchChars must be a positive number, got ${opts.synthBatchChars}`);
+  }
   const root = resolve(dir);
   const outDir = contextDirFor(root, opts.contextDir);
   const exts = opts.extensions ?? CODE_EXTENSIONS;
@@ -262,7 +288,32 @@ export async function buildContext(dir: string, opts: BuildOptions): Promise<Bui
     .filter((w): w is FileWork & { summary: string } => Boolean(w.summary))
     .map((w) => ({ path: w.rel, summary: w.summary }))
     .sort((a, b) => a.path.localeCompare(b.path));
-  const batches = planSynthesis(summarized, hashByPath);
+  // Folded into every batch's cache key only when synthesis rides a model of its
+  // own. Equal labels mean the build model is in charge — exactly the state every
+  // cache written before the option was configured under — so those keys must
+  // stay valid (see batchKey): a graph that already paid for its synthesis must
+  // not re-pay it on the first build after an upgrade.
+  const synthKeyModel = opts.synthModel !== undefined && opts.synthModel !== opts.model ? opts.synthModel : undefined;
+  // A budget past the synthesizer's own input limit plans batches whose tails
+  // are truncated away while the cache records them complete — the worst kind of
+  // cache entry — so the requested budget is clamped, and loudly, rather than
+  // honored into silent data loss.
+  const requestedBudget = opts.synthBatchChars ?? BATCH_CHAR_BUDGET;
+  const budget = Math.min(requestedBudget, MAX_BATCH_CHAR_BUDGET);
+  if (requestedBudget > MAX_BATCH_CHAR_BUDGET) {
+    console.error(
+      `⚠ --synth-batch-chars ${requestedBudget} is past what one synthesis call can take without truncating — clamped to ${MAX_BATCH_CHAR_BUDGET}`,
+    );
+  }
+  // Prefixed so the map's key is never an integer-like string: JS objects order
+  // those ascending by VALUE whatever the insertion order, which would silently
+  // turn {@link retainSynthBudgets}'s most-recently-used bookkeeping into
+  // "smallest budget survives".
+  const budgetKey = `budget-${budget}`;
+  // This build's plan reads and writes under its own budget's map, so a batch is
+  // only ever served from — or recorded into — the plan it was actually cut for.
+  const budgetPlan = (cache.synth[budgetKey] ??= {});
+  const batches = planSynthesis(summarized, hashByPath, budget, synthKeyModel);
   result.batches = batches.length;
 
   /**
@@ -271,7 +322,7 @@ export async function buildContext(dir: string, opts: BuildOptions): Promise<Bui
    * is skipped.
    */
   async function synthesizeBatch(batch: SynthesisBatch, b: number): Promise<BatchOutcome> {
-    let nodes = cache.synth[batch.key];
+    let nodes = budgetPlan[batch.key];
     // An empty array is a miss, not a hit: caching [] made a silent empty
     // synthesis permanent, the same trap #177 closed for the meaning pass (#129).
     if (Array.isArray(nodes) && nodes.length > 0) return { nodes, cached: true, state: "ok" };
@@ -293,8 +344,8 @@ export async function buildContext(dir: string, opts: BuildOptions): Promise<Bui
       gate.record(message);
       return { nodes: [], cached: false, state: "failed" };
     }
-    if (nodes.length > 0) cache.synth[batch.key] = nodes;
-    else delete cache.synth[batch.key];
+    if (nodes.length > 0) budgetPlan[batch.key] = nodes;
+    else delete budgetPlan[batch.key];
     gate.succeeded();
     return { nodes, cached: false, state: "ok" };
   }
@@ -336,14 +387,19 @@ export async function buildContext(dir: string, opts: BuildOptions): Promise<Bui
   result.skippedFiles = gate.skipped;
   result.fatal = gate.fatal;
 
-  // Drop cache entries for batches we no longer produce, so it can't grow forever.
-  // Skip empty arrays so a failed batch is retried on the next --deep, not frozen.
-  cache.synth = Object.fromEntries(
+  // Drop THIS budget's cache entries for batches we no longer produce, so the
+  // budget's plan can't grow forever. Skip empty arrays so a failed batch is
+  // retried on the next --deep, not frozen. Entries under OTHER budgets are not
+  // touched here: they are plans a `--synth-batch-chars` toggle can return to,
+  // and pruning them is what made every toggle re-pay the whole graph in calls —
+  // their total is bounded instead, by {@link retainSynthBudgets}.
+  cache.synth[budgetKey] = Object.fromEntries(
     batches.flatMap(({ key }) => {
-      const v = cache.synth[key];
+      const v = budgetPlan[key];
       return v && v.length > 0 ? [[key, v] as [string, SynthNode[]]] : [];
     }),
   );
+  retainSynthBudgets(cache.synth, budgetKey);
   saveCache(outDir, cache);
 
   // Phase 3: merge synth nodes by slug, building a name→slug resolution table.
@@ -467,12 +523,58 @@ function loadCache(outDir: string): BuildCache {
   if (existsSync(path)) {
     try {
       const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<BuildCache>;
-      return { summaries: parsed.summaries ?? {}, synth: parsed.synth ?? {} };
+      return { summaries: parsed.summaries ?? {}, synth: synthByBudget(parsed.synth) };
     } catch {
       /* fall through to empty */
     }
   }
   return { summaries: {}, synth: {} };
+}
+
+/**
+ * Caches written before `--synth-batch-chars` kept one flat key→nodes map. It was
+ * cut at the default budget — the option did not exist to cut it any other way —
+ * so it loads as exactly that budget's map and every entry stays a hit. Nested
+ * maps are keyed `budget-<n>` (never bare `<n>`: an integer-like key would be
+ * ordered by value, breaking the retained-budget LRU).
+ */
+function synthByBudget(synth: unknown): Record<string, Record<string, SynthNode[]>> {
+  if (!synth || typeof synth !== "object") return {};
+  const byBudget: Record<string, Record<string, SynthNode[]>> = {};
+  for (const [key, val] of Object.entries(synth as Record<string, unknown>)) {
+    if (Array.isArray(val)) {
+      const flat = (byBudget[`budget-${BATCH_CHAR_BUDGET}`] ??= {});
+      flat[key] = val as SynthNode[];
+    } else if (val && typeof val === "object") {
+      const map: Record<string, SynthNode[]> = {};
+      for (const [k, v] of Object.entries(val as Record<string, unknown>)) {
+        if (Array.isArray(v)) map[k] = v as SynthNode[];
+      }
+      byBudget[key] = map;
+    }
+  }
+  return byBudget;
+}
+
+/**
+ * How many char budgets' synthesis plans the cache retains at once: the build's
+ * own budget plus the most recently used others. Toggling between two budgets
+ * pays for each plan once; the cap keeps a budget tried once and abandoned from
+ * leaving its plan behind forever.
+ */
+export const RETAINED_SYNTH_BUDGETS = 3;
+
+/** Touch `budget`'s plan as most recently used, then drop the oldest plans past
+ *  the cap. Key order is insertion order, so the dropped entries are the ones
+ *  untouched the longest. */
+function retainSynthBudgets(synth: Record<string, Record<string, SynthNode[]>>, budget: string): void {
+  const plan = synth[budget];
+  if (!plan) return;
+  delete synth[budget];
+  synth[budget] = plan;
+  while (Object.keys(synth).length > RETAINED_SYNTH_BUDGETS) {
+    delete synth[Object.keys(synth)[0]];
+  }
 }
 
 function saveCache(outDir: string, cache: BuildCache): void {

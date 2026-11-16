@@ -146,7 +146,7 @@ test('the workspace link reaches the person when a hook used trail: once a sessi
   writeNote(dir, { title: 'Retries trip the rate limit', body: '## Decided\nThree retries.', author: 'Priya', date: '2026-10-07', touches: [] });
   const noWait = () => {};
   const shown = hookNotice(dir, "Claude just got your team's learnings for this", { session: 'h1', startWait: noWait });
-  assert.match(shown ?? '', /^trail · Claude just got your team's learnings for this · Share your learnings with your team\? http:\/\/trail\.test\/connect\?state=/);
+  assert.match(shown ?? '', /^trail · Claude just got your team's learnings for this · Share your learnings with your team: sign in to Trail at http:\/\/trail\.test\/connect\?state=/);
   assert.equal(hookNotice(dir, 'again', { session: 'h1', startWait: noWait }), null, 'once a session');
   assert.match(hookNotice(dir, 'next', { session: 'h2', startWait: noWait }) ?? '', /^trail · next · /);
   assert.equal(linkedNews(), null, 'no news before connecting');

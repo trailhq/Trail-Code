@@ -135,6 +135,22 @@ test('an existing settings.json keeps every key graft does not own', () => {
   // repo would silently outrank the user's own.
   assert.equal(s.statusLine, undefined, 'no global statusline');
   assert.equal(s.permissions, undefined, 'no global allowlist');
+  assert.equal(s.footerLinksRegexes, undefined, 'no invalid graft footer');
+});
+
+test('global install cleans legacy graft footers and keeps foreign entries', () => {
+  const home = tmpRepo('cgfooter');
+  const foreign = { type: 'regex', pattern: 'docs/(.*)', url: 'https://example.test/docs/$1' };
+  mkdirSync(join(home, '.claude'), { recursive: true });
+  writeFileSync(settingsOf(home), JSON.stringify({
+    footerLinksRegexes: ['graft/[\\w./-]+\\.md', 'docs/.*', foreign],
+  }, null, 2));
+
+  installClaudeGlobal(home);
+  assert.deepEqual(readJson(settingsOf(home)).footerLinksRegexes, ['docs/.*', foreign]);
+  const again = installClaudeGlobal(home);
+  assert.ok(again.every((w) => w.action === 'unchanged'), `idempotent cleanup, got ${JSON.stringify(again)}`);
+  assert.deepEqual(readJson(settingsOf(home)).footerLinksRegexes, ['docs/.*', foreign]);
 });
 
 test('an existing user-scope MCP server survives, and re-running converges', () => {
