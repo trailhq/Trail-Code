@@ -14,9 +14,9 @@ import { readGateFile } from "../src/trace/gate-file.js";
 import { updateSkillState } from "../src/skills/state.js";
 import { releaseSkill, shipSkill, WEBSHOP } from "./skills-recall-fixtures.js";
 import { slowness } from "./machine-speed.js";
-import { box, CWD, gateFor, grow, payload, ranIn, save, SID, startPayload, stateOf, typedIn, withNow, type Box } from "./skills-prompt-fixtures.js";
+import { box, CWD, deadlineClock, gateFor, grow, payload, ranIn, save, SID, startPayload, stateOf, typedIn, withNow, type Box } from "./skills-prompt-fixtures.js";
 
-const deps = (b: Box, extra: Partial<PromptDeps> = {}): Partial<PromptDeps> => ({ track: () => {}, gate: gateFor(b), ...extra });
+const deps = (b: Box, extra: Partial<PromptDeps> = {}): Partial<PromptDeps> => ({ track: () => {}, gate: gateFor(b), clock: deadlineClock, ...extra });
 const run = (b: Box, prompt: string, extra: Record<string, unknown> = {}, d: Partial<PromptDeps> = deps(b)) => promptSkills(payload(b, prompt, extra), CWD, b.env, d);
 const skillFile = (b: Box, name: string) => join(b.env.TRAIL_HOME!, "skills", name, "SKILL.md");
 const webshopRelease = () => releaseSkill({ applies: WEBSHOP, trail: "s-7f3a2c" });

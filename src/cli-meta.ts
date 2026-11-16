@@ -100,6 +100,7 @@ function globalRoot(): string | null {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
       shell: process.platform === "win32",
+      windowsHide: true,
     }).trim();
     return root || null;
   } catch {
@@ -228,7 +229,7 @@ export function noSudoFix(path: string, pkgs: string[], shell: string = process.
 
 /** `npm <args>` with npm's stderr kept, to read its error code; stdout still shows. */
 function npmRun(args: string[]): { ok: boolean; stderr: string; error?: string } {
-  const res = spawnSync("npm", args, { stdio: ["inherit", "inherit", "pipe"], encoding: "utf8" });
+  const res = spawnSync("npm", args, { stdio: ["inherit", "inherit", "pipe"], encoding: "utf8", windowsHide: true });
   return { ok: !res.error && res.status === 0, stderr: res.stderr ?? "", error: res.error?.message };
 }
 

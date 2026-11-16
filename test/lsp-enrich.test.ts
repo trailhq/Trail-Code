@@ -6,16 +6,16 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { pickServer, LSP_SERVERS } from "../src/graph/lsp/registry.js";
+import { pickServers, LSP_SERVERS } from "../src/graph/lsp/registry.js";
 import { enrichWithLsp } from "../src/graph/lsp/enrich.js";
 import type { GraphV1 } from "../src/graph/types.js";
 
-test("pickServer: no languages present → no server", () => {
-  assert.equal(pickServer(new Set()), null);
+test("pickServers: no languages present → no servers", () => {
+  assert.deepEqual(pickServers(new Set()), []);
 });
 
-test("pickServer: a language no registered server covers → null", () => {
-  assert.equal(pickServer(new Set(["cobol", "fortran"])), null);
+test("pickServers: languages no registered server covers → no servers", () => {
+  assert.deepEqual(pickServers(new Set(["cobol", "fortran"])), []);
 });
 
 test("registry rows are well-formed (languages, command, languageId)", () => {
@@ -38,7 +38,7 @@ test("enrichWithLsp is a no-op when no server matches the repo's languages", asy
   };
   const before = graph.edges.length;
   const r = await enrichWithLsp(graph, "/tmp/does-not-matter");
-  assert.equal(r.server, null, "no server selected for an unsupported language");
+  assert.deepEqual(r.servers, [], "no server selected for an unsupported language");
   assert.equal(r.added, 0);
   assert.equal(graph.edges.length, before, "graph edges untouched");
 });

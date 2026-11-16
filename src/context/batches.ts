@@ -2,9 +2,9 @@
  * How the concept pass cuts its synthesis batches, and what each one is cached under.
  *
  * Every batch is one LLM call, and its result is cached under a key derived from the
- * files the call saw. So a boundary that moves is a re-synthesis — a metered call the
- * user pays for again — which makes the cut rule, not the call itself, the thing that
- * decides what a `--deep` build costs after an edit.
+ * files the call saw and the model the call runs under. So a boundary that moves is a
+ * re-synthesis — a metered call the user pays for again — which makes the cut rule,
+ * not the call itself, the thing that decides what a `--deep` build costs after an edit.
  *
  * The cut is a function of the file PATHS: a batch ends at the first file whose own
  * path hash matches a mask, never at a size. Cut by running size, one summary growing
@@ -13,12 +13,30 @@
  * the graph. Sizes are consulted in exactly two places, neither of which is a
  * boundary: the stride (how many files to expect per batch) and a batch that
  * overshoots the budget anyway, which is cut inside itself.
+ *
+ * One honest cost, stated here where the invariant lives: that locality holds at
+ * the budget a plan was cut under, and only while the edited batch still fits it.
+ * A `--synth-batch-chars` budget smaller than the batch an edit lands in
+ * overflows it, and the overflow is cut greedily by size INSIDE the batch — which
+ * moves the next batch's start too, so one edit moves two boundaries instead of
+ * one and two batches re-synthesize. The default budget is where edit-locality
+ * is pinned (the batching tests assert it there); a lowered budget trades it for
+ * more, smaller, parallel calls.
  */
 import { contentHash } from "../util/id.js";
+import { MAX_INPUT_CHARS } from "../ai/synthesize.js";
 import type { FileSummary } from "../ai/synthesize.js";
 
-/** Char budget of summary text per synthesis call (keeps each call in-context). */
+/** Char budget of summary text per synthesis call (keeps each call in-context).
+ *  `graft build --synth-batch-chars` overrides it per build. */
 export const BATCH_CHAR_BUDGET = 48_000;
+
+/** Ceiling on that budget: the synthesizer truncates a call's input at
+ *  {@link MAX_INPUT_CHARS}, so a batch planned past it would be recorded
+ *  complete while the call silently dropped its tail. The margin covers the
+ *  `## path` headers and join newlines the per-file +8 under-counts, so a batch
+ *  at the ceiling is still delivered whole. */
+export const MAX_BATCH_CHAR_BUDGET = MAX_INPUT_CHARS - 1_000;
 
 /**
  * Smallest share of the stride a batch may be cut at: a mask hit sooner than this is
@@ -39,12 +57,28 @@ export interface SynthesisBatch {
  * The batches phase 2 calls, in the order the merge consumes them. `summaries` is
  * expected path-sorted, which is what makes the plan reproducible.
  *
+ * `budget` is the char budget each call's summary text stays under — the same rule
+ * the default flows through, so a caller that trades down the budget gets more,
+ * smaller calls, not a different cut rule.
+ *
+ * `model` is the model id the synthesis calls run under. It is folded into every
+ * cache key, but ONLY when synthesis rides a model of its own: left undefined —
+ * the build model is in charge — the key is exactly the format caches were
+ * written with before the option existed, and those were synthesized by the
+ * build model too, so an upgrade must keep them valid rather than re-pay every
+ * batch for a line that adds no information (see {@link batchKey}).
+ *
  * Exported together with their cache keys because those keys are the phase's whole
  * cost model: a boundary that moves is a re-synthesis. How these keys survive an edit
  * is what the batching tests pin down.
  */
-export function planSynthesis(summaries: FileSummary[], hashByPath: ReadonlyMap<string, string>): SynthesisBatch[] {
-  return batchSummaries(summaries).map((files) => ({ files, key: batchKey(files, hashByPath) }));
+export function planSynthesis(
+  summaries: FileSummary[],
+  hashByPath: ReadonlyMap<string, string>,
+  budget: number = BATCH_CHAR_BUDGET,
+  model?: string,
+): SynthesisBatch[] {
+  return batchSummaries(summaries, budget).map((files) => ({ files, key: batchKey(files, hashByPath, model) }));
 }
 
 /**
@@ -134,12 +168,19 @@ function batchBySize(files: FileSummary[], budget: number): FileSummary[][] {
   return batches;
 }
 
-/** Stable key for a batch: its files and their content hashes. */
-function batchKey(batch: FileSummary[], hashByPath: ReadonlyMap<string, string>): string {
-  return contentHash(
-    batch
-      .map((f) => `${f.path}:${hashByPath.get(f.path) ?? ""}`)
-      .sort()
-      .join("\n"),
-  );
+/**
+ * Stable key for a batch: its files and their content hashes — plus the model the
+ * synthesis call runs under, but only when one was named.
+ *
+ * The model line is a compatibility guard, not just bookkeeping. Caches written
+ * before the synthesis model existed key these batches WITHOUT it, and when no
+ * separate model is configured the build model is in charge either way, so the
+ * old keys must keep hitting — folding the model in unconditionally would
+ * re-synthesize every existing graph on upgrade for no new information. A key
+ * with the line can never collide with one without it, so a build that names a
+ * synthesis model (a different result) still never serves the old model's nodes.
+ */
+function batchKey(batch: FileSummary[], hashByPath: ReadonlyMap<string, string>, model: string | undefined): string {
+  const lines = batch.map((f) => `${f.path}:${hashByPath.get(f.path) ?? ""}`).sort();
+  return contentHash([...(model === undefined ? [] : [`model\t${model}`]), ...lines].join("\n"));
 }

@@ -86,3 +86,10 @@ export function stateOf(b: Box): SkillSessionState {
 }
 
 export const withNow = (b: Box, iso: string): NodeJS.ProcessEnv => ({ ...b.env, TRAIL_TEST_NOW: iso });
+
+/**
+ * The prompt part's 400 ms deadline clock for tests about what a block says, not how fast it comes. A shared
+ * Windows runner is slow enough to run out of the 400 ms and keep no block, so there this clock runs 4× slower,
+ * the way #700 gave Windows more time. Elsewhere, and under TRAIL_PERF=1, it is the wall clock.
+ */
+export const deadlineClock = (): number => (process.platform === "win32" && process.env.TRAIL_PERF !== "1" ? Date.now() / 4 : Date.now());

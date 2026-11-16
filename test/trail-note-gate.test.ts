@@ -81,7 +81,8 @@ function run(args: string[], home: string, stdin: string) {
   const r = spawnSync(process.execPath, ["--import", "tsx", join(process.cwd(), "src", "bin", "trail.ts"), ...args], {
     input: stdin,
     encoding: "utf8",
-    env: { ...process.env, ...homeEnv(home), DO_NOT_TRACK: "1", CLAUDECODE: undefined, TRAIL_INVOKED_AS: undefined, TRAIL_HOME: undefined },
+    // No Claude session of the person running the tests: in one, a second save adds to the first (session-learning.ts).
+    env: { ...process.env, ...homeEnv(home), DO_NOT_TRACK: "1", CLAUDECODE: undefined, TRAIL_INVOKED_AS: undefined, TRAIL_HOME: undefined, CLAUDE_CODE_SESSION_ID: undefined },
   });
   return { status: r.status, out: r.stdout, err: r.stderr };
 }

@@ -268,7 +268,7 @@ export function repoWordsOf(checkout: string, programs: Iterable<string> = []): 
       for (const m of (readPlain(join(checkout, file), REPO_FILE_MAX) ?? '').matchAll(/^([A-Za-z0-9][\w.-]*)\s*:(?!=)/gm)) add(m[1]);
     } catch { /* none */ }
   }
-  const r = spawnSync('git', ['-C', checkout, 'for-each-ref', '--format=%(refname:short)', '--count=200', 'refs/heads'], { encoding: 'utf8', timeout: 5000 });
+  const r = spawnSync('git', ['-C', checkout, 'for-each-ref', '--format=%(refname:short)', '--count=200', 'refs/heads'], { encoding: 'utf8', timeout: 5000, windowsHide: true });
   if (r.status === 0) for (const b of r.stdout.split('\n')) add(b);
   // A program the sessions ran names the repo only when it is a script file of its own (`seed.sh`), never a program
   // every machine has (D102).

@@ -83,6 +83,54 @@ test("ensureFreshGraph picks up an uncommitted edit before the query sees the gr
   assert.match(refreshNote(r) ?? "", /^\[graft\] refreshed the graph \(1 file changed\)/);
 });
 
+/** Stands in for `graph/refresh-run.js`: logs what it was asked to rebuild, then succeeds or fails. */
+function refreshRunStub(d: string, fail: boolean): { log: string; restore: () => void } {
+  const stub = join(d, "refresh-run-stub.mjs");
+  const log = join(d, "refresh-runs.log");
+  writeFileSync(
+    stub,
+    `import { appendFileSync } from "node:fs";
+appendFileSync(${JSON.stringify(log)}, process.argv[2] + "\\n");
+if (${fail}) { process.stderr.write("first line\\nparse failed\\n"); process.exit(1); }
+`,
+  );
+  process.env.GRAFT_TEST_REFRESH_RUN = stub;
+  return { log, restore: () => { delete process.env.GRAFT_TEST_REFRESH_RUN; } };
+}
+
+test("a query's rebuild runs in a child process, so its memory leaves with it", async () => {
+  const d = repo();
+  await buildGraph(d);
+  writeFileSync(join(d, "src", "math.ts"), `${MATH}export const X = 1;\n`);
+  const stub = refreshRunStub(d, false);
+  try {
+    const r = await ensureFreshGraph(d);
+    assert.equal(r.refreshed, true);
+    const runs = readFileSync(stub.log, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    assert.deepEqual(runs, [{ dir: d }], "one rebuild, of this repo");
+    assert.equal(acquireLock(d), true, "the lock is released once the child is done");
+    releaseLock(d);
+  } finally {
+    stub.restore();
+  }
+});
+
+test("a rebuild child that fails leaves the query on the old graph, with its reason", async () => {
+  const d = repo();
+  await buildGraph(d);
+  writeFileSync(join(d, "src", "math.ts"), `${MATH}export const X = 1;\n`);
+  const stub = refreshRunStub(d, true);
+  try {
+    const r = await ensureFreshGraph(d);
+    assert.equal(r.refreshed, false);
+    assert.equal(r.note, "graph refresh skipped: parse failed");
+    assert.equal(acquireLock(d), true, "and the lock is released");
+    releaseLock(d);
+  } finally {
+    stub.restore();
+  }
+});
+
 test("ensureFreshGraph is a no-op on a clean tree", async () => {
   const d = repo();
   await buildGraph(d);

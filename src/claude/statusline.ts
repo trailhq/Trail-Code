@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { basename } from 'node:path';
 import { renderStatusline, renderSubagent } from './format.js';
 import { readStats, readSession, emptyStats, type Stats } from './state.js';
 import { readWiring, computeStats } from './stats.js';
@@ -34,5 +35,5 @@ export function main(): void {
   const stats = resolveStats(dir);
   const raw = input?.context_window?.used_percentage;
   const ctxPct = typeof raw === 'number' ? Math.round(raw) : null;
-  process.stdout.write(renderStatusline(stats, session, { ctxPct, notes: noteCount(dir) }).join('\n'));
+  process.stdout.write(renderStatusline(stats, session, { ctxPct, notes: noteCount(dir), folder: basename(dir) }).join('\n'));
 }

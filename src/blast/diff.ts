@@ -71,6 +71,7 @@ function git(root: string, args: string[]): string | null {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
     maxBuffer: 64 * 1024 * 1024,
+    windowsHide: true,
   });
   if (res.error || res.status !== 0 || typeof res.stdout !== "string") return null;
   return res.stdout;
@@ -131,6 +132,9 @@ function diffFiles(dir: string, range: string[]): ChangedFile[] | null {
     "--unified=0",
     "--no-color",
     "--no-ext-diff",
+    // applyHunks expects a/ and b/, regardless of the user's diff.* preferences.
+    "--src-prefix=a/",
+    "--dst-prefix=b/",
     "--find-renames",
     ...range,
     "--",
