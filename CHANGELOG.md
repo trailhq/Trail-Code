@@ -4,6 +4,24 @@
 
 ### Added
 
+- **Trail just for you.** `trail init` asks who trail is for. Enter keeps the
+  team setup that commits as before. "Just me" keeps trail's files out of git
+  for that clone and saves every learning in `~/.trail` (#750).
+- **Claude Desktop and Codex.** AGENTS.md gets a Learnings part, and hooks
+  report the host they ran in, so learnings work in both (#733).
+- **Stale learnings are flagged.** A learning whose `touches:` names code
+  that's gone is shown as "may be stale", with what's gone and how to replace
+  it. No model call (#731).
+- **`trail init --claude-memory <file>`** imports a Claude memory export.
+  It keeps only facts about code, never personal ones or secrets, and offers
+  them just for you (#732).
+- **One learning file per session.** A later `trail note` in the same session
+  and branch adds to that file; a new branch starts a new one (#748).
+- **`trail summary one-line`** turns each sources-diff block into one line
+  (#729).
+- **New languages:** Julia, Bash, GLSL and PowerShell in the breadth tier,
+  `.svelte` and `.astro` through their script blocks, Elixir calls through
+  `alias`, and Pi as a host (#379, #354, #358, #550, #444, #351, #776).
 - **Structural graph failures can now fail the build command with `--strict`**
   instead of printing a successful wiring banner. Partial graph artifacts remain
   available, workspace builds report failed children, and `--allow-partial`
@@ -21,6 +39,20 @@
 
 ### Fixed
 
+- **Your terminal title keeps the repo name.** Trail adds its status line
+  only when you don't already have one, and takes back the line an older
+  init wrote (#749, #756, #780).
+- **Share sync re-sends a session only when it grew**, instead of on every
+  touched timestamp (#828).
+- **More callers found.** TypeScript barrel re-exports, named imports,
+  interface-typed receivers and JSX components; Go package and interface
+  calls; Kotlin constructors; Python class receivers; PHP type usages
+  (#726, #335, #768, #764, #766, #687, #316, #339).
+- **Windows:** no more console windows flashing from child processes, and the
+  post-edit blast radius shows (#683, #769, #755).
+- The tokens-saved counter counts the learnings hooks hand over, so it keeps
+  moving in long sessions (#747). Telemetry events carry the time they were
+  sent, with the event's own time as `occurred_at` (#728).
 - Prevent telemetry helpers from repeatedly starting new copies when a sandbox
   blocks writes to the telemetry state. Internal flush commands skip startup
   upkeep, and background flushes require a saved timestamp before spawning.
