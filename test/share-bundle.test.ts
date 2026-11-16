@@ -97,7 +97,7 @@ test("bundlePreviewLines: what's sent, from which folders, what's removed, what 
   assert.match(out, /^ {2}· It goes to team\.trailhq\.com, without your name\.$/m);
   assert.match(out, /^ {2}· You get a code that deletes everything you sent\.$/m);
   assert.doesNotMatch(out, /Each new Claude Code session/, "keep-sending is promised only when it's on");
-  assert.match(lines.at(-1)!, /^Read every file first: ~\/\.trail\/share\/2026-11-05-1200[\\/]SUMMARY\.md$/, "the copy is the last line, so the send question comes right after it");
+  assert.match(lines.at(-1)!, /^Read every file first: ~[\\/]\.trail[\\/]share[\\/]2026-11-05-1200[\\/]SUMMARY\.md$/, "the copy is the last line, so the send question comes right after it");
 });
 
 test("parseLeaveOut and leaveOut: folder numbers drop those folders' files from the copy, and the summary says so", () => {
