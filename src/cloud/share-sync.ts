@@ -15,7 +15,7 @@ import { closeSync, existsSync, mkdirSync, openSync, rmSync, statSync, writeFile
 import { dirname, join } from "node:path";
 import { gzipSync } from "node:zlib";
 import { deleteHash, slug } from "./share-bundle.js";
-import { anonymize, bundleSession, MAX_GZ_BYTES, sessionCwd, sessionsSince } from "./share-session.js";
+import { anonymize, bundleSession, MAX_GZ_BYTES, sessionCwd, sessionsSince, type SessionFile } from "./share-session.js";
 import { collectSetup } from "./share-setup.js";
 import { QUIET_MS, readSyncState, syncDir, writeSyncState, type SyncState } from "./share-sync-state.js";
 import type { SharedSession } from "./workspace.js";
@@ -26,10 +26,50 @@ export { maybeShareSyncInBackground, readSyncState, syncDir, syncDue, writeSyncS
 const LOCK_STALE_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/** This laptop's sessions as far back as the first send reached, and since. */
+function sessionsInReach(s: SyncState, home: string, now: number): SessionFile[] {
+  const reach = Math.max(1, Math.ceil((now - s.since) / DAY_MS) + s.days);
+  return sessionsSince(reach, home, now);
+}
+
+/**
+ * New, or not the size it was when last sent. The size tells, not the
+ * last-written time: something on a laptop can move a transcript's time with
+ * nothing written to it (one reset hundreds of sessions to a week before, and
+ * every one went again, unchanged). A session sent before trail kept sizes
+ * still goes by its time.
+ */
+function grown(s: SyncState, f: SessionFile): boolean {
+  const size = s.sizes?.[f.id];
+  if (size !== undefined) return f.size !== size;
+  return (s.sessions[f.id] ?? 0) < f.mtime;
+}
+
+function due(s: SyncState, f: SessionFile, now: number): boolean {
+  return now - f.mtime >= QUIET_MS && grown(s, f);
+}
+
 /** The sessions that are new or have grown since they were last sent, and have gone quiet. */
 export function changedSessions(s: SyncState, home: string, now = Date.now()) {
-  const reach = Math.max(1, Math.ceil((now - s.since) / DAY_MS) + s.days);
-  return sessionsSince(reach, home, now).filter((f) => now - f.mtime >= QUIET_MS && (s.sessions[f.id] ?? 0) < f.mtime);
+  return sessionsInReach(s, home, now).filter((f) => due(s, f, now));
+}
+
+/**
+ * A session sent before trail kept sizes, whose time hasn't moved since: its
+ * size is written down now, without sending it, so a time that moves later
+ * can't send it again.
+ */
+function learnSizes(s: SyncState, found: SessionFile[]): void {
+  const sizes = (s.sizes ??= {});
+  for (const f of found) {
+    const at = s.sessions[f.id];
+    if (sizes[f.id] === undefined && at !== undefined && f.mtime <= at) sizes[f.id] = f.size;
+  }
+}
+
+function sentAs(s: SyncState, f: SessionFile): void {
+  s.sessions[f.id] = f.mtime;
+  (s.sizes ??= {})[f.id] = f.size;
 }
 
 type Send = (body: SharedSession) => Promise<{ id: string } | { error: string }>;
@@ -59,13 +99,15 @@ export async function runSync(opts: {
   const base = { bundle_id: s.bundleId, delete_hash: deleteHash(s.secret), trail_version: opts.trailVersion };
   try {
     const cwds = new Set<string>(s.dirs.filter((d) => existsSync(d)));
-    for (const f of changedSessions(s, opts.home, now)) {
+    const found = sessionsInReach(s, opts.home, now);
+    learnSizes(s, found);
+    for (const f of found.filter((f) => due(s, f, now))) {
       const cwd = sessionCwd(f);
       const folder = cwd ? anonymize(cwd, opts.who).text : (f.folder ?? "");
       if (cwd && existsSync(cwd)) cwds.add(cwd);
       const b = bundleSession(f, opts.who);
       if (s.excluded.includes(folder) || b.gz.length > MAX_GZ_BYTES) {
-        s.sessions[f.id] = f.mtime;
+        sentAs(s, f);
         skipped++;
         writeSyncState(s, opts.env);
         continue;
@@ -86,7 +128,7 @@ export async function runSync(opts: {
         transcript_gz: b.gz.toString("base64"),
       });
       if ("error" in r) return finish({ sent, skipped, error: r.error });
-      s.sessions[f.id] = f.mtime;
+      sentAs(s, f);
       sent++;
       writeSyncState(s, opts.env);
     }

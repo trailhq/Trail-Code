@@ -38,6 +38,8 @@ export interface BundleItem {
   redacted: number;
   /** Last written, ms. */
   mtime: number;
+  /** A session's file size on the laptop, before scrubbing: how keep-sending tells it grew. */
+  size?: number;
 }
 
 export interface Manifest {
@@ -145,6 +147,7 @@ export function prepareBundle(opts: {
         gzBytes: b.gz.length,
         redacted: Object.values(b.redacted).reduce((n, c) => n + c, 0),
         mtime: s.mtime,
+        size: s.size,
       });
     }
     opts.onProgress?.(i + 1, sessions.length);

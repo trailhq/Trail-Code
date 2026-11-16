@@ -482,6 +482,11 @@ test("trail share-session keeps sending by default: says so, --yes turns it on, 
     const oldSwitch = await spawnAsync(repo, home, ["--sync"]);
     assert.match(oldSwitch.stdout, /^Sending to the Trail team since /m, "--sync, the old switch, still works");
 
+    utimesSync(transcript, ago(20), ago(20));
+    const moved = await spawnTrail(repo, home, ["_share-sync"]);
+    assert.equal(moved.status, 0, moved.stderr);
+    assert.equal(trail.got.filter((g) => g.method === "POST").length, 2, "a session whose time moved with nothing written doesn't go again");
+
     appendFileSync(transcript, JSON.stringify({ type: "user", message: { role: "user", content: "and one more thing" } }) + "\n");
     utimesSync(transcript, ago(15), ago(15));
     const ran = await spawnTrail(repo, home, ["_share-sync"]);

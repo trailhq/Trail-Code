@@ -2862,6 +2862,7 @@ async function sendCopy(cloud: Cloud, dir: string, m: Manifest, sent: SentState,
       excluded: m.dropped,
       dirs: m.dirs ?? [],
       sessions: Object.fromEntries(m.items.filter((it) => it.kind === "session").map((it) => [it.id, it.mtime])),
+      sizes: Object.fromEntries(m.items.flatMap((it): Array<[string, number]> => (it.kind === "session" && it.size !== undefined ? [[it.id, it.size]] : []))),
       setupHash: createHash("sha256").update(setup).digest("hex"),
       lastRunAt: Date.now(),
     });
