@@ -37,7 +37,7 @@ Every event carries only these common properties:
 | `arch` | `arm64` / `x64` | CPU architecture |
 | `node_major` | `20` | Major version only |
 | `ci` | `false` | Always false: CI never sends (see below) |
-| `agent_host` | `claude-code` / `cursor` / `copilot` / `mcp` / `cli` | Which surface Trail-code ran under |
+| `agent_host` | `claude-code` / `claude-desktop` / `codex` / `cursor` / `copilot` / `mcp` / `cli` | Which surface Trail-code ran under (`claude-desktop` is the Claude desktop app's Code tab) |
 | `cli_name` | `trail` / `graft` | Which of the two names started the process (graft is trail's old name) |
 | `repo_id` | a random UUID | See "How it stays anonymous" |
 
@@ -47,16 +47,16 @@ The events:
 | --- | --- | --- |
 | `install` | `global` (`true` for `npm i -g`, `false` for a project dependency) | The npm postinstall hook runs, once per machine per version |
 | `first_run` | none | Once, the first time a `trail` or `graft` command runs on a machine |
-| `init_completed` | `agents` (the ids you selected, sorted), `consent` | `trail init` finishes |
-| `build_completed` | `files_bucket`, `langs`, `mode` (`fast`/`deep`), `duration_bucket`, `incremental` | A build succeeds |
+| `init_completed` | `agents` (the ids you selected, sorted), `consent`, `statusline` (`trail`/`theirs`/`off`: whose status line Claude Code shows in the repo, trail's or the one you already had), `scope` (`just_me`/`team`, or `unasked` when nobody chose: who trail is for in that repo) | `trail init` finishes |
+| `build_completed` | `files_bucket`, `langs`, `mode` (`fast`/`deep`), `duration_bucket`, `incremental`, `overlap` (another build of the same repo was already running) | A build succeeds |
 | `build_failed` | `stage`, `code`, both fixed enums | A build throws |
-| `query` | `command`, `surface` (`cli`/`mcp`/`hook`), `hit` (`ask` only), `notes` (`0`/`1`/`2`, how many learnings `ask` showed; only in a repo that keeps learnings) | Any query command |
+| `query` | `command`, `surface` (`cli`/`mcp`/`hook`), `hit` (`ask` only), `notes` (`0`/`1`/`2`, how many learnings `ask` showed; only in a repo that keeps learnings), `stale` (`0`/`1`/`2`, how many of those may be stale: a file or symbol the learning lists under `touches:` is gone from the code) | Any query command |
 | `brain_signup_opened` | `mode` (`terminal`/`agent`/`nudge`), and for a nudge `command` (`ask`/`note`/`check`) and `wording` (`share`/`learned`) | A trail command hands the agent a sign-in link to pass on (at most once a session) |
 | `brain_signup_settled` | `outcome` (`linked`/`timed_out`/`bad_callback`/`stopped`, and for an agent-run push `agent_link_opened`/`still_waiting`/`expired`/`unsupported`), `mode` (`terminal`/`agent`/`nudge`), `duration_bucket` | That handoff ends, one way or the other: for an agent-run push, each of its runs; for a nudge, each background wait for the sign-in (`linked`/`timed_out`/`expired`/`unsupported`) |
-| `note_saved` | `has_cost` (`true`/`false`), `touches_bucket` (how many files the learning is about, bucketed), `scope` (`repo`/`personal`) | `trail note` saves a learning, in the repo's `.trail/` or on this machine. The title, the text and the paths are never sent |
+| `note_saved` | `has_cost` (`true`/`false`), `touches_bucket` (how many files the learning is about, bucketed), `scope` (`repo`/`personal`), `into` (`new`, or `session` when it went into the learning this session already saved) | `trail note` saves a learning, in the repo's `.trail/` or on this machine. The title, the text and the paths are never sent |
 | `repo_seen` | `trail_committed` (`true`/`false`), `learnings_bucket`, `workspace` (`true`/`false`) | Once a day per repo, when a Claude Code session starts in a repo trail runs in. The repo's name and paths are never sent; it's identified only by the random `repo_id` every event carries |
 | `learnings_committed` | `added_bucket`, `total_bucket` (learnings committed on `HEAD`, bucketed), `first_look` (`true`/`false`) | A Claude Code session starts in a repo trail runs in and more learnings are committed there than at the last session. Their names and text are never sent |
-| `cold_start` | `source` (`sessions`/`reviews`/`memory`/`keep`), `outcome` (`found`/`none_found`/`none_anchored`/`no_sessions`/`no_reviews`/`no_gh`/`no_claude`/`not_signed_in`/`not_installed`/`timed_out`/`refused`/`failed`/`cancelled`/`kept`), `sessions_bucket` (sessions) or `reviews_bucket` (merged PRs with a reviewer's comment; reviews), `offered_bucket`, `filtered_bucket` (review findings left out for naming no code), `picked_bucket` (how many it saved: the ones the person kept), `team_offered_bucket`, `team_picked_bucket` (of those, the ones for `.trail/learnings/`; memory), `duration_bucket`, `model` | `trail init` reads your past Claude Code sessions in the repo, once, for things you told Claude on more than one day, and the review comments on the repo's last 50 merged PRs, once, for things reviewers flagged on more than one PR, and the notes Claude Code keeps about the repo on this machine (`source: memory`, no model), and offers them to you as learnings. It saves only the ones you keep, on its list or later with `trail keep` (`source: keep`). The reviews are fetched with your own `gh` (`no_gh` when it isn't installed or signed in) and the reading is done by your own Claude Code; your messages, the comments and what it found are never sent to trail |
+| `cold_start` | `source` (`sessions`/`reviews`/`memory`/`keep`), `outcome` (`found`/`none_found`/`none_anchored`/`no_sessions`/`no_reviews`/`no_gh`/`no_claude`/`not_signed_in`/`not_installed`/`timed_out`/`refused`/`failed`/`cancelled`/`kept`), `sessions_bucket` (sessions) or `reviews_bucket` (merged PRs with a reviewer's comment; reviews), `offered_bucket`, `filtered_bucket` (review findings left out for naming no code), `picked_bucket` (how many it saved: the ones the person kept), `team_offered_bucket`, `team_picked_bucket` (of those, the ones for `.trail/learnings/`; memory), `offered_skills`, `offered_always_follow`, `offered_learnings` (what the list showed, by kind: `0`/`1`/`2`/`3`/`4`/`5`/`6+`), `kept_skills`, `kept_always_follow`, `kept_learnings` (of those, the ones you kept; `outcome: kept`), `duration_bucket`, `model` | `trail init` reads your past Claude Code sessions in the repo, once, for things you told Claude on more than one day, and the review comments on the repo's last 50 merged PRs, once, for things reviewers flagged on more than one PR, and the notes Claude Code keeps about the repo on this machine (`source: memory`, no model), and offers them to you as learnings. It saves only the ones you keep, on its list or later with `trail keep` (`source: keep`). The reviews are fetched with your own `gh` (`no_gh` when it isn't installed or signed in) and the reading is done by your own Claude Code; your messages, the comments and what it found are never sent to trail |
 | `session_summary` | `graft_reads_bucket`, `source_reads_bucket`, `saved_tokens_bucket`, `graft_turns_bucket`, `reported_turns_bucket` | Once, after an agent session ends |
 | `skill_offered` | `moment` (`asked`/`repeated`/`repaired`/`correction`/`update`/`drift`/`retire`/`promote`) | Trail offers to keep a skill, a lesson on one, an update, a fix for a skill that needs one (`drift`), retiring a skill the agent mostly didn't follow, or a promotion. The skill, the job and the offer's words are never sent |
 | `skill_answer` | `answer` (`yes`/`no`/`show`/`none`/`off`/`retire`) | The person answers an offer: yes, no, show me, moved on without answering (`none`), turned offers off, or retired the skill (`retire`). A withdrawn offer sends nothing |
@@ -73,6 +73,8 @@ The events:
 | `learnings_on_touch` | `via` (`read`/`edit`/`command`), `worktree` (`true`/`false`) | Learnings reach Claude because it opened or edited a file they list, or ran a command that names one, each once a session. `worktree` is whether the file was a worktree's copy while the session's project is the main checkout. The learnings, the file and the command are never sent |
 | `wall_hit` | `class` (`timeout-missing`/`zsh-no-match`/`git-https-auth`/`docker-rootless`/`npm-e401-eotp`/`claude-not-logged-in`/`enospc`), `had_lesson` (`true`/`false`) | A failing command matches a known wall, and whether you had kept a lesson for it. The command and its output are never sent |
 | `hook_ms` | `event` (`session-start`/`prompt`/`pre-bash`/`pre-edit`/`tool-savings`/`post-bash`/`post-bash-fail`/`post-edit`/`post-edit-sync`/`stop`), `bucket` (`<50ms`/`50-100ms`/`100-300ms`/`300ms-1s`/`1-3s`/`3s+`) | A Claude Code hook finishes: which one, and how long it took, bucketed |
+| `session_shared` | `size_bucket` (`<100KB`/`100KB-1MB`/`1-5MB`/`5-20MB`/`20MB+`), `messages_bucket` (`<50`/`50-199`/`200-499`/`500-1999`/`2000+`) | A Trail teammate sends one of their Claude Code sessions to the Trail team with `trail share-session` (internal only), after answering yes. The session itself goes to team.trailhq.com, never through telemetry; this event carries only its size and message count, bucketed |
+| `share_bundle` | `outcome` (`sent`/`partial`/`declined`/`deleted`/`stopped`), `items_bucket` (`1`/`2-9`/`10-49`/`50-199`/`200+`), `size_bucket` (`<1MB`/`1-10MB`/`10-50MB`/`50-200MB`/`200MB+`) | A Trail teammate answers `trail share-session` with no session named (internal only), which offers their whole Claude: sessions from the last 30 days, setup and memory notes, for the team-memory experiment. `sent`, `partial` (sent with folders left out), `declined`, `deleted` when they take it back with their delete code, or `stopped` when they run `--stop`; unless sent with `--once`, it otherwise keeps sending each new session in the background. The bundle itself goes to team.trailhq.com on their yes, never through telemetry; this event carries only these labels |
 
 Two rules govern every value above, and both are enforced in code rather than by
 review:
@@ -93,17 +95,22 @@ An example event, in full:
 ```json
 {
   "event": "build_completed",
-  "timestamp": "2026-08-21T09:14:22.417Z",
+  "timestamp": "2026-08-22T08:03:51.102Z",
   "properties": {
     "app_version": "0.12.0", "os": "darwin", "arch": "arm64",
     "node_major": "20", "ci": "false", "agent_host": "claude-code", "cli_name": "trail",
     "repo_id": "6f2c1e90-...", "distinct_id": "b1f3a9c2-...",
     "files_bucket": "200-999", "langs": "go,ts", "mode": "deep",
     "duration_bucket": "30s-2m", "incremental": "true",
+    "occurred_at": "2026-08-21T09:14:22.417Z",
     "$process_person_profile": false
   }
 }
 ```
+
+`timestamp` is when the day's batch was sent; `occurred_at` is when the event
+happened. Events wait in the local queue for up to a day, so the two can be
+that far apart.
 
 Run `trail telemetry debug` to print the exact batch your machine would send. It
 sends nothing.

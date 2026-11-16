@@ -34,6 +34,7 @@ import { savePersonal } from '../skills/store.js';
 import { stepsTotal } from '../skills/store-fs.js';
 import type { KeepReceipt, Receipt } from '../skills/types.js';
 import { trailPath, withLock, writePrivate } from '../util/private-fs.js';
+import { initKindCounts } from '../telemetry/contract.js';
 import { track } from '../telemetry/track.js';
 import { WALLS } from '../trace/walls.js';
 import { readInitRecord, updateInitRecord, type KeptName, type PendingItem } from './init-record.js';
@@ -246,7 +247,7 @@ export function keepItems(picked: InitItem[], all: InitItem[], how: 'tty' | 'yes
       }
     }, env);
   }
-  track('cold_start', { source: how === 'keep' ? 'keep' : 'sessions', outcome: 'kept' });
+  track('cold_start', { source: how === 'keep' ? 'keep' : 'sessions', outcome: 'kept', ...initKindCounts('kept', kept) });
   return { kept, notKept, refused, ...(folded.length ? { folded } : {}) };
 }
 

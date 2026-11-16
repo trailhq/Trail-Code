@@ -16,7 +16,7 @@ import { HOOK_RECORD_WAIT_MS, readInitRecord, updateInitRecord, type KeptName } 
 import { FROM_TRAIL } from '../skills/directive-words.js';
 
 /** What each kept kind reads as: a learning, one marked always follow, or a skill (notes/units.ts). */
-const KIND_WORDS: Record<string, string> = { skill: 'skill', guardrail: 'always follow', preference: 'learning', review: 'learning' };
+const KIND_WORDS: Record<string, string> = { skill: 'skill', guardrail: 'always-follow learning', preference: 'learning', review: 'learning' };
 /**
  * A skill's or guardrail's name, or an id: what `trail forget` takes. The record sits in the Trail home, which an
  * agent can write, so anything else (words, a second command) is never named as an undo (b7 review).

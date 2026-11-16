@@ -56,7 +56,7 @@ function scratch(cwd: string, top: string): boolean {
 }
 
 function git(dir: string, args: string[]): string {
-  const r = spawnSync("git", ["-C", dir, ...args], { encoding: "utf8", timeout: 5000 });
+  const r = spawnSync("git", ["-C", dir, ...args], { encoding: "utf8", timeout: 5000, windowsHide: true });
   return r.status === 0 ? r.stdout.trim() : "";
 }
 

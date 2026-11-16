@@ -11,7 +11,7 @@ import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSyn
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { buildGraph } from "../src/graph/build.js";
-import { extractCachePath, extractorStamp, readExtractCache, stampDir } from "../src/graph/extract-cache.js";
+import { extractCachePath, extractorStamp, readExtractCache, stampDir, writeExtractCache } from "../src/graph/extract-cache.js";
 import { fingerprintPath, isClean, probeDrift, readFingerprint } from "../src/graph/fingerprint.js";
 import { readAskIndex } from "../src/ask/index-file.js";
 import { readGraph, wiringPath } from "../src/graph/write.js";
@@ -311,6 +311,38 @@ test("an unreadable file is still recorded, so it can't look new on every probe"
   assert.deepEqual(recovered.errors, []);
   const g = readGraph(wiringPath(outOf(d))) as GraphV1;
   assert.ok(g.nodes.some((n) => n.id === "src/secret.ts#secretFn"), "the once-unreadable file is indexed now");
+});
+
+test("a cached parse error is re-parsed, not replayed as a permanent failure (#312)", async () => {
+  const d = repo();
+  const cold = await buildGraph(d, { reuse: false });
+  const coldWiring = wiringOf(d);
+  assert.ok(cold.languages.length > 0, "the fixture has to contribute a language for one to be able to drop out");
+
+  // Poison the memo the way a transient grammar abort does. A wasm grammar that
+  // aborts because the run before it exhausted the heap fails whichever file was
+  // in flight, and the entry keeps that file's real content hash — so nothing
+  // about the file itself ever looks stale, and no later build reconsiders it.
+  const out = outOf(d);
+  const cache = readExtractCache(out);
+  const entry = cache.files["src/math.ts"];
+  assert.ok(entry, "fixture file must be in the memo");
+  cache.files["src/math.ts"] = {
+    ...entry,
+    nodes: [],
+    rawEdges: [],
+    error: "src/math.ts: parse failed — typescript grammar threw: Aborted(). Build with -sASSERTIONS for more info.",
+  };
+  writeExtractCache(out, cache);
+
+  const after = await buildGraph(d);
+  assert.equal(wiringOf(d), coldWiring, "a file whose last run aborted has to come back, nodes and all");
+  assert.deepEqual(after.languages, cold.languages, "a language must not drop out of a graph that still reports success");
+  assert.deepEqual(after.errors, cold.errors, "last run's failure is not this run's error");
+  assert.ok(
+    !readExtractCache(out).files["src/math.ts"]?.error,
+    "the successful re-parse clears the entry, so the next build is cheap again",
+  );
 });
 
 /**

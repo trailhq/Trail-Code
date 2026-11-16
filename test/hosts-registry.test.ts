@@ -15,7 +15,7 @@ function probeFor(home: string, repo: string): DetectProbe {
 function fresh(): string { return mkdtempSync(join(tmpdir(), 'graft-registry-')); }
 
 test('registry exposes the known hosts', () => {
-  assert.deepEqual(hostIds().sort(), ['adal', 'agents', 'antigravity', 'copilot', 'cursor', 'gemini', 'grok', 'hermes', 'kiro', 'windsurf']);
+  assert.deepEqual(hostIds().sort(), ['adal', 'agents', 'antigravity', 'copilot', 'cursor', 'gemini', 'grok', 'hermes', 'kiro', 'pi', 'windsurf']);
   for (const h of HOSTS) {
     assert.ok(h.relPath.length > 0);
     assert.ok(h.content().length > 0);
@@ -77,4 +77,19 @@ test('~/.hermes or AppData/Local/hermes lights up the hermes host', () => {
   const ids = detectHosts(probeFor(home, repo)).map((h) => h.id).sort();
   assert.deepEqual(ids, ['hermes']);
   assert.ok(HOSTS.find((h) => h.id === 'hermes')?.relPath === 'AGENTS.md');
+});
+
+test('~/.pi lights up the pi host, which writes AGENTS.md', () => {
+  const home = fresh(); const repo = fresh();
+  mkdirSync(join(home, '.pi'));
+  const ids = detectHosts(probeFor(home, repo)).map((h) => h.id).sort();
+  assert.deepEqual(ids, ['pi']);
+  assert.equal(HOSTS.find((h) => h.id === 'pi')?.relPath, 'AGENTS.md');
+});
+
+test('repo-local .pi also lights up the pi host', () => {
+  const home = fresh(); const repo = fresh();
+  mkdirSync(join(repo, '.pi'));
+  const ids = detectHosts(probeFor(home, repo)).map((h) => h.id).sort();
+  assert.deepEqual(ids, ['pi']);
 });

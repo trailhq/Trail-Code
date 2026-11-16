@@ -328,7 +328,7 @@ test("run by an agent, trail init looks back with no model and relays the person
   assert.match(r.err, /· looking back at your past Claude Code sessions here \(about a minute\)/);
   assert.match(r.err, /✓ looked back at 2 Claude Code sessions about this repo, typed into on 2 days \(Oct 1 to Oct 3\)/);
   assert.equal(r.err.match(/Show the list as written/g)?.length, 1, "printed once");
-  assert.match(r.err, /\n1\. "never use em dashes in the copy" \(learning, your own words\) · You said this on 2 days · just for you, in every repo\n/);
+  assert.match(r.err, /\n1\. "never use em dashes in the copy" \(learning in your own words, every repo\)\n   You said this on 2 days\.\n/);
   assert.match(r.err, /Keep: trail keep <numbers> · none: trail keep none\n/);
   assert.doesNotMatch(r.err, /skills are off/, "skills are on by default: no line saying how to turn them on");
   assert.doesNotMatch(r.err, /—|for your team|\bnotes?\b|\brules?\b|\bmemory\b|\bworkflows?\b/i, "init's words: learnings, no em dashes");

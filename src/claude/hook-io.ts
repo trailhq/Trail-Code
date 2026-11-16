@@ -22,8 +22,8 @@ function hookChildEnv(): NodeJS.ProcessEnv {
 }
 
 /**
- * Append `--dir <contextDir>` for the hooks' own `graft ask`/`graft check`
- * children — the one place the hooks spawn the CLI itself rather
+ * Append `--dir <contextDir>` for the hooks' own `graft ask` child (post-edit's
+ * `graft check` runs in stale-count-run.ts, which does the same) — the one place the hooks spawn the CLI itself rather
  * than reading `graft/` off disk (which already resolves through
  * `resolveContextDir` inside `util/state.ts` and `claude/stats.ts`). A no-op
  * when `GRAFT_DIR` isn't set, so an unconfigured repo's spawned CLI sees

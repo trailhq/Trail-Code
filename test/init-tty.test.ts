@@ -76,7 +76,7 @@ test("s on a guardrail shows its template text", async () => {
 test("w twice flips a skill to every repo and back; on no-timeout it says why it stays every repo", async () => {
   const once = await run(["w", "\r"]);
   assert.deepEqual(once.r.scopes[1], { applies: "every repo", scope: "personal" });
-  assert.match(once.out, /just for you, in every repo/);
+  assert.match(once.out, /release-npm \(every repo\)/);
   const twice = await run(["w", "w", "\r"]);
   assert.deepEqual(twice.r.scopes[1], { applies: REPO_KEY, scope: "personal" });
   const g = await run([DOWN, "w", "\r"]);
@@ -87,7 +87,7 @@ test("w twice flips a skill to every repo and back; on no-timeout it says why it
 test("r adds a preference to the repo (committed) and back; on a skill or guardrail it says that comes later", async () => {
   const p = await run([DOWN, DOWN, "r", "\r"]);
   assert.deepEqual(p.r.scopes[3], { applies: REPO_KEY, scope: "repo" });
-  assert.match(p.out, /added to this repo, committed/);
+  assert.match(p.out, /\(added to this repo: your team gets it once you commit\)/);
   const back = await run([DOWN, DOWN, "r", "r", "\r"]);
   assert.equal(back.r.scopes[3]!.scope, "personal");
   for (const keys of [["r", "\r"], [DOWN, "r", "\r"]]) {

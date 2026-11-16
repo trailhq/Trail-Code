@@ -1,20 +1,24 @@
 import { readFileSync, existsSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { join, basename, isAbsolute, relative, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { readWiring } from './stats.js';
-import { formatBlastRadius, formatOrientation, notesOnTouch, standingDirective, teamNotesDirective, type Touch } from './format.js';
-import { commitLines, listNotes, setupCommitLine, standingLearnings } from '../notes/notes.js';
+import { formatBlastRadius, formatOrientation, notesOnTouch, standingDirective, teamNotesDirective, TOUCH_NOTES_CAP, type Touch } from './format.js';
+import { commitLines, listNotes, noteName, setupCommitLine, standingLearnings } from '../notes/notes.js';
 import { liveLearnings } from '../notes/learning-fields.js';
+import { markStale } from '../notes/stale.js';
 import { noteAuthor, teammatesOn } from '../notes/git-facts.js';
 import { indexFreshness, staleBanner } from '../context/check.js';
 import { dropStoredPrompts, patchStats, readSession, writeSession, resolveContextDir } from './state.js';
-import { emit, emitHook, graftJson, payloadSessionId, withContextDirArg } from './hook-io.js';
+import { emit, emitHook, payloadSessionId } from './hook-io.js';
+import { maybeShareSyncInBackground } from '../cloud/share-sync-state.js';
+import { claudeScriptPath } from './paths.js';
 import { codexPostBashPart, postBashPart, sessionStartPart } from './skills-wiring.js';
 import { handlePrompt } from './prompt-hook.js';
 import { runUpkeep } from '../upkeep-run.js';
 import { runningVersion, wiredHostIds } from '../upkeep.js';
 import { hostsWiredForTrail } from '../hosts/registry.js';
+import { isJustMe, JUST_ME_DIRECTIVE } from '../notes/just-me.js';
 import { flushClosedSessions, summarizeSession } from '../telemetry/sessions.js';
 import { maybeFlushInBackground } from '../telemetry/flush.js';
 import { handleStopEvent } from './stop.js';
@@ -32,7 +36,7 @@ import { cacheDir, readJson, writeJsonAtomic } from '../util/state.js';
 import { countBucket, type AgentHost } from '../telemetry/contract.js';
 import { detectHost } from '../trace/host.js';
 import type { HookOut } from '../skills/types.js';
-import { track } from '../telemetry/track.js';
+import { claudeHost, HOST_ENV, track } from '../telemetry/track.js';
 import { skillsDirective } from '../skills/skills.js';
 import { everyRepoLearnings } from '../notes/every-repo.js';
 import type { Note } from '../notes/notes.js';
@@ -63,10 +67,19 @@ export function underGraft(dir: string, file: string): boolean {
   const posix = rel.replace(/^[/\\]+/, '').replace(/\\/g, '/');
   return posix.startsWith('graft/') || posix.startsWith('.trail/cache/');
 }
-function checkStaleCount(dir: string): number {
-  const r = graftJson(dir, withContextDirArg(dir, ['check', '.', '--json']));
-  const g = r?.graph ?? {};
-  return (g.changed?.length ?? 0) + (g.added?.length ?? 0) + (g.removed?.length ?? 0);
+/**
+ * Count stale nodes for the statusline in a detached child (stale-count-run.js)
+ * instead of blocking the edit on `graft check`, which on a mid-size repo takes
+ * longer than any budget a per-edit hook can afford (#483). The child writes the
+ * count back when it finishes. GRAFT_TEST_STALE_COUNT_RUN is a test seam, like
+ * GRAFT_TEST_SYNC_RUN in stop.ts.
+ */
+function staleCountInBackground(dir: string): void {
+  const runner = process.env.GRAFT_TEST_STALE_COUNT_RUN ?? claudeScriptPath('stale-count-run.js');
+  if (!existsSync(runner)) return;
+  try {
+    spawn(process.execPath, [runner, dir], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+  } catch { /* a missed count costs a statusline number, never the edit */ }
 }
 /**
  * The absolute path of the file a PostToolUse edit touched, across host edit-tool
@@ -94,7 +107,8 @@ export function editedFilePath(input: any, dir: string): string | null {
 async function handlePostEdit(input: any, dir: string): Promise<void> {
   const file = editedFilePath(input, dir);
   if (!file || underGraft(dir, file)) return;
-  patchStats(dir, { dirty: true, staleCount: checkStaleCount(dir), lastFile: basename(file) });
+  patchStats(dir, { dirty: true, lastFile: basename(file) });
+  staleCountInBackground(dir);
   const out: string[] = [];
   const w = readWiring(dir);
   if (w) { const br = formatBlastRadius(w, file); if (br) out.push(br); }
@@ -169,6 +183,19 @@ function handleToolUse(input: any, dir: string): void {
 }
 
 /**
+ * The learnings a touch can bring: the project's, and in a worktree session also the worktree's own
+ * (its branch's). One in both comes from the project, as the session-start and prompt hooks read it,
+ * so the session's record of what was shown still matches and nothing is shown twice.
+ */
+function touchLearnings(dir: string, repo: string): Note[] {
+  const here = listNotes(dir, { branches: false });
+  if (repo === dir) return here;
+  const seen = new Set(here.map(noteName));
+  const there = listNotes(repo, { branches: false }).filter((n) => !seen.has(noteName(n)));
+  return [...here, ...there].sort((a, b) => (a.date === b.date ? b.path.localeCompare(a.path) : b.date.localeCompare(a.date)));
+}
+
+/**
  * Under trail, the learnings about the file a Read, Edit or Write just touched,
  * or that a shell command (`sed -n 1,40p src/a.ts`, `cat`, a test run) names,
  * each once a session. A trail command is skipped: its own output already
@@ -180,11 +207,12 @@ export function learningsOnTouch(input: any, dir: string, before = false): strin
     const ti = input?.tool_input ?? {};
     const path = typeof ti.file_path === 'string' ? ti.file_path : typeof ti.notebook_path === 'string' ? ti.notebook_path : null;
     let touch: Touch;
-    // A worktree session's project is the main checkout while Claude works on the worktree's copy:
-    // name the file, and read the learnings, from the checkout it's in.
+    // In a Claude Desktop worktree session the project is the main checkout while Claude works on the
+    // worktree's copy: name the file from the checkout it's in, and add that checkout's learnings.
     let repo = dir;
     if (path) {
       const abs = isAbsolute(path) ? path : join(dir, path);
+      // Only a checkout of this same repo, though: a file in an unrelated repo is no file of the project's.
       repo = otherCheckout(dir, abs) ?? dir;
       const rel = relative(repo, abs).replace(/\\/g, '/');
       if (!rel || rel.startsWith('..') || underGraft(repo, abs)) return null;
@@ -192,11 +220,12 @@ export function learningsOnTouch(input: any, dir: string, before = false): strin
     } else if (typeof ti.command === 'string' && ti.command && !commandInvokesGraft(ti.command)) {
       touch = { command: ti.command };
     } else return null;
-    const notes = liveLearnings(listNotes(repo, { branches: false }));
+    const notes = liveLearnings(touchLearnings(dir, repo));
     if (!notes.length) return null;
     const id = payloadSessionId(input);
     const s = readSession(dir, id);
-    const text = notesOnTouch(notes, touch, s);
+    const text = notesOnTouch(notes, touch, s, TOUCH_NOTES_CAP, dir);
+    // notesOnTouch added what they saved to the session's counter.
     if (text) {
       writeSession(dir, id, s);
       const via = !path ? 'command' : !before && input?.tool_name === 'Read' ? 'read' : 'edit';
@@ -234,10 +263,10 @@ export function withTouchLearnings(out: HookOut, input: any, dir: string): HookO
   return { ...out, context: [out.context, learned].filter(Boolean).join('\n\n') };
 }
 
-/** Who to put a tool use down to: Cursor and Copilot CLI run these hooks too. */
+/** Who to put a hook's events down to: Codex, Cursor and Copilot CLI run these hooks too. */
 function telemetryHost(input: unknown): AgentHost {
   const host = detectHost(input).host;
-  return host === 'cursor' || host === 'copilot' ? host : 'claude-code';
+  return host === 'codex' || host === 'cursor' || host === 'copilot' ? host : claudeHost();
 }
 
 /**
@@ -357,12 +386,15 @@ export function trackLearningsCommitted(dir: string): void {
  * Learnings added to this repo but sitting uncommitted in `.trail/learnings/` (from trail init's
  * read of past sessions, or a session that ended before committing) reach no
  * teammate. Once a day per repo, the first reply says so, with the line that
- * makes the case for committing them. Empty when everything is committed.
+ * makes the case for committing them. Empty when everything is committed. In a
+ * repo on trail just for this person (notes/just-me.ts), every session is told
+ * instead that there is nothing to commit.
  */
 export function uncommittedDirective(dir: string, now = Date.now()): string {
   try {
     const place = repoPlace(dir);
     if (!place.git) return '';
+    if (isJustMe(place.checkout)) return `${tag()} ${JUST_ME_DIRECTIVE}\n`;
     const status = execFileSync('git', ['status', '--porcelain', '--untracked-files=all', '--', '.trail/learnings'], {
       cwd: place.checkout, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000, windowsHide: true,
     });
@@ -451,7 +483,7 @@ function learningsAtStart(dir: string): StartLearnings {
   try {
     if (!keepsNotes(dir)) return { kept: false, count: 0, extra: standingDirective(every) };
     const skills = skillsDirective(dir);
-    const standing = brand() === 'trail' ? standingDirective(withEvery(standingLearnings(dir), every)) + uncommittedDirective(dir) : standingDirective(every);
+    const standing = brand() === 'trail' ? standingDirective(withEvery(markStale(standingLearnings(dir), dir), every)) + uncommittedDirective(dir) : standingDirective(every);
     return { kept: true, count: noteCounts(dir), extra: skills + standing };
   } catch {
     return { kept: false, count: 0, extra: standingDirective(every) };
@@ -515,10 +547,14 @@ export async function main(event: string): Promise<void> {
   if (event === 'pre-bash') { await preBashMain(event); return; }
   // trail's own headless Claude calls (the first-run read of past sessions) run with this set.
   if (process.env.TRAIL_NO_HOOKS === '1') return;
+  // The one user-level entry `trail share-session` adds: start the background send, nothing else.
+  if (event === 'share-sync') { maybeShareSyncInBackground(); return; }
   const input = readStdin();
   // Registered in the repo and in ~/.claude, Claude Code runs both: one answers.
   // Who sent the payload decides first: Copilot CLI runs only the repo's copy.
   if (globalCopyCovers(event, process.argv[1], homedir(), process.env, input)) return;
+  // Every event this hook sends, and every trail command it starts, is put down to the agent that sent the payload.
+  process.env[HOST_ENV] = telemetryHost(input);
   const dir = projectDir(input);
   // A failed Bash call (PostToolUseFailure, D34): the skills mark, and 1b's wall fix as its one answer, before any of
   // the work the other events share.
@@ -544,6 +580,8 @@ export async function main(event: string): Promise<void> {
     // terminal never fires it) goes now. Once a day at most, never waited on.
     flushClosedSessions(dir);
     maybeFlushInBackground();
+    // Someone who said yes to `share-session --sync`: send what changed, from a detached child.
+    maybeShareSyncInBackground();
     // Once per repo: older versions kept the prompt in each session file.
     try { dropStoredPrompts(dir); } catch { /* tried again next session */ }
     trailAtStart(dir);

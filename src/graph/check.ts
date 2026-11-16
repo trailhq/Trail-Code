@@ -82,12 +82,12 @@ export async function checkGraph(
   }
 
   // Freshly extract Tier-1 nodes from the code on disk (same file set as build).
-  // A `--only-dir` build records its whitelist in the fingerprint; read it back
-  // so `check` diffs the same limited set instead of flagging every excluded
-  // file as "added".
-  const fpOnlyDirs = readFingerprint(outDir)?.onlyDirs;
+  // Read the saved filters so `check` diffs the same limited set. Extension
+  // selection lives in the graph itself and survives extractor-cache changes.
+  const fingerprint = readFingerprint(outDir);
+  const fpOnlyDirs = fingerprint?.onlyDirs;
   const onlyDirs = fpOnlyDirs && fpOnlyDirs.length > 0 ? new Set(fpOnlyDirs) : undefined;
-  const sourceFiles = listSourceFiles(root, outDir, undefined, onlyDirs);
+  const sourceFiles = listSourceFiles(root, outDir, undefined, onlyDirs, committed.meta?.extensions);
   // Container-tier grammars need the same warmup as the generic ones, for the same
   // reason: extraction below is synchronous. Missing that is what made `graft
   // check` report every `.vue` node as `removed` right after a clean build (#236)

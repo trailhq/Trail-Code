@@ -88,6 +88,20 @@ export const HOSTS: HostTarget[] = [
       p.dirExists(join(p.repo, '.hermes')),
   },
   {
+    id: 'pi',
+    name: 'Pi',
+    kind: 'section',
+    relPath: 'AGENTS.md',
+    content: instructionBody,
+    // Pi is repo-aware: it loads AGENTS.md at the repo root (and the user-level
+    // ~/.pi/agent/AGENTS.md) as project instructions. Detected by pi's own config
+    // dir (`~/.pi`) or a repo `.pi/` — NOT the shared `~/.config/agents` (that's the
+    // catch-all for other Codex-style CLIs, which the `agents` host already covers).
+    detect: (p) =>
+      p.dirExists(join(p.home, '.pi')) ||
+      p.dirExists(join(p.repo, '.pi')),
+  },
+  {
     id: 'antigravity',
     name: 'Google Antigravity',
     kind: 'section',

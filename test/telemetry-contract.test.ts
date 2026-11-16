@@ -15,11 +15,12 @@ import {
   errorCode,
   filesBucket,
   hookMsBucket,
+  initKindCounts,
   isTrackedCommand,
   langsValue,
   savedTokensBucket,
 } from '../src/telemetry/contract.js';
-import { track } from '../src/telemetry/track.js';
+import { detectHost, track } from '../src/telemetry/track.js';
 import { peek } from '../src/telemetry/queue.js';
 import { tmpRepo } from './helpers.js';
 
@@ -75,14 +76,48 @@ test('every event carries the common properties, and no identifier beyond them',
   assert.match(ev.distinct_id, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
 });
 
+test('agent_host tells the Claude desktop app and Codex apart from the terminal, sending only a fixed label', () => {
+  assert.equal(detectHost(undefined, { CLAUDECODE: '1', CLAUDE_CODE_ENTRYPOINT: 'claude-desktop' }), 'claude-desktop');
+  assert.equal(detectHost(undefined, { CLAUDECODE: '1', CLAUDE_CODE_ENTRYPOINT: 'cli' }), 'claude-code');
+  assert.equal(detectHost(undefined, { CLAUDECODE: '1' }), 'claude-code');
+  assert.equal(detectHost(undefined, { CLAUDE_CODE_ENTRYPOINT: 'something/odd' }), 'claude-code', 'any other entrypoint is plain Claude Code: the value never travels');
+  assert.equal(detectHost(undefined, { CODEX_THREAD_ID: 't-1' }), 'codex');
+  assert.equal(detectHost(undefined, { CODEX_SANDBOX: 'seatbelt' }), 'codex');
+  assert.equal(detectHost(undefined, {}), 'cli');
+  assert.equal(detectHost('mcp', { CLAUDE_CODE_ENTRYPOINT: 'claude-desktop' }), 'mcp', 'the surface a caller names wins');
+  assert.equal(detectHost(undefined, { TRAIL_AGENT_HOST: 'codex' }), 'codex', "a hook's children carry its payload's host");
+  assert.equal(detectHost(undefined, { TRAIL_AGENT_HOST: 'my-laptop' }), 'cli', 'a value outside the set is ignored');
+  const home = sandbox('tel-host-desktop');
+  const ev = track('first_run', {}, { home, env: { CLAUDECODE: '1', CLAUDE_CODE_ENTRYPOINT: 'claude-desktop' } });
+  assert.equal(ev?.properties.agent_host, 'claude-desktop');
+});
+
 // Pinned rather than counted, so adding an event is a deliberate edit here and
 // a matching row in TELEMETRY.md, never something that arrives with a feature.
-test('the contract lists exactly the twenty-eight documented events', () => {
+test('the contract lists exactly the thirty documented events', () => {
   assert.deepEqual(Object.keys(EVENTS).sort(), [
     'brain_signup_opened', 'brain_signup_settled', 'build_completed', 'build_failed',
-    'cold_start', 'first_run', 'guardrail', 'hook_ms', 'init_completed', 'install', 'learnings_committed', 'learnings_on_touch', 'note_saved', 'overlap_acted', 'overlap_warned', 'query', 'repo_seen', 'session_summary',
+    'cold_start', 'first_run', 'guardrail', 'hook_ms', 'init_completed', 'install', 'learnings_committed', 'learnings_on_touch', 'note_saved', 'overlap_acted', 'overlap_warned', 'query', 'repo_seen', 'session_shared', 'session_summary', 'share_bundle',
     'skill_answer', 'skill_changed', 'skill_offered', 'skill_promoted', 'skill_saved', 'skill_stale', 'skill_used', 'skill_value', 'team_pull', 'wall_hit',
   ]);
+});
+
+// What init offered and what was kept, by kind (2026-10-29): exact small counts, so the share kept can be read per kind.
+test('cold_start counts init\'s offers and keeps by kind, exact to 5, and drops any other value', () => {
+  const items = [{ kind: 'skill' }, { kind: 'guardrail' }, { kind: 'preference' }, { kind: 'preference' }, { kind: 'review' }];
+  assert.deepEqual(initKindCounts('kept', items), { kept_skills: '1', kept_always_follow: '1', kept_learnings: '2' });
+  assert.deepEqual(initKindCounts('offered', Array(7).fill({ kind: 'preference' })), { offered_skills: '0', offered_always_follow: '0', offered_learnings: '6+' });
+  const home = sandbox('tel-cold-start-kinds');
+  const ev = track('cold_start', { source: 'keep', outcome: 'kept', ...initKindCounts('kept', items), offered_learnings: 'no-timeout' }, { home, env: OPEN });
+  assert.equal(ev?.properties.kept_always_follow, '1');
+  assert.equal(ev?.properties.kept_learnings, '2');
+  assert.equal(ev?.properties.offered_learnings, undefined, 'a value other than 0 to 5 or 6+ is dropped');
+});
+
+test('init_completed says whose status line shows, from a closed set', () => {
+  const home = sandbox('tel-init-statusline');
+  assert.equal(track('init_completed', { agents: 'claude', statusline: 'theirs' }, { home, env: OPEN })?.properties.statusline, 'theirs');
+  assert.equal(track('init_completed', { agents: 'claude', statusline: 'sh ~/.claude/statusline.sh' }, { home, env: OPEN })?.properties.statusline, undefined);
 });
 
 // --- the skills events (spec section 20): counts and closed sets, never content ---

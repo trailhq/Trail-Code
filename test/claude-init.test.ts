@@ -104,6 +104,24 @@ test('runInit is idempotent', () => {
   assert.deepEqual(s.permissions.allow, ['Bash(trail:*)', 'Bash(graft:*)', 'Bash(npx graft:*)', 'Bash(graft-dev:*)', 'Bash(node dist/cli.js:*)']);
 });
 
+test('runInit removes legacy footers and preserves foreign entries across refreshes', () => {
+  const d = fresh();
+  const home = fresh();
+  const settings = join(d, '.claude', 'settings.json');
+  runInit(d, { build: false, home });
+  const stale = JSON.parse(readFileSync(settings, 'utf8'));
+  stale.footerLinksRegexes = ['graft/[\\w./-]+\\.md', 'docs/.*'];
+  writeFileSync(settings, JSON.stringify(stale));
+
+  runInit(d, { build: false, home });
+  const refreshed = readFileSync(settings, 'utf8');
+  const s = JSON.parse(refreshed);
+  assert.deepEqual(s.footerLinksRegexes, ['docs/.*']);
+  assert.equal(JSON.parse(readFileSync(join(home, '.claude', 'settings.json'), 'utf8')).footerLinksRegexes, undefined);
+  runInit(d, { build: false, home });
+  assert.equal(readFileSync(settings, 'utf8'), refreshed, 'a second refresh changes no settings');
+});
+
 test('runInit appends the allowlist to a pre-existing permissions block, preserving unrelated entries', () => {
   const d = fresh();
   mkdirSync(join(d, '.claude'), { recursive: true });

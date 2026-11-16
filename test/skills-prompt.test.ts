@@ -15,13 +15,13 @@ import { saveHeld } from "../src/skills/store.js";
 import type { PendingOffer } from "../src/trace/types.js";
 import { emptyState } from "./trace-run-fixtures.js";
 import { releaseSkill, shipSkill, WEBSHOP } from "./skills-recall-fixtures.js";
-import { box, CWD, gateFor, grow, payload, ranIn, replyAt, save, SID, stateOf, typedIn, withNow, type Box } from "./skills-prompt-fixtures.js";
+import { box, CWD, deadlineClock, gateFor, grow, payload, ranIn, replyAt, save, SID, stateOf, typedIn, withNow, type Box } from "./skills-prompt-fixtures.js";
 import { timeBar } from "./machine-speed.js";
 
 const FROM = "[trail] From Trail, the tool this person installed to keep commands that worked as skills.";
 const webshopRelease = () => releaseSkill({ applies: WEBSHOP, trail: "s-7f3a2c" });
 const events: Array<[string, Record<string, string>]> = [];
-const deps = (b: Box, extra: Partial<PromptDeps> = {}): Partial<PromptDeps> => ({ track: (e, p) => events.push([e, p]), gate: gateFor(b), ...extra });
+const deps = (b: Box, extra: Partial<PromptDeps> = {}): Partial<PromptDeps> => ({ track: (e, p) => events.push([e, p]), gate: gateFor(b), clock: deadlineClock, ...extra });
 const run = (b: Box, prompt: string, extra: Record<string, unknown> = {}, env = b.env, d: Partial<PromptDeps> = deps(b)) =>
   promptSkills(payload(b, prompt, extra), CWD, env, d);
 
@@ -147,12 +147,12 @@ test("the deadline: slow probes are left out, the block still comes inside 400 m
     return { code: null, out: "", timedOut: true };
   };
   const t0 = Date.now();
-  const out = run(b, "now ff to prod please", {}, b.env, deps(b, { probes: { git: slow } }));
+  const out = run(b, "now ff to prod please", {}, b.env, deps(b, { probes: { git: slow }, clock: Date.now }));
   const took = Date.now() - t0;
   assert.ok(out.context?.startsWith("[trail] Skill ship-beta-then-prod fits"));
   assert.ok(!out.context!.includes("ready:"));
-  // The 400 ms deadline, and what a slow machine adds around it.
-  assert.ok(took < 400 + timeBar(50, 200), `took ${took} ms`);
+  // The 400 ms deadline, and what a slow machine adds around it (a shared Windows runner took 607 ms).
+  assert.ok(took < 400 + timeBar(50, process.platform === "win32" ? 600 : 200), `took ${took} ms`);
   // Past the deadline before the cue (a long lock wait, a slow catch-up): no block, nothing half-done.
   let now = 0;
   const lb = shipBox("late");

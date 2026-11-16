@@ -12,7 +12,9 @@
  * merge (branches.ts). A personal one, about one person's setup or habits,
  * stays on their machine in `~/.trail/repos/<repo>/notes/` (home.ts).
  *
- * One file per session and never edited after it's written. A summary only,
+ * One file per session, or per branch when a session goes on to another PR:
+ * a later save in the session adds to it (session-learning.ts), and nothing
+ * edits it after that. A summary only,
  * never a transcript: the agent writes the body, and nothing here reads
  * source files or prompts into it.
  */
@@ -24,10 +26,11 @@ import { tokensLabel, tokensWorthSaying } from "./credit.js";
 import type { NoteHit } from "./find-notes.js";
 import { flatLine } from "./flatten.js";
 import { isAlwaysFollow } from "./units.js";
-import { ensureRepoHome, notePlaces, shownPath } from "./home.js";
+import { ensureRepoHome, notePlaces, repoPlace, shownPath, type RepoPlace } from "./home.js";
 import { LEARNING_KEYS, learningFileName, liveLearnings, newLearningId, readLearningFields, type LearningFields } from "./learning-fields.js";
 import { ensureRepoTrail, LEARNINGS_DIR, learningsDir } from "./repo-trail.js";
 import { TOUCH_CHARS, TOUCH_LIMIT } from "./targets.js";
+import { isJustMe } from "./just-me.js";
 
 // Where a learning goes, which to show for a query and how one is credited live in their own files.
 export { findNotes, type NoteHit } from "./find-notes.js";
@@ -66,6 +69,9 @@ export interface Note extends LearningFields {
    * this checkout. `path` is then `<ref>:.trail/learnings/<name>`, readable
    * with `git show`, and the whole body travels with the note. */
   ref?: string;
+  /** The `touches` whose code is gone, so the learning may be stale. Set by
+   * `markStale` (stale.ts) on the learnings about to be shown. */
+  stale?: string[];
 }
 
 /** Which kind of learning to write: for the repo (the default) or for this person only. */
@@ -278,15 +284,24 @@ export interface WriteNoteInput {
 /**
  * Write a new learning for the repo `dir` is in, and return it: into the
  * repo's `.trail/learnings/` (made if needed), or with `scope: "personal"`,
- * or outside git, into ~/.trail. Never overwrites: a second one with the same
+ * outside git or in a repo on trail just for this person (just-me.ts), into
+ * ~/.trail. Never overwrites: a second one with the same
  * name on the same day gets `-2`, `-3`. Its id is 8 hex digits from the file
  * name it gets (`newLearningId`), written into the file.
  */
 export function writeNote(dir: string, input: WriteNoteInput, scope: LearningScope = "repo"): Note {
-  const { place } = ensureRepoHome(dir);
+  let place: RepoPlace;
+  try {
+    place = ensureRepoHome(dir).place;
+  } catch (e) {
+    // Codex's sandbox can't write ~/.trail. A learning added to the repo doesn't need it, so it's still saved.
+    place = repoPlace(dir);
+    if (scope !== "repo" || !place.git) throw e;
+  }
   const inRepo = scope === "repo" && place.git;
   let notes: string;
-  if (inRepo) {
+  const shared = inRepo && !isJustMe(place.checkout);
+  if (shared) {
     ensureRepoTrail(place.checkout);
     notes = learningsDir(place.checkout);
   } else {
@@ -305,7 +320,7 @@ export function writeNote(dir: string, input: WriteNoteInput, scope: LearningSco
     touches: input.touches ?? [],
     body: input.body,
     ...(input.standing ? { standing: true } : {}),
-    ...readLearningFields({ ...input, id: newLearningId(name), scope: inRepo ? "repo" : "personal", applies: inRepo ? undefined : (input.applies ?? place.key), status: "active" }, name),
+    ...readLearningFields({ ...input, id: newLearningId(name), scope: shared ? "repo" : "personal", applies: shared ? undefined : (input.applies ?? place.key), status: "active" }, name),
   };
   writeFileSync(join(notes, name), renderNote(note));
   return { ...note, path: join(notes, name) };
@@ -327,6 +342,11 @@ export function notePlace(n: Note): string {
   const path = n.path.replace(/\\/g, "/");
   const at = path.lastIndexOf(`/${LEARNINGS_DIR}/`);
   return at === -1 ? shownPath(n.path) : path.slice(at + 1);
+}
+
+/** Where to read a learning: its place, or the `git show` that prints one on a teammate's unmerged branch. */
+export function whereToRead(n: Note): string {
+  return n.ref ? `git show ${shellQuote(flatLine(n.path, 300))}` : flatLine(notePlace(n), 300);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -392,6 +412,7 @@ export function formatNoteHits(hits: NoteHit[]): string[] {
     const author = flatLine(note.author, 80);
     const who = `${author ? `${author}'s learning` : "a learning"}${note.teammate ? ", a teammate's" : ""}`;
     lines.push(`from ${who}${isAlwaysFollow(note) ? " · always follow" : ""} · ${flatLine(shortDate(note.date), 40)} · ${flatLine(note.title)}`);
+    if (note.stale?.length) lines.push(`  may be stale  ${staleLine(note)}`);
     const cost = costLabel(note.cost);
     for (const s of SECTIONS) {
       const lead = sectionLead(note.body, s.heading);
@@ -408,6 +429,18 @@ export function formatNoteHits(hits: NoteHit[]): string[] {
     lines.push("");
   }
   return lines;
+}
+
+/**
+ * What to say about a learning `markStale` (stale.ts) flagged: which code it
+ * names is gone, and to check it before following it. The names come from the
+ * learning's own file, so each is flattened and at most two are named.
+ */
+export function staleLine(note: Note): string {
+  // A gone file's own gone symbol names it already: `a.ts#f`, not `a.ts, a.ts#f`.
+  const gone = (note.stale ?? []).filter((t, _, all) => !all.some((o) => o.startsWith(`${t}#`)));
+  const named = gone.slice(0, 2).map((t) => flatLine(t, 120)).join(", ") + (gone.length > 2 ? ` and ${gone.length - 2} more` : "");
+  return `${named} ${gone.length === 1 ? "is" : "are"} gone from the code. Check it against the code before you follow it; if it no longer holds, save what's true now with trail note --replaces ${note.id}`;
 }
 
 /** The line an agent closes its reply with after saving a learning just for the user. */
@@ -427,15 +460,24 @@ export function learningCredit(hits: NoteHit[]): string | null {
 }
 
 /**
+ * The tokens `learningSavingsLine` claims for `hits`, or 0 when it would claim
+ * none. What a hook adds to the session's counter when it shows them, in full
+ * or on one line, counted from the learnings, never parsed back out of text.
+ */
+export function learningSavedTokens(hits: NoteHit[]): number {
+  const saved = hits.reduce((sum, h) => sum + savedByNote(h.note), 0);
+  return tokensWorthSaying(saved) ? saved : 0;
+}
+
+/**
  * The line that credits reused learnings, for `ask` and the agent's closing
  * line: what they took to work out, less what reading them here costs, when
  * their own measured cost makes that worth saying. Null when none were shown
  * or none has earned a claim.
  */
 export function learningSavingsLine(hits: NoteHit[]): string | null {
-  if (!hits.length) return null;
-  const saved = hits.reduce((sum, h) => sum + savedByNote(h.note), 0);
-  if (!tokensWorthSaying(saved)) return null;
+  const saved = learningSavedTokens(hits);
+  if (!saved) return null;
   const read = hits.reduce((sum, h) => sum + readingTokens(h.note), 0);
   const minutes = hits.reduce((sum, h) => sum + (h.note.cost?.minutes ?? 0), 0);
   const time = minutes > 0 ? ` and ~${minutes} min` : "";

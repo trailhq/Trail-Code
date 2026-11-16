@@ -17,6 +17,7 @@
 import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { trailHome } from "../notes/home.js";
+import { telemetryOn } from "../telemetry/gate.js";
 import { ensurePrivateDir, PRIVATE_FILE_MODE } from "../util/private-file.js";
 import { readJson, writeJsonAtomic } from "../util/state.js";
 
@@ -157,12 +158,16 @@ export function sameWorkspace(a: Cloud, b: Cloud): boolean {
 
 /**
  * Whether the workspace side of trail is on: the sign-in link at the end of a
- * reply, and `login`, `logout` and `workspace`. Committing `.trail/` already
- * shares learnings with a team, so it stays off until signing in gives more
- * than that. TRAIL_CLOUD=1 turns it on; a machine already connected keeps it.
+ * reply, and `logout` and `workspace`. On by default, so people find
+ * team.trailhq.com from the session they're in. Off wherever telemetry is off
+ * (DO_NOT_TRACK, CI, `trail telemetry disable`, a build with no key): the
+ * link's background wait tells team.trailhq.com this repo's name before anyone
+ * clicks. TRAIL_CLOUD=0 turns it off, TRAIL_CLOUD=1 on; a machine already
+ * connected keeps it.
  */
 export function cloudEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.TRAIL_CLOUD === "1" || readCloud(env) !== null;
+  if (env.TRAIL_CLOUD === "1" || readCloud(env) !== null) return true;
+  return env.TRAIL_CLOUD !== "0" && telemetryOn(undefined, env);
 }
 
 /** Owner-only: the file holds the workspace token. */
@@ -212,7 +217,7 @@ export function isError(x: unknown): x is ApiError {
 
 async function call<T>(
   base: string,
-  method: "GET" | "POST" | "PUT",
+  method: "GET" | "POST" | "PUT" | "DELETE",
   path: string,
   body: unknown,
   opts: { token?: string; timeoutMs?: number; fetchImpl?: Fetch } = {},
@@ -245,7 +250,7 @@ async function call<T>(
   }
 }
 
-async function authed<T>(c: Cloud, method: "GET" | "POST" | "PUT", path: string, body: unknown, opts: { timeoutMs?: number; fetchImpl?: Fetch } = {}): Promise<T | ApiError> {
+async function authed<T>(c: Cloud, method: "GET" | "POST" | "PUT" | "DELETE", path: string, body: unknown, opts: { timeoutMs?: number; fetchImpl?: Fetch } = {}): Promise<T | ApiError> {
   const r = await call<T>(c.url, method, path, body, { ...opts, token: c.token });
   return isError(r) ? r : r.body;
 }
@@ -400,6 +405,8 @@ export interface UploadedLearning {
   touches: string[];
   body: string;
   hash: string;
+  /** The `touches` this checkout no longer has (notes/stale.ts); [] when all are there. Left out for a teammate's branch copy and for skills. */
+  missing?: string[];
   /** A skill's description: what it does and when to use it. */
   why?: string;
   /** A skill's other files: everything git tracks in its folder besides SKILL.md. */
@@ -483,6 +490,52 @@ export interface TeamView {
   members: Array<{ name: string; topics: string[]; learnings: number; reused: number }>;
   overlaps: Array<{ kind: string; text: string }>;
   url?: string;
+}
+
+/* shared sessions: the Trail team's own -------------------------------------- */
+
+/**
+ * Whether this workspace may send Trail a whole Claude Code session: only the
+ * Trail team's own, which trail-cloud decides. An error when Trail couldn't
+ * answer, or doesn't take sessions yet.
+ */
+export async function shareAllowed(c: Cloud, fetchImpl?: Fetch): Promise<boolean | ApiError> {
+  const r = await authed<{ ok?: boolean }>(c, "GET", "/api/cli/shared-sessions/allowed", undefined, { fetchImpl, timeoutMs: 10_000 });
+  if (!isError(r)) return r?.ok === true;
+  if (r.status === 403) return false;
+  if (r.status === 401) return { error: `this laptop's sign-in to ${c.workspace.name} has ended · run trail login`, status: 401 };
+  if (r.status === 404 || r.status === 405 || r.status === 503) return { error: "this Trail doesn't take shared sessions yet", status: r.status };
+  return r;
+}
+
+export interface SharedSession {
+  /** Made on the laptop for each send; groups one person's items without naming them. */
+  bundle_id: string;
+  kind: "session" | "setup";
+  /** The sha256, in hex, of the delete code's secret, which only the laptop has. */
+  delete_hash: string;
+  session_id: string;
+  /** `github.com/owner/name`, or "" outside a repo with a remote. */
+  repo: string;
+  trail_version: string;
+  title: string;
+  messages: number;
+  subagents: number;
+  /** The redacted JSONL's size before zipping. */
+  bytes: number;
+  /** How many secrets were taken out on this laptop. */
+  redacted: number;
+  /** The redacted JSONL, gzipped, in base64. */
+  transcript_gz: string;
+}
+
+export function shareSession(c: Cloud, body: SharedSession, fetchImpl?: Fetch): Promise<{ id: string; gz_bytes: number } | ApiError> {
+  return authed(c, "POST", "/api/cli/shared-sessions", body, { fetchImpl, timeoutMs: 120_000 });
+}
+
+/** Take back everything sent under one bundle: Trail deletes it when the code's hash matches. */
+export function deleteSharedBundle(c: Cloud, bundleId: string, code: string, fetchImpl?: Fetch): Promise<{ deleted: number } | ApiError> {
+  return authed(c, "DELETE", `/api/cli/shared-sessions/bundles/${encodeURIComponent(bundleId)}`, { delete_code: code }, { fetchImpl, timeoutMs: 60_000 });
 }
 
 export function fetchTeam(c: Cloud, opts: { repo?: string; days?: number } = {}, fetchImpl?: Fetch): Promise<TeamView | ApiError> {

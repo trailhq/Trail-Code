@@ -25,6 +25,16 @@ function repoWithBuildDir(): string {
   return d;
 }
 
+function repoWithHiddenDir(): string {
+  const d = mkdtempSync(join(tmpdir(), "graft-include-hidden-"));
+  mkdirSync(join(d, ".kb"), { recursive: true });
+  writeFileSync(join(d, ".kb", "engine.ts"), "export function fromKb(): number {\n  return 1;\n}\n");
+  mkdirSync(join(d, ".github"), { recursive: true });
+  writeFileSync(join(d, ".github", "ci.ts"), "export function fromGithub(): number {\n  return 2;\n}\n");
+  writeFileSync(join(d, "main.ts"), "export function main(): number {\n  return 3;\n}\n");
+  return d;
+}
+
 function runCli(args: string[]): void {
   execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", ...args], { stdio: "pipe" });
 }
@@ -116,21 +126,66 @@ test("A5: custom --dir builds keep repository config outside both output directo
   }
 });
 
-// --include-dir takes bare SKIP_DIRS-style directory NAMES, never paths, and
-// dot-dirs are (per the option's own help text) never overridable at all.
-// Without validation, a value like ".github" or "foo/bar" would silently
+// --include-dir takes bare directory NAMES, never paths. Named hidden
+// directories (.kb) are the same opt-in as SKIP_DIRS names; .git is never
+// overridable. Without validation, a value like "foo/bar" would silently
 // persist and then just never match any real directory name walkDir compares
-// against (shouldSkipDir compares against a single path segment), so the flag
-// would look accepted while doing nothing.
+// against (shouldSkipDir compares against a single path segment).
 
-test("A5: --include-dir rejects a dot-prefixed name", () => {
+test("A5: --include-dir rejects .git", () => {
   const d = repoWithBuildDir();
   try {
-    const r = runCliCapture(["build", d, "--include-dir", ".github"]);
+    const r = runCliCapture(["build", d, "--include-dir", ".git"]);
     assert.equal(r.status, 1, `expected exit 1, got ${r.status}\nstdout: ${r.stdout}\nstderr: ${r.stderr}`);
     assert.match(r.stderr, /--include-dir/);
-    assert.match(r.stderr, /\.github/);
+    assert.match(r.stderr, /\.git/);
     assert.equal(existsSync(join(d, ".graft", "config.json")), false, "must not persist an invalid value");
+  } finally {
+    rmSync(d, { recursive: true, force: true });
+  }
+});
+
+test("A5: .kb/ is absent by default, present with --include-dir .kb, persists across a no-flag rebuild; .github stays skipped", () => {
+  const d = repoWithHiddenDir();
+  try {
+    runCli(["build", d]);
+    const cold = graphOf(d);
+    assert.ok(cold, "expected a built graph.json");
+    assert.ok(!cold!.nodes.some((n) => n.path.startsWith(".kb/")), ".kb/ must be absent by default");
+    assert.ok(!cold!.nodes.some((n) => n.path.startsWith(".github/")), ".github/ must be absent by default");
+    assert.ok(cold!.nodes.some((n) => n.id === "main.ts#main"), "sanity: the non-skipped file is indexed");
+
+    runCli(["build", d, "--include-dir", ".kb"]);
+    const withFlag = graphOf(d);
+    assert.ok(withFlag);
+    assert.ok(
+      withFlag!.nodes.some((n) => n.id === ".kb/engine.ts#fromKb"),
+      ".kb/ must be included this run, with the flag, on the same root graph",
+    );
+    assert.ok(
+      withFlag!.nodes.some((n) => n.id === "main.ts#main"),
+      "the root file stays on the same graph as .kb/",
+    );
+    assert.ok(
+      !withFlag!.nodes.some((n) => n.path.startsWith(".github/")),
+      "including .kb must not pull in .github",
+    );
+
+    runCli(["build", d]);
+    const persisted = graphOf(d);
+    assert.ok(persisted);
+    assert.ok(
+      persisted!.nodes.some((n) => n.id === ".kb/engine.ts#fromKb"),
+      "a follow-up NO-FLAG rebuild must still include .kb/ (state-persisted)",
+    );
+    assert.ok(
+      !persisted!.nodes.some((n) => n.path.startsWith(".github/")),
+      "persisted .kb must not start indexing .github",
+    );
+
+    const drift = probeDrift(d, join(d, "graft"));
+    assert.ok(drift, "expected a fingerprint to probe against");
+    assert.ok(isClean(drift!), `probe must report clean, got ${JSON.stringify(drift)}`);
   } finally {
     rmSync(d, { recursive: true, force: true });
   }

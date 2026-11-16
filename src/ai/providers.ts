@@ -24,6 +24,10 @@ export interface EngineConfig {
   apiKey?: string;
   /** Model id. Env: GRAFT_MODEL. Provider-specific default. */
   model?: string;
+  /** Model id for the synthesis pass alone (`graft build --synth-model`), so a fast
+   *  non-reasoning model can write the concept nodes while per-file summaries use
+   *  another. Env: GRAFT_SYNTH_MODEL. Default: {@link model}. */
+  synthModel?: string;
   /** Base URL for OpenAI-compatible endpoints. Env: GRAFT_BASE_URL. */
   baseUrl?: string;
 
@@ -44,6 +48,8 @@ export interface ResolvedConfig {
   provider: ProviderKind;
   apiKey?: string;
   model: string;
+  /** The synthesis model: `synthModel` when configured, else {@link model}. */
+  synthModel: string;
   baseUrl?: string;
   headers?: Record<string, string>;
   /** True when the key came from the deprecated OPENROUTER_* fallback. */
@@ -89,6 +95,9 @@ export function resolveConfig(config: EngineConfig = {}): ResolvedConfig {
     env.ORCAROUTER_MODEL ??
     DEFAULT_MODELS[provider];
 
+  // Synthesis rides the build model unless a synthesis model of its own is set.
+  const synthModel = config.synthModel ?? env.GRAFT_SYNTH_MODEL ?? model;
+
   let baseUrl = config.baseUrl ?? env.GRAFT_BASE_URL ?? env.OPENROUTER_BASE_URL ?? env.ORCAROUTER_BASE_URL;
   // Back-compat: an existing setup with only OPENROUTER_API_KEY keeps hitting
   // OpenRouter without any config change.
@@ -106,6 +115,7 @@ export function resolveConfig(config: EngineConfig = {}): ResolvedConfig {
     provider,
     apiKey,
     model,
+    synthModel,
     baseUrl,
     headers,
     usedLegacyEnv,

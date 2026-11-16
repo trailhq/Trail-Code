@@ -40,6 +40,8 @@ export function maybeFlushInBackground(home?: string, now = Date.now()): boolean
     if (!queueHasEvents(home)) return false;
     if (!needsFlush(readState(home)?.flushedAt, now)) return false;
     patchState({ flushedAt: now }, home); // before the spawn, so a dying child costs one attempt
+    // patchState tolerates write failures; only spawn if the daily limit was saved.
+    if (readState(home)?.flushedAt !== now) return false;
     const child = spawn(process.execPath, [graftCliPath(), '_telemetry-flush'], {
       detached: true,
       stdio: 'ignore',

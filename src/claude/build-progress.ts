@@ -55,6 +55,7 @@ export async function buildGraphWithProgress(
     const child = spawn(process.execPath, [...process.execArgv, opts.cliPath!, "build", "."], {
       cwd: dir,
       stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
     });
     const timer = setTimeout(() => child.kill(), 300_000);
     timer.unref?.();

@@ -5,10 +5,9 @@ type Json = Record<string, any>;
 const slCmd = (name: 'graft' | 'trail' = 'graft') => `node "\${CLAUDE_PROJECT_DIR:-.}/.claude/helpers/${name}-statusline.cjs"`;
 /** trail's status line, from the shim in `.trail/` (see claude/init.ts). */
 const TRAIL_SL_CMD = 'node "${CLAUDE_PROJECT_DIR:-.}/.trail/statusline.cjs"';
-/** Stable marker for "this statusLine is Graft's", not the full command string —
- * an older shim path or a GRAFT_DIR wrapper still names this file. Either name. */
-const STATUSLINE_HELPER = /(graft|trail)-statusline\.cjs|\.trail\/statusline\.cjs/;
-const FOOTER = 'graft/[\\w./-]+\\.md';
+/** Stable marker for "this statusLine is Graft's/Trail's", matching standalone shim invocation
+ * without capturing user command chains or wrappers mentioning the path. */
+const STATUSLINE_HELPER = /^(?:sh -c ["'])?\s*node\s+["']?(?:\$\{CLAUDE_PROJECT_DIR:-[.]\}[/\\]|\.[/\\])?(?:\.claude[/\\]helpers[/\\](?:graft|trail)-statusline\.cjs|\.trail[/\\]statusline\.cjs)["']?\s*["']?$/;
 // Every form graft is actually invoked as. 'graft:*' covers a global install;
 // the other two cover a repo working on graft itself (or any consumer running it
 // from a checkout), where the binary is not on PATH under that name. A retrieval
@@ -131,7 +130,9 @@ export function statuslineWanted(opts: { statusline?: boolean } = {}): boolean {
   return opts.statusline !== false && !envNoStatusline();
 }
 
-function isGraftStatusline(value: unknown): boolean {
+/** True when a statusLine value is Graft's/Trail's own shim call, in any form init has
+ * ever written. A user's wrapper that also runs the helper is not ours. */
+export function isGraftStatusline(value: unknown): boolean {
   if (!value || typeof value !== 'object') return false;
   const command = (value as Json).command;
   return typeof command === 'string' && STATUSLINE_HELPER.test(command);
@@ -186,10 +187,9 @@ export function mergeGraftSettings(
     merged.hooks[event] = [...foreign, ...blocks];
   }
 
-  // Drop graft's own prior regex before re-adding, so a change to FOOTER replaces
-  // the old pattern instead of stacking beside it. The user's regexes are kept.
-  const priorFooter = Array.isArray(merged.footerLinksRegexes) ? merged.footerLinksRegexes : [];
-  merged.footerLinksRegexes = [...priorFooter.filter((r: unknown) => !isGraftFooterRegex(r)), FOOTER];
+  // Legacy graft footer entries were bare strings, which Claude Code rejects at
+  // every settings scope. Remove only graft's entries on wiring refresh.
+  dropGraftFooter(merged);
 
   // headless/subagent runs hard-deny Bash by default; without an allowlist entry
   // `graft ask`'s own Bash calls (and the skill it installs) can't run out-of-box.
@@ -208,9 +208,9 @@ export function mergeGraftSettings(
  * absolute path — `~/.claude/settings.json`, where a write reaches every project on
  * the machine (see hosts/claude-global.ts for why that copy has to exist).
  *
- * Hooks only, deliberately. `mergeGraftSettings` also claims the statusline, the
- * footer regex and a Bash allowlist, and each of those is a reasonable thing to
- * accept for a repo you ran `graft init` in and an unreasonable thing to impose on
+ * Hooks only, deliberately. `mergeGraftSettings` also claims the statusline and
+ * a Bash allowlist, and each of those is a reasonable thing to accept for a repo
+ * you ran `graft init` in and an unreasonable thing to impose on
  * every repo you ever open — a statusline especially, since a session allows exactly
  * one and taking it globally would silently outrank the user's own. The hooks are the
  * piece that has to be global, because they are what a worktree loses.
@@ -226,11 +226,20 @@ export function mergeGraftHooks(existing: Json, helpers: string): { merged: Json
     const foreign = prior.filter((e: Json) => !isGraftEntry(e));
     merged.hooks[event] = [...foreign, ...blocks];
   }
+  dropGraftFooter(merged);
   return { merged };
 }
 
+/** Drop graft's legacy footer strings; keep foreign entries and an absent key. */
+function dropGraftFooter(merged: Json): void {
+  if (!Array.isArray(merged.footerLinksRegexes)) return;
+  const kept = merged.footerLinksRegexes.filter((r: unknown) => !isGraftFooterRegex(r));
+  if (kept.length === 0) delete merged.footerLinksRegexes;
+  else merged.footerLinksRegexes = kept;
+}
+
 /** Drop every fragment graft or trail wrote from a settings object, keeping the user's. */
-function withoutOurs(existing: Json): Json {
+export function withoutOurs(existing: Json): Json {
   const merged: Json = { ...(existing ?? {}) };
   for (const key of ['statusLine', 'subagentStatusLine'] as const) if (isGraftStatusline(merged[key])) delete merged[key];
   if (merged.hooks && typeof merged.hooks === 'object' && !Array.isArray(merged.hooks)) {
@@ -277,31 +286,38 @@ export function mergeTrailShared(existing: Json): Json {
 
 /**
  * trail's part of `.claude/settings.local.json`, the person's own: the status
- * line, the footer regex and the allowlist, plus, when `~/.claude` doesn't carry
+ * line and the allowlist, plus, when `~/.claude` doesn't carry
  * them (`--no-global`), the hooks for every event but session start, which the
  * shared file already runs once.
+ *
+ * `theirs` is the other settings Claude Code reads here, `~/.claude/settings.json`
+ * and the repo's `.claude/settings.json`. This file outranks both, so a status
+ * line trail put here would hide one the person or their team set there, often
+ * the line that says which folder the terminal is in. Theirs wins.
  */
 export function mergeTrailLocal(
   existing: Json,
-  opts: { statusline?: boolean; hooks?: boolean } = {},
-): { merged: Json; warnings: string[] } {
+  opts: { statusline?: boolean; hooks?: boolean; sessionStart?: boolean; theirs?: (Json | null)[] } = {},
+): { merged: Json; warnings: string[]; statusline: 'trail' | 'theirs' | 'off' } {
   const merged = withoutOurs(existing);
   const warnings: string[] = [];
+  let statusline: 'trail' | 'theirs' | 'off' = 'off';
   if (statuslineWanted(opts)) {
     for (const key of ['statusLine', 'subagentStatusLine'] as const) {
-      if (!merged[key]) merged[key] = { type: 'command', command: TRAIL_SL_CMD };
+      const hasTheirs = (opts.theirs ?? []).some((s) => s?.[key] && !isGraftStatusline(s[key]));
+      if (!merged[key] && !hasTheirs) merged[key] = { type: 'command', command: TRAIL_SL_CMD };
       else if (key === 'statusLine') warnings.push('Existing statusLine left untouched (a session allows only one). To use Trail, point it at .trail/statusline.cjs.');
     }
+    statusline = merged.statusLine?.command === TRAIL_SL_CMD ? 'trail' : 'theirs';
   }
   if (opts.hooks) {
     merged.hooks = { ...(merged.hooks ?? {}) };
     for (const [event, blocks] of Object.entries(hookBlocks(trailHookCmd))) {
-      if (event === 'SessionStart') continue;
+      if (event === 'SessionStart' && !opts.sessionStart) continue;
       merged.hooks[event] = [...(Array.isArray(merged.hooks[event]) ? merged.hooks[event] : []), ...blocks];
     }
   }
-  merged.footerLinksRegexes = [...(merged.footerLinksRegexes ?? []), FOOTER];
   merged.permissions = { ...(merged.permissions ?? {}) };
   merged.permissions.allow = [...(merged.permissions.allow ?? []), ...ALLOW_ENTRIES];
-  return { merged, warnings };
+  return { merged, warnings, statusline };
 }
