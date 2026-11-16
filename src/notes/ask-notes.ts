@@ -3,8 +3,9 @@
  * answers through `Graft.ask` (the CLI's `ask` and the MCP `find_code`).
  */
 import type { AskResult } from "../ask/ask.js";
-import { findRepoPlace, keepsNotes } from "./home.js";
+import { findRepoPlace } from "./home.js";
 import { findNotes, listNotes } from "./notes.js";
+import { learningsOn } from "./solo.js";
 import { markStale } from "./stale.js";
 
 /** The file part of a hit's `file:Lx-Ly` pointer. */
@@ -15,7 +16,7 @@ function pointerFile(pointer: string): string {
 /** Attach the notes that bear on `r`, in place. A repo that keeps no notes on this machine is left alone. */
 export function attachNotes(r: AskResult, repo: string): AskResult {
   findRepoPlace(repo); // a repo whose remote changed finds its notes again
-  if (!keepsNotes(repo)) return r;
+  if (!learningsOn(repo)) return r;
   r.notesChecked = true;
   const hits = findNotes(listNotes(repo), r.query, r.hits.map((h) => pointerFile(h.pointer)));
   if (hits.length) r.notes = hits;

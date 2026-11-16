@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { brand, tag } from '../brand.js';
 import { scopeOf, scopesOfGraph } from '../graph/scopes.js';
-import { keepsNotes } from '../notes/home.js';
+import { learningsOn } from '../notes/solo.js';
 import { hookNotice, linkedNews } from '../cloud/nudge.js';
 import { findNotes, listNotes, type NoteHit } from '../notes/notes.js';
 import { markStale } from '../notes/stale.js';
@@ -205,7 +205,7 @@ export function promptLearnings(dir: string, prompt: string, ask: AskJson | null
 /** The learnings whose title or text share the prompt's words: no graph needed. Empty on any read failure. */
 function learningsByWords(dir: string, prompt: string): NoteHit[] {
   try {
-    return keepsNotes(dir) ? findNotes(listNotes(dir), prompt) : [];
+    return learningsOn(dir) ? findNotes(listNotes(dir), prompt) : [];
   } catch {
     // Nothing matched by words this time; the ask's own matches still count.
     return [];

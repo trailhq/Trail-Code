@@ -96,6 +96,7 @@ import { dropActivity, inWorkspace, maybeSyncInBackground, recordActivity, runSy
 import type { CheckResult } from "./check/types.js";
 import { checkLocally } from "./check/local-check.js";
 import { askJustMe, isJustMe, setJustMe } from "./notes/just-me.js";
+import { isSolo, setSolo } from "./notes/solo.js";
 import { keepOutOfGit, letGitSee } from "./claude/init.js";
 import { findLearning, learningFileName, liveLearnings } from "./notes/learning-fields.js";
 import { savedIdLine } from "./notes/replace.js";
@@ -1306,6 +1307,7 @@ grouped(program.command("init"), GROUP.setup)
   .option("--dry-run", "print every file init would touch, then exit without writing")
   .option("--just-me", "trail just for you here: git sees none of it, your learnings stay in ~/.trail, and nothing asks you to commit or share")
   .option("--team", "share trail with your team here: you commit .trail/ and .claude/settings.json once, and teammates' Claude reads your learnings")
+  .option("--solo", "graft map only: learnings, skills offers and look-back stay off (toggle later with trail solo)")
   .option("-y, --yes", "skip the picker and wire every detected agent (the pre-0.8 default)")
   .option("--no-global", "skip writes and removals outside this repo")
   .option("--verbose", "print every file written, the graph build's own output and the closing banner")
@@ -1327,9 +1329,24 @@ grouped(program.command("init"), GROUP.setup)
       process.exitCode = 1;
       return;
     }
+    if (opts.solo && (opts.lookBack || opts.claudeMemory !== undefined)) {
+      console.error("✗ --solo turns learnings off: leave out --look-back and --claude-memory, or drop --solo");
+      process.exitCode = 1;
+      return;
+    }
     if (opts.connect !== undefined) await runConnectInit(dir, opts);
     else await runInitCommand(dir, opts);
   });
+
+// Solo mode: graft map only for this repo. No args toggles on ↔ off.
+if (TRAIL) {
+  grouped(program.command("solo"), GROUP.setup)
+    .description("Toggle solo mode in this repo: learnings off, graft map only (or turn learnings back on)")
+    .argument("[dir]", "repository root", ".")
+    .action((dir: string) => {
+      runSoloToggle(resolve(dir));
+    });
+}
 
 // `trail init` prints this when there was no terminal to ask on (an agent ran
 // it) or with --yes: the person picks what to keep from what the look-back
@@ -1368,6 +1385,11 @@ interface NoteOptions {
 }
 
 async function runNoteCommand(repo: string, opts: NoteOptions): Promise<void> {
+  if (isSolo(repo)) {
+    console.error(`✗ solo mode is on here: learnings are off. Run ${cmd("graft solo")} to turn them back on.`);
+    process.exitCode = 1;
+    return;
+  }
   const body = (opts.body ?? (await readStdin())).trim();
   if (!opts.title.trim() || !body) {
     console.error(`✗ a learning needs a --title and a body, on stdin or with -m:`);
@@ -1554,7 +1576,7 @@ function printLines(lines: string[]): void {
 }
 
 /** `graft init`'s flags, as commander hands them over. */
-interface InitOptions { build?: boolean; agents?: string[]; allAgents?: boolean; listAgents?: boolean; mcp?: boolean; hooks?: boolean; statusline?: boolean; dryRun?: boolean; yes?: boolean; global?: boolean; verbose?: boolean; connect?: string; pair?: string; server?: string; plain?: boolean; lookBack?: boolean; claudeMemory?: string }
+interface InitOptions { build?: boolean; agents?: string[]; allAgents?: boolean; listAgents?: boolean; mcp?: boolean; hooks?: boolean; statusline?: boolean; dryRun?: boolean; yes?: boolean; global?: boolean; verbose?: boolean; connect?: string; pair?: string; server?: string; plain?: boolean; lookBack?: boolean; claudeMemory?: string; solo?: boolean; justMe?: boolean; team?: boolean }
 
 /** What `init --connect` and `--pair` hear from a run of init, as it happens: the stages the web page ticks off. */
 interface InitProgress {
@@ -1619,6 +1641,22 @@ async function readClaudeExport(file: string): Promise<string | undefined> {
 }
 
 let livePair: PairRun | null = null;
+
+/** `trail solo`: toggle Part 2 off/on for this repo (notes/solo.ts). */
+function runSoloToggle(dir: string): void {
+  if (!isGitWorkTree(dir)) {
+    console.error("✗ not a git repository");
+    process.exitCode = 1;
+    return;
+  }
+  const on = !isSolo(dir);
+  setSolo(dir, on);
+  if (on) {
+    console.error(`✓ solo on · learnings are off here; only the graft map stays. Run ${cmd("graft solo")} again to turn learnings back on.`);
+  } else {
+    console.error(`✓ solo off · learnings are on again here. Run ${cmd("graft solo")} to turn them off.`);
+  }
+}
 
 /** `graft init`. */
 async function runInitCommand(dir: string, opts: InitOptions, progress?: InitProgress): Promise<{ ids: string[]; laptop: string[] } | null> {
@@ -1744,14 +1782,14 @@ async function runInitCommand(dir: string, opts: InitOptions, progress?: InitPro
 
     // Who trail is for here (notes/just-me.ts), settled before anything is written. Asked on a terminal, in a repo
     // whose team hasn't committed `.trail/`; a repo already on trail just for this person stays so until --team.
-    const scopeFlags = opts as { justMe?: boolean; team?: boolean };
-    if (scopeFlags.justMe && scopeFlags.team) {
+    if (opts.justMe && opts.team) {
       console.error("✗ --just-me and --team are the two answers to one question: give one");
       process.exitCode = 1;
       return null;
     }
     let justMe = false;
-    let scope: "just_me" | "team" | "unasked" = scopeFlags.justMe ? "just_me" : scopeFlags.team ? "team" : "unasked";
+    let scope: "just_me" | "team" | "unasked" = opts.justMe ? "just_me" : opts.team ? "team" : "unasked";
+    const solo = TRAIL && opts.solo === true;
     if (TRAIL && isGitWorkTree(repo) && opts.pair === undefined && opts.connect === undefined) {
       if (scope !== "unasked") justMe = scope === "just_me";
       else if (trailCommitted(repo)) justMe = false;
@@ -1775,6 +1813,8 @@ async function runInitCommand(dir: string, opts: InitOptions, progress?: InitPro
           setJustMe(target, false);
           letGitSee(target, ".trail");
         }
+        // Solo (notes/solo.ts): graft map only; Part 2 off until `trail solo` toggles it.
+        if (solo) setSolo(target, true);
       }
     }
 
@@ -1840,10 +1880,11 @@ async function runInitCommand(dir: string, opts: InitOptions, progress?: InitPro
     // Under trail, with Claude Code picked: look back at this repo's past
     // sessions and PR reviews while the rest of init runs, and offer what came
     // up at the end. Nothing is kept without a tick (see src/init/review.ts).
+    // Solo skips look-back: Part 2 is off.
     const tty = Boolean(process.stdin.isTTY && process.stderr.isTTY);
     // Past Claude sessions are on this laptop only where Claude Code is.
     const claudeExport = opts.claudeMemory === undefined ? undefined : await readClaudeExport(opts.claudeMemory);
-    const lookBack = TRAIL && wantClaude && (!laptop || laptop.includes("claude"))
+    const lookBack = TRAIL && !solo && wantClaude && (!laptop || laptop.includes("claude"))
       ? beginLookBack(repo, { plain: opts.plain === true, again: opts.lookBack === true, pair: pair !== null, ...(claudeExport !== undefined ? { claudeExport } : {}) })
       : null;
     for (const line of lookBack?.lines ?? []) console.error(line);
@@ -2010,7 +2051,9 @@ async function runInitCommand(dir: string, opts: InitOptions, progress?: InitPro
     }
     // Not looked back (not trail, or not Claude Code): the page still gets its stage.
     if (!lookBack) report?.learned?.({ notes: [], sessions: 0 });
-    if (TRAIL && !learnedNow) {
+    if (TRAIL && solo) {
+      console.error(`✓ solo  graft map only · learnings are off. Toggle with ${cmd("graft solo")}`);
+    } else if (TRAIL && !learnedNow) {
       const home = notesHome.get(repo);
       if (home && justMe) console.error(`✓ learnings  ${shownPath(trailHome())} · just for you: a session that fixes a bug, takes a correction or opens a PR leaves one there`);
       else if (home) {
@@ -3234,6 +3277,11 @@ async function runTeamCheck(dir: string, opts: { base?: string; json?: boolean }
   // From the top of the checkout: git names changed files from there, and a learning's touches have to
   // line up with them exactly to fail the check. From a folder inside, none ever would.
   const repo = checkoutRoot(dir) ?? dir;
+  if (isSolo(repo)) {
+    console.error(`✗ solo mode is on here: learnings are off, so there is nothing to check. Run ${cmd("graft solo")} to turn them back on.`);
+    process.exitCode = 1;
+    return;
+  }
   const d = branchDiff(repo, opts.base);
   if (!d) {
     console.error("✗ not a git repository");

@@ -31,6 +31,7 @@ import { LEARNING_KEYS, learningFileName, liveLearnings, newLearningId, readLear
 import { ensureRepoTrail, LEARNINGS_DIR, learningsDir } from "./repo-trail.js";
 import { TOUCH_CHARS, TOUCH_LIMIT } from "./targets.js";
 import { isJustMe } from "./just-me.js";
+import { isSolo } from "./solo.js";
 
 // Where a learning goes, which to show for a query and how one is credited live in their own files.
 export { findNotes, type NoteHit } from "./find-notes.js";
@@ -297,6 +298,10 @@ export function writeNote(dir: string, input: WriteNoteInput, scope: LearningSco
     // Codex's sandbox can't write ~/.trail. A learning added to the repo doesn't need it, so it's still saved.
     place = repoPlace(dir);
     if (scope !== "repo" || !place.git) throw e;
+  }
+  // Solo mode (notes/solo.ts): Part 2 off — nothing new is saved here.
+  if (place.git && isSolo(place.checkout)) {
+    throw new Error("solo: learnings are off in this repo. Run trail solo to turn them back on.");
   }
   const inRepo = scope === "repo" && place.git;
   let notes: string;

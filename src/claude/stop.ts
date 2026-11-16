@@ -23,7 +23,7 @@ import { catchUpTranscript, hasSavingsTally, type TranscriptCatchUp } from './ta
 import { detectHost } from '../trace/host.js';
 import { hookCursorPath } from '../trace/state.js';
 import { trailHome } from '../notes/trail-home.js';
-import { keepsNotes } from '../notes/home.js';
+import { learningsOn } from '../notes/solo.js';
 import { maybeSyncInBackground } from '../cloud/workspace-sync.js';
 import { brand } from '../brand.js';
 import { NOTE_ASKS_PER_SESSION, noteAsk, noteSignals } from './note-signals.js';
@@ -141,7 +141,7 @@ function turnEnd(input: StopInput, dir: string): string | null {
  */
 export function askForNote(input: { stop_hook_active?: unknown }, dir: string, id: string, transcript: string | null): HookOut {
   try {
-    if (!transcript || brand() !== 'trail' || input.stop_hook_active || !keepsNotes(dir)) return {};
+    if (!transcript || brand() !== 'trail' || input.stop_hook_active || !learningsOn(dir)) return {};
     const s = readSession(dir, id);
     const asked = s.noteAsks ?? [];
     if (asked.length >= NOTE_ASKS_PER_SESSION) return {};

@@ -20,6 +20,7 @@ import { tmpdir } from 'node:os';
 import { resolve, sep } from 'node:path';
 import { payloadSessionId } from '../claude/hook-io.js';
 import { repoPlace, type RepoPlace } from '../notes/home.js';
+import { isSolo } from '../notes/solo.js';
 import { trailHome } from '../notes/trail-home.js';
 import { labInteractive, readSettings, trailNow } from '../skills/settings.js';
 import { hostTier } from '../skills/host-facts.js';
@@ -34,7 +35,7 @@ import type { CodexMeta, RunState, SkillInjection, SkillSessionState } from './t
 
 export { housekeeping } from './housekeeping.js';
 
-export type SkipWhy = 'no-hooks' | 'off' | 'no-session';
+export type SkipWhy = 'no-hooks' | 'off' | 'no-session' | 'solo';
 export type LearnOffWhy = 'host' | 'headless' | 'ci' | 'subagent' | 'scratch' | 'ephemeral';   // 'host': fold on, learn off; 'ephemeral': a Codex session with no rollout
 export interface GateCtx {
   sessionId: string;
@@ -93,6 +94,8 @@ export function skillsGate(input: any, dir: string, env: NodeJS.ProcessEnv = pro
   const script = (typeof ep === 'string' && ep.startsWith('sdk')) || (!ep && info.host === 'claude') || codexScript;
   const entry: GateCtx['entry'] = script && !labInteractive(env) ? 'headless' : 'interactive';
   const cwd = typeof p.cwd === 'string' && p.cwd ? p.cwd : dir;
+  // Solo mode (notes/solo.ts): Part 2 off for this repo — no skills offers, credit, or live saves.
+  if (isSolo(cwd, env)) return { ok: false, why: 'solo' };
   const learnOff: LearnOffWhy | null = subagent ? 'subagent'
     // A Codex session kept nowhere on disk (R18): nothing to fold or learn from, recall only.
     : codex && !transcript ? 'ephemeral'

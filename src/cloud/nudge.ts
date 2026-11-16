@@ -25,6 +25,7 @@ import { brand } from "../brand.js";
 import { graftCliPath } from "../claude/paths.js";
 import { keepsNotes, knownRepos, noteCount, repoName, repoPlace, trailHome } from "../notes/home.js";
 import { isJustMe } from "../notes/just-me.js";
+import { isSolo } from "../notes/solo.js";
 import { currentTranscript } from "../notes/session-cost.js";
 import { durationBucket } from "../telemetry/contract.js";
 import { track } from "../telemetry/track.js";
@@ -180,6 +181,8 @@ export function cloudLines(repo: string, opts: NudgeOptions): string[] {
     // A repo with no remote has no name a workspace could know it by.
     const place = repoPlace(repo, env);
     if (!place.git || place.key.startsWith("local/") || !keepsNotes(repo, env)) return [];
+    // Solo: learnings are off, so nothing asks them to share.
+    if (isSolo(repo, env)) return [];
     // Trail just for this person here: nothing asks them to share until they say so (`trail init --team`).
     if (isJustMe(repo, env)) return [];
     // Linked already: its learnings go to that workspace.

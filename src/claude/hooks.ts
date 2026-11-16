@@ -19,6 +19,7 @@ import { runUpkeep } from '../upkeep-run.js';
 import { runningVersion, wiredHostIds } from '../upkeep.js';
 import { hostsWiredForTrail } from '../hosts/registry.js';
 import { isJustMe, JUST_ME_DIRECTIVE } from '../notes/just-me.js';
+import { isSolo, learningsOn, SOLO_DIRECTIVE } from '../notes/solo.js';
 import { flushClosedSessions, summarizeSession } from '../telemetry/sessions.js';
 import { maybeFlushInBackground } from '../telemetry/flush.js';
 import { handleStopEvent } from './stop.js';
@@ -129,7 +130,7 @@ const INJECTED_OVERLAPS_CAP = 40;
  * when the edited file is one some branch changes. Never throws.
  */
 async function editOverlap(input: any, dir: string, file: string): Promise<string | null> {
-  if (brand() !== 'trail' || !keepsNotes(dir)) return null;
+  if (brand() !== 'trail' || !learningsOn(dir)) return null;
   try {
     const top = repoPlace(dir);
     if (!top.git) return null;
@@ -201,7 +202,7 @@ function sameRepo(checkout: string, dir: string): boolean {
  */
 export function learningsOnTouch(input: any, dir: string, before = false): string | null {
   try {
-    if (brand() !== 'trail' || !keepsNotes(dir)) return null;
+    if (brand() !== 'trail' || !learningsOn(dir)) return null;
     const ti = input?.tool_input ?? {};
     const path = typeof ti.file_path === 'string' ? ti.file_path : typeof ti.notebook_path === 'string' ? ti.notebook_path : null;
     let touch: Touch;
@@ -387,6 +388,7 @@ export function uncommittedDirective(dir: string, now = Date.now()): string {
   try {
     const place = repoPlace(dir);
     if (!place.git) return '';
+    if (isSolo(place.checkout)) return `${tag()} ${SOLO_DIRECTIVE}\n`;
     if (isJustMe(place.checkout)) return `${tag()} ${JUST_ME_DIRECTIVE}\n`;
     const status = execFileSync('git', ['status', '--porcelain', '--untracked-files=all', '--', '.trail/learnings'], {
       cwd: place.checkout, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000, windowsHide: true,
@@ -442,7 +444,7 @@ export const BRANCH_FETCH_CAP_MS = 3000;
  * The sync only spawns a detached child.
  */
 function trailAtStart(dir: string): void {
-  if (brand() !== 'trail' || !keepsNotes(dir)) return;
+  if (brand() !== 'trail' || !learningsOn(dir)) return;
   try {
     const top = repoPlace(dir);
     if (top.git && branchesStale(top.checkout, Date.now(), SESSION_REFRESH_MS)) refreshBranches(top.checkout, { fetchTimeoutMs: BRANCH_FETCH_CAP_MS });
@@ -471,6 +473,8 @@ interface StartLearnings {
 function learningsAtStart(dir: string): StartLearnings {
   // 1b (P21, J16): every-repo personal learnings load in every repo, a plain one too, skills on or off; never a
   // lesson (R47: everyRepoLearnings leaves them out). Shown as standing learnings, phase 0's framing.
+  // Solo (notes/solo.ts): Part 2 off — only the solo directive, no standing learnings or skills line.
+  if (isSolo(dir)) return { kept: false, count: 0, extra: `${tag()} ${SOLO_DIRECTIVE}\n` };
   let every: Note[] = [];
   try { every = everyRepoLearnings(); } catch { /* none this time */ }
   try {

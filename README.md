@@ -114,6 +114,8 @@ That is the whole setup. `trail init` asks which of your coding agents to wire u
 
 On a repo whose team hasn't set up trail yet, `trail init` asks who it's for. My team, which enter picks, sets it up for you to commit once, as below. Just me keeps all of it out of git for your clone only (in `.git/info/exclude`) and your learnings in `~/.trail`, so there is nothing to commit and nothing asks you to share. Run `trail init --team` when you want your team on it.
 
+Want only the graft code map, with learnings off? `trail init --solo`, or `trail solo` in a repo already on trail. That turns off look-back, saving and injecting learnings, skills offers and the learnings check. The map (`trail ask`, `grep`, `map`, `callers`, `blast`) stays. Run `trail solo` again to turn learnings back on.
+
 Commit the setup so your teammates get it too. The graft map itself, in `graft/`, is a local cache like `node_modules` and is added to `.gitignore`, so it stays out of the commit:
 
 ```bash
@@ -571,6 +573,7 @@ With no TTY to prompt on (CI, a Dockerfile, a piped shell), `init` writes **noth
 | `--dry-run` | print the agent wiring `init` would write, then exit without writing |
 | `--just-me` | trail just for you in this repo: git sees none of it and your learnings stay in `~/.trail` |
 | `--team` | share trail with your team: commit `.trail/` and `.claude/settings.json` once |
+| `--solo` | graft map only: learnings, skills offers and look-back stay off (toggle later with `trail solo`) |
 | `--all-agents` | write instruction files for every known agent, detected or not |
 | `--no-agents` | Claude Code wiring only; skip other agents |
 | `--list-agents` | print the known agent ids and exit |
@@ -691,6 +694,8 @@ trail init --no-statusline           # skip Claude Code statusLine (same as GRAF
 trail init --no-build                # wire the files only; don't build the graph
 trail init --all-agents              # wire every known agent, detected or not
 trail init --list-agents             # list known agent ids and exit
+trail init --solo                    # graft map only: learnings off (toggle later with trail solo)
+trail solo [dir]                     # toggle solo mode: learnings off ↔ on for this repo
 
 trail build [dir]                    # build the graft map in graft/: wiring graph + per-file cards (no LLM, no key)
 trail build --deep                   # add the LLM layer: concept nodes + per-symbol summary/crux (cached)
