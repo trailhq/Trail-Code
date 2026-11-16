@@ -18,7 +18,8 @@
  * degrade safely: no fingerprint → "unknown, rebuild"; no parse cache → the
  * rebuild is just cold.
  */
-import { join } from "node:path";
+import { readdirSync, realpathSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { CACHE_DIR } from "../context/node-file.js";
 import { contentHash } from "../util/id.js";
 import { readSourceFile } from "../util/source.js";
@@ -27,7 +28,7 @@ import { extractorStamp, pruneSidecars, type ExtractEntry } from "./extract-cach
 import { listSourceStats } from "./source-files.js";
 
 export const FINGERPRINT_PREFIX = "fingerprint";
-const FINGERPRINT_VERSION = 1;
+const FINGERPRINT_VERSION = 2;
 
 /** The identity this graft's prints are filed under. Unlike the extract memo, a
  * missing extractor identity is *not* disqualifying here: freshness is a claim about
@@ -56,6 +57,10 @@ export interface Fingerprint {
   onlyDirs?: string[];
   /** Normalized source extension selection (`--extensions`); absent = all supported. */
   extensions?: string[];
+  /** Absolute source root this build ran on. The refresh gate compares it against
+   * the root a query resolved: a graph built for repo A must never be rebuilt from
+   * repo B's file set (#438). */
+  root?: string;
 }
 
 /** What moved since the last build. Empty in all three arrays = nothing to do. */
@@ -91,6 +96,7 @@ export function writeFingerprint(
   entries: Record<string, ExtractEntry>,
   onlyDirs?: string[],
   extensions?: string[],
+  root?: string,
 ): boolean {
   const files: Record<string, Print> = {};
   for (const [rel, e] of Object.entries(entries)) files[rel] = [e.size, e.mtimeMs, e.hash];
@@ -98,11 +104,90 @@ export function writeFingerprint(
     const record: Fingerprint = { version: FINGERPRINT_VERSION, extractor: stamp(), files };
     if (onlyDirs && onlyDirs.length > 0) record.onlyDirs = onlyDirs;
     if (extensions && extensions.length > 0) record.extensions = extensions;
+    if (root) record.root = root;
     writeJsonAtomic(fingerprintPath(outDir), record, true);
     pruneSidecars(join(outDir, CACHE_DIR), FINGERPRINT_PREFIX);
     return true;
   } catch {
     return false;
+  }
+}
+
+/**
+ * The path as the filesystem answers it: symlinks resolved, so `/tmp/x` and
+ * `/private/tmp/x` compare equal on macOS, where they are the same directory.
+ *
+ * `realpathSync` throws for a path that does not exist, and the guard has to
+ * answer for a root the user may have mistyped, so fall back to `resolve` there
+ * — a lexical normalization still catches trailing slashes and `.` segments,
+ * which is the rest of what this comparison is for.
+ */
+function realPath(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return resolve(p);
+  }
+}
+
+/**
+ * Is the graph still homed at this root?
+ *
+ * Compared as real paths: macOS symlinks `/tmp` to `/private/tmp`, so a graph
+ * built through one name and queried through the other is the same graph, and
+ * treating it as a move would refuse to refresh it forever. Case-insensitive on
+ * Windows, where the same directory legitimately answers to different casing.
+ */
+export function sameGraphRoot(recorded: string | undefined, resolved: string): boolean {
+  if (!recorded) return true; // a graph that never recorded a root is not evidence of a move
+  const a = realPath(recorded);
+  const b = realPath(resolved);
+  if (a === b) return true;
+  return process.platform === "win32" && a.toLowerCase() === b.toLowerCase();
+}
+
+/**
+ * The refresh gate's answer when the graph belongs to a different root (#438).
+ *
+ * Returns an actionable stderr note, or null when the roots match (or nothing was
+ * recorded). The caller must NOT rebuild on a mismatch: an `ask` that lost its
+ * repo-root positional anchors on the cwd concludes every file changed and
+ * rebuilds the graph empty in a second — with the per-file cards surviving to
+ * mask the damage. Refusing to touch the graph keeps it intact and tells the
+ * user the one argument that makes the refresh honest.
+ */
+export function graphRootGuardNote(recorded: string | undefined, resolved: string): string | null {
+  if (sameGraphRoot(recorded, resolved)) return null;
+  return (
+    `graph was built for ${recorded}, not ${resolve(resolved)} — ` +
+    `answering from the existing graph; to refresh it, pass its root: ` +
+    `graft ask <query> ${recorded}`
+  );
+}
+
+/** Re-home a seeded worktree's copied fingerprint sidecars on the worktree root.
+ * The seed copies the parent checkout's fingerprint verbatim (its prints are the
+ * diff base the worktree refresh wants), so without this the copied `root` would
+ * keep every worktree query looking like a foreign root. Best-effort: a failure
+ * costs the next query its root guard, never a wrong answer. */
+export function restampFingerprintRoot(outDir: string, root: string): void {
+  const cacheDir = join(outDir, CACHE_DIR);
+  let entries: string[];
+  try {
+    entries = readdirSync(cacheDir).filter((name) => name.startsWith(`${FINGERPRINT_PREFIX}.`));
+  } catch {
+    return;
+  }
+  for (const name of entries) {
+    const path = join(cacheDir, name);
+    try {
+      const record = readJson<Fingerprint>(path);
+      if (!record || typeof record !== "object" || record.root === root) continue;
+      record.root = root;
+      writeJsonAtomic(path, record, true);
+    } catch {
+      /* one sidecar failing to re-home must not fail the seed */
+    }
   }
 }
 
