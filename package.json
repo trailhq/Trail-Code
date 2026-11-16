@@ -1,8 +1,13 @@
 {
   "name": "@nanonets/graft",
-  "version": "0.28.0",
+  "version": "0.29.0",
   "description": "Build a repo's context graph as a folder of linked markdown files: a local, regenerable cache that every query keeps in sync with your code.",
   "keywords": [
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "claude-code",
+    "cursor",
     "ai",
     "agents",
     "knowledge-graph",
