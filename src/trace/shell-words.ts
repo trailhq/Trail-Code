@@ -460,6 +460,63 @@ const PY_GIT_DIFF = new RegExp(
 );
 const DIFF_OPTIONS = new Set(['--binary', '--stat', '--name-only', '--name-status', '--patch', '--cached', '--staged', '--no-ext-diff', '--no-textconv']);
 
+/** Inert Python literal/comment text, never the expressions of an f-string. */
+function pythonReportCode(code: string): string | null {
+  let out = '';
+  for (let i = 0; i < code.length;) {
+    const ch = code[i];
+    if (ch === '#') {
+      const end = code.indexOf('\n', i);
+      i = end < 0 ? code.length : end;
+    } else if (ch === "'" || ch === '"') {
+      // Prefixed strings are unnecessary for reports; notably f-strings run code.
+      if (i > 0 && /[\w]/.test(code[i - 1])) return null;
+      const quote = code.startsWith(ch.repeat(3), i) ? ch.repeat(3) : ch;
+      i += quote.length;
+      let closed = false;
+      while (i < code.length) {
+        if (code[i] === '\\') { i += 2; continue; }
+        if (code.startsWith(quote, i)) { i += quote.length; closed = true; break; }
+        if (quote.length === 1 && /[\r\n]/.test(code[i])) return null;
+        i++;
+      }
+      if (!closed) return null;
+      out += '0';
+    } else {
+      // Keep line continuations/dynamic spellings outside this small grammar.
+      if (ch === '\\') return null;
+      out += ch;
+      i++;
+    }
+  }
+  return out;
+}
+
+/** Only ordinary literal report construction may accompany an exempt diff. */
+function onlyPythonReportCalls(code: string): boolean {
+  const visible = pythonReportCode(code);
+  if (visible === null || /\b(?:def|class|lambda|async|await)\b/.test(visible)) return false;
+  // Parenthesized Path division is data, not a callable expression. Require a
+  // slash and do not consume the argument list of any function/method.
+  const pathPart = String.raw`(?:[A-Za-z_]\w*(?:\.\w+)*|0)`;
+  const plain = visible.replace(new RegExp(String.raw`(?<![\w.)])\(\s*${pathPart}(?:\s*/\s*${pathPart})+\s*\)`, 'g'), 'report_path');
+  // Do not let names/methods below be rebound to a launcher or another callable.
+  if (/\b(?:Path|print|len|subprocess)\s*=|\.\s*[A-Za-z_]\w*\s*=/.test(plain)) return false;
+  for (const m of plain.matchAll(/(?:^|[;\n])\s*((?:import|from)\b[^;\n]*)/g)) {
+    if (!/^(?:import\s+subprocess|from\s+pathlib\s+import\s+Path)\s*$/.test(m[1])) return false;
+  }
+  const reportMethod = /^(?:[A-Za-z_]\w*\.)*(?:mkdir|read_bytes|write_bytes|read_text|write_text|exists|is_file)$/;
+  for (const m of plain.matchAll(/([A-Za-z_]\w*(?:\.\w+)*)\s*\(|\(/g)) {
+    const name = m[1];
+    if (!name) return false; // Grouped/dynamic calls are outside this grammar.
+    if (['Path', 'print', 'len'].includes(name)) continue;
+    // A bare method name can follow a checked Path(...) constructor result.
+    if (reportMethod.test(name) && (name.includes('.') || plain[m.index! - 1] === '.')) continue;
+    return false;
+  }
+  return true;
+}
+
 /** Hide only literal git diff path arguments, never a whole interpreter. */
 function withoutGitDiffPaths(code: string): string {
   let stripped = code;
@@ -477,10 +534,10 @@ function withoutGitDiffPaths(code: string): string {
     const clean = list.replace(paths, (literal) => index++ > separator ? "'path'" : literal);
     return call.slice(0, start) + clean + call.slice(start + list.length);
   });
-  // Never hide the only literal used by an outer launch, a later launch using
-  // CompletedProcess.args, or an eval of the captured diff. Mixed execution is
-  // deliberately left to the existing conservative guard.
-  if (/\b(?:require|import|import_module|spawn|spawnSync|exec|execSync|execFile|execFileSync|fork|execa|Popen|run|call|check_call|check_output|getoutput|system|popen|eval|run_path)\s*\(/i.test(stripped)) return code;
+  // Never maintain a partial launcher blacklist: every other call must be an
+  // ordinary report operation. In particular CompletedProcess.args/stdout must
+  // not be reused by an outer/later execution function, whatever its name.
+  if (!onlyPythonReportCalls(stripped)) return code;
   return clean;
 }
 

@@ -81,6 +81,7 @@ test('running the hook script stays denied, through node, a shell, ./, xargs, a 
 // a python heredoc that edits source naming the shim, `cat >> notes <<EOF` prose, a hooks.json written from a heredoc.
 // Also deleting a stale copy, a syntax check, an existence test and git bookkeeping. None of them runs it.
 const MENTIONS = [
+  `python3 - <<'EOF'\nfrom pathlib import Path\nimport subprocess\nroot = Path('/tmp/report')\nroot.mkdir(parents=True, exist_ok=True)\np = Path('/tmp/source')\n(root / p.name).write_bytes(p.read_bytes())\nr = subprocess.run(['git', 'diff', '--binary', '--', '${H}'], cwd=worktree, capture_output=True, check=True)\n(root / 'diff.patch').write_bytes(r.stdout)\n(root / 'report.md').write_text('''Report mentions subprocess.run() and os.execlp(), but runs neither here.''')\nprint(root, len(r.stdout))\nEOF`,
   `python3 - <<'EOF'\nimport subprocess\nr = subprocess.run(['git', 'diff', '--binary', '--', '${H}', 'AGENTS.md'], cwd=worktree, capture_output=True, check=True)\nEOF`,
   `python3 -c "import subprocess; subprocess.check_output(['git', 'diff', '--', '${H}'])"`,
   `python3 - <<'EOF'\nimport subprocess\nsubprocess.run([\"/usr/bin/git\", \"diff\", \"--no-ext-diff\", \"--no-textconv\", \"--\", \"${H}\"], text=True, stdout=subprocess.PIPE)\nEOF`,
@@ -104,6 +105,12 @@ const MENTIONS = [
 ];
 
 const STILL_RUNS = [
+  `python3 - <<'EOF'\nimport subprocess\nimport os\nr = subprocess.run(['git', 'diff', '--', '${H}'])\nos.execlp('node', 'node', r.args[3], 'stop')\nEOF`,
+  `python3 - <<'EOF'\nimport subprocess\nr = subprocess.run(['git', 'diff', '--', '${H}'])\nsubprocess.os.posix_spawnp('node', ['node', r.args[3], 'stop'], {})\nEOF`,
+  `python3 - <<'EOF'\nimport subprocess\nr = subprocess.run(['git', 'diff', '--', '${H}'])\ngetattr(subprocess.os, 'execlp')('node', 'node', r.args[3], 'stop')\nEOF`,
+  `python3 - <<'EOF'\nimport subprocess\nr = subprocess.run(['git', 'diff', '--', '${H}'])\nprint(f"{subprocess.os.execlp('node', 'node', r.args[3], 'stop')}")\nEOF`,
+  `python3 - <<'EOF'\nimport subprocess\nr = subprocess.run(['git', 'diff', '--', '${H}'])\nprint = subprocess.os.execlp\nprint('node', 'node', r.args[3], 'stop')\nEOF`,
+  `python3 - <<'EOF'\nimport subprocess\nr = subprocess.run(['git', 'diff', '--', '${H}'])\nclass Run:\n def write_text(self):\n  pass\nRun().write_text()\nEOF`,
   `python3 - <<'EOF'\nimport subprocess\nsubprocess.run(['node', subprocess.run(['git', 'diff', '--', '${H}']).args[3], 'stop'])\nEOF`,
   `python3 - <<'EOF'\nimport subprocess\nr = subprocess.run(['git', 'diff', '--', '${H}'])\nsubprocess.run(['node', r.args[3], 'stop'])\nEOF`,
   `python3 - <<'EOF'\nimport subprocess\nr = subprocess.run(['git', 'diff', '--', '${H}'], capture_output=True)\nexec(r.stdout)\nEOF`,
