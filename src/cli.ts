@@ -130,7 +130,7 @@ import {
   trackFirstRunIfNew,
 } from "./telemetry/index.js";
 import { bundleSession, listLines, MAX_GZ_BYTES, pickSession, previewLines, redactedCount, sessionsHere, shortId, sizeLabel, whoIAm } from "./cloud/share-session.js";
-import { bundlePreviewLines, deleteCode, deleteHash, itemPayload, leaveOut, newCopyDir, newSentState, parseDeleteCode, parseLeaveOut, prepareBundle, readSent, unfinishedCopy, writeSent, type Manifest, type SentState } from "./cloud/share-bundle.js";
+import { bundlePreviewLines, deleteCode, deleteHash, itemPayload, leaveOut, newCopyDir, newSentState, parseDeleteCode, parseLeaveOut, prepareBundle, readSent, SEND_ASK, SEND_REST_ASK, unfinishedCopy, writeSent, type Manifest, type SentState } from "./cloud/share-bundle.js";
 import { trailHome } from "./notes/trail-home.js";
 import { readSyncState, runSync, syncDir, writeSyncState, type SyncState } from "./cloud/share-sync.js";
 import { hasShareSyncHook, installShareSyncHook, removeShareSyncHook, settingsPath, type HookResult } from "./cloud/share-hook.js";
@@ -2818,9 +2818,8 @@ async function shareWholeClaude(cloud: Cloud, opts: { days: number; leaveOut?: s
     track("share_bundle", { outcome: "declined", items_bucket: shareItemsBucket(m.items.length), size_bucket: shareSizeBucket(bundleGz(m)) }, { repo: checkout });
     console.error("· nothing sent, and the copy is deleted");
   };
-  const all = opts.sync ? "Send all of this, and keep sending?" : "Send all of this?";
   for (;;) {
-    const a = await askLine(`${all} y · n · or folder numbers to leave out (like 3 7): `);
+    const a = await askLine(SEND_ASK);
     if (a === null || /^(n|no)?$/i.test(a)) return declined();
     if (/^y(es)?$/i.test(a)) return void (await sendCopy(cloud, out, m, newSentState(), checkout, opts.sync));
     const ns = parseLeaveOut(a, m);
@@ -2830,7 +2829,7 @@ async function shareWholeClaude(cloud: Cloud, opts: { days: number; leaveOut?: s
     }
     m = leaveOut(out, m, ns);
     show();
-    if (await askYes(opts.sync ? "Send the rest, and keep sending? [y/N] " : "Send the rest? [y/N] ")) return void (await sendCopy(cloud, out, m, newSentState(), checkout, opts.sync));
+    if (await askYes(SEND_REST_ASK)) return void (await sendCopy(cloud, out, m, newSentState(), checkout, opts.sync));
     return declined();
   }
 }

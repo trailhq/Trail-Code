@@ -365,10 +365,10 @@ test("trail share-session --once: without a terminal it scrubs the whole Claude 
     signIn(home, trail.url);
     const shown = await spawnAsync(repo, home, ["--once"]);
     assert.equal(shown.status, 0, shown.stderr);
-    assert.match(shown.stdout, /^Your Claude, last 30 days, ready to send to the Trail team$/m);
-    assert.match(shown.stdout, /^Sessions {2}1 session in 1 folder · [A-Z][a-z]{2} \d{1,2} · /m);
-    assert.match(shown.stdout, /^ {12}1 {2}\/work\/web {2}1 session$/m);
-    assert.match(shown.stdout, /^Copy {6}~[\\/]\.trail[\\/]share[\\/]\d{4}-\d{2}-\d{2}-\d{4} {2}every file exactly as it will go/m);
+    assert.match(shown.stdout, /^Send your Claude to the Trail team, once$/m);
+    assert.match(shown.stdout, /^ {2}Sessions {3}1 from the last 30 days \([A-Z][a-z]{2} \d{1,2}\), /m);
+    assert.match(shown.stdout, /^ {2}1 {2}\/work\/web {2}1 session$/m);
+    assert.match(shown.stdout, /^Read every file first: ~[\\/]\.trail[\\/]share[\\/]\d{4}-\d{2}-\d{2}-\d{4}[\\/]SUMMARY\.md$/m);
     assert.match(shown.stdout, /nothing sent\. Show the person what's above and the copy at ~[\\/]\.trail[\\/]share[\\/][\d-]+; only if they say yes, run trail share-session --once --yes/);
     assert.ok(!trail.got.some((g) => g.method === "POST"), "nothing is posted without a yes");
     const root = join(home, ".trail", "share");
@@ -456,10 +456,9 @@ test("trail share-session keeps sending by default: says so, --yes turns it on, 
     signIn(home, trail.url);
     const shown = await spawnAsync(repo, home, []);
     assert.equal(shown.status, 0, shown.stderr);
-    assert.match(shown.stdout, /^Your Claude, last 30 days and from now on, ready to send to the Trail team$/m);
-    assert.match(shown.stdout, /^Keeps on  after this, each Claude Code session you start sends what changed since, .* trail share-session --stop stops it$/m);
+    assert.match(shown.stdout, /^Send your Claude to the Trail team$/m);
+    assert.match(shown.stdout, /^ {2}· Each new Claude Code session sends what changed \(one hook in ~\/\.claude\/settings\.json\)\.\n {4}Stop with: trail share-session --stop$/m);
     assert.match(shown.stdout, /only if they say yes, run trail share-session --yes,/);
-    assert.match(shown.stdout, /^Hook {6}one entry in ~\/\.claude\/settings\.json, so it runs in every folder/m);
     assert.ok(!existsSync(join(home, ".claude", "settings.json")), "nothing is added before the yes");
     assert.ok(!trail.got.some((g) => g.method === "POST"));
 
