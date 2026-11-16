@@ -14,12 +14,9 @@ import { join } from "node:path";
 import { writeFileSync } from "node:fs";
 import { hooksShim } from "../claude/shim-template.js";
 import { failOpen } from "../claude/settings-merge.js";
-import { readJsonObject, writeOwned } from "../hosts/config-write.js";
+import { isShareSyncEntry, readJsonObject, writeOwned } from "../hosts/config-write.js";
 import { globalHelpersDir } from "../hosts/claude-global.js";
 import { toPosixPath } from "../util/paths.js";
-
-/** What marks the entry as this one: the shim, then the event. */
-const MARK = '-hooks.cjs" share-sync';
 
 export function settingsPath(home: string): string {
   return join(home, ".claude", "settings.json");
@@ -32,16 +29,12 @@ export function shareSyncCommand(home: string): string {
 
 type Group = { matcher?: string; hooks?: Array<{ type?: string; command?: string }> };
 
-function ours(g: Group): boolean {
-  return (g.hooks ?? []).some((h) => typeof h.command === "string" && h.command.includes(MARK));
-}
-
 /** Whether the entry is in `~/.claude/settings.json`. */
 export function hasShareSyncHook(home: string): boolean {
   const loaded = readJsonObject(settingsPath(home));
   if (loaded === "unparseable") return false;
   const groups = loaded.root.hooks?.SessionStart;
-  return Array.isArray(groups) && groups.some((g: Group) => ours(g));
+  return Array.isArray(groups) && groups.some((g: Group) => isShareSyncEntry(g));
 }
 
 export type HookResult = "added" | "already" | "removed" | "absent" | "unparseable" | "failed";
@@ -56,7 +49,7 @@ export function installShareSyncHook(home: string): HookResult {
     const root = loaded.root;
     const hooks = root.hooks && typeof root.hooks === "object" && !Array.isArray(root.hooks) ? root.hooks : (root.hooks = {});
     const groups: Group[] = Array.isArray(hooks.SessionStart) ? hooks.SessionStart : (hooks.SessionStart = []);
-    if (groups.some(ours)) return "already";
+    if (groups.some(isShareSyncEntry)) return "already";
     groups.push({ hooks: [{ type: "command", command: shareSyncCommand(home) }] });
     writeFileSync(path, `${JSON.stringify(root, null, 2)}\n`);
     return "added";
@@ -72,9 +65,9 @@ export function removeShareSyncHook(home: string): HookResult {
   if (loaded === "unparseable") return "unparseable";
   const hooks = loaded.root.hooks;
   const groups = hooks?.SessionStart;
-  if (!Array.isArray(groups) || !groups.some(ours)) return "absent";
+  if (!Array.isArray(groups) || !groups.some(isShareSyncEntry)) return "absent";
   try {
-    const kept = groups.filter((g: Group) => !ours(g));
+    const kept = groups.filter((g: Group) => !isShareSyncEntry(g));
     if (kept.length) hooks.SessionStart = kept;
     else delete hooks.SessionStart;
     if (!Object.keys(hooks).length) delete loaded.root.hooks;
