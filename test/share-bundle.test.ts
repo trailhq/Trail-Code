@@ -84,19 +84,20 @@ test("prepareBundle: the last 30 days of sessions from every folder, numbered by
   assert.deepEqual(readManifest(out), m);
 });
 
-test("bundlePreviewLines: what goes, from where, how it was scrubbed, where the copy is, and that it can be taken back", () => {
+test("bundlePreviewLines: what's sent, from which folders, what's removed, what happens after yes, then where the copy is", () => {
   const { m } = prepared();
-  const out = bundlePreviewLines(m, "~/.trail/share/2026-11-05-1200", { url: "https://team.trailhq.com" }).join("\n");
-  assert.match(out, /^Your Claude, last 30 days, ready to send to the Trail team$/m);
-  assert.match(out, /^Sessions {2}3 sessions in 2 folders · Nov 2 – Nov 4 · .* zipped$/m);
-  assert.match(out, /^ {12}1 {2}\/work\/web {2}2 sessions$/m);
-  assert.match(out, /^Setup {5}nothing set up beyond Claude Code's defaults$/m);
-  assert.match(out, /^Memory {4}1 note$/m);
-  assert.match(out, /^Secrets {3}\d+ redacted: API key ×\d+$/m);
-  assert.match(out, /other people's names stay$/m);
-  assert.match(out, /^Copy {6}~\/\.trail\/share\/2026-11-05-1200 {2}every file exactly as it will go/m);
-  assert.match(out, /^Goes to {3}the Trail team on team\.trailhq\.com, for the team-memory experiment, without your name$/m);
-  assert.match(out, /^Delete {4}any time/m);
+  const lines = bundlePreviewLines(m, "~/.trail/share/2026-11-05-1200", { url: "https://team.trailhq.com" });
+  const out = lines.join("\n");
+  assert.match(out, /^Send your Claude to the Trail team, once$/m);
+  assert.match(out, /^ {2}Sessions {3}3 from the last 30 days \(Nov 2 – Nov 4\), .* zipped$/m);
+  assert.match(out, /^ {2}Setup {6}nothing beyond Claude Code's defaults$/m);
+  assert.match(out, /^ {2}Memory {5}1 note$/m);
+  assert.match(out, /^From these folders\n {2}1 {2}\/work\/web {2}2 sessions\n {2}2 {2}\/work\/api {3}1 session$/m);
+  assert.match(out, /^Removed before sending\n {2}\d+ secrets?, like passwords, tokens and API keys$/m);
+  assert.match(out, /^ {2}· It goes to team\.trailhq\.com, without your name\.$/m);
+  assert.match(out, /^ {2}· You get a code that deletes everything you sent\.$/m);
+  assert.doesNotMatch(out, /Each new Claude Code session/, "keep-sending is promised only when it's on");
+  assert.match(lines.at(-1)!, /^Read every file first: ~[\\/]\.trail[\\/]share[\\/]2026-11-05-1200[\\/]SUMMARY\.md$/, "the copy is the last line, so the send question comes right after it");
 });
 
 test("parseLeaveOut and leaveOut: folder numbers drop those folders' files from the copy, and the summary says so", () => {
@@ -110,7 +111,7 @@ test("parseLeaveOut and leaveOut: folder numbers drop those folders' files from 
   assert.ok(!existsSync(join(out, "sessions", "work-api")));
   assert.deepEqual(readdirSync(join(out, "sessions")), ["work-web"]);
   assert.match(readFileSync(join(out, "SUMMARY.md"), "utf8"), /2\. \/work\/api · 1 session · left out/);
-  assert.match(bundlePreviewLines(next, "~/x", { url: "https://team.trailhq.com" }).join("\n"), /^Dropped {3}you left out 1 folder: \/work\/api$/m);
+  assert.match(bundlePreviewLines(next, "~/x", { url: "https://team.trailhq.com" }).join("\n"), /^ {2}1 folder you left out: \/work\/api$/m);
 });
 
 test("itemPayload: a session goes as its zipped file, the setup zipped on the way", () => {
