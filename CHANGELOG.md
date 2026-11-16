@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.30.1
+
+- **`trail share-session` needs no flag.** It's still for the Trail team
+  only: Trail's server checks the signed-in email before anything is read.
+  On a laptop that isn't signed in, it opens the sign-in the way
+  `trail login` does, then carries on (#836).
+
 ## 0.30.0
 
 ### Added

@@ -9,12 +9,12 @@
     "source": "github",
     "id": "1288325627"
   },
-  "version": "0.30.0",
+  "version": "0.30.1",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@trailhq/trail-code",
-      "version": "0.30.0",
+      "version": "0.30.1",
       "transport": {
         "type": "stdio"
       },
