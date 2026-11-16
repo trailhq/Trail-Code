@@ -23,3 +23,9 @@ jobs:
           USERPROFILE: ${{ runner.temp }}/hook-read-home
           DO_NOT_TRACK: '1'
         run: node --import tsx --test test/skills-hook-read.test.ts test/skills-risk.test.ts test/claude-guard-review.test.ts test/skills-guard-text.test.ts
+      - name: Preserve the CI-compiled guard for narrow compatibility installation
+        uses: actions/upload-artifact@v7
+        with:
+          name: compiled-hook-guard
+          path: dist/trace/shell-words.js
+          retention-days: 7
