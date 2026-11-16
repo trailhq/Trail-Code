@@ -492,18 +492,30 @@ function pythonReportCode(code: string): string | null {
   return out;
 }
 
-/** Only ordinary literal report construction may accompany an exempt diff. */
+/**
+ * The supported companion grammar is imports of subprocess/Path, ordinary
+ * values and Path division, and direct Path/print/len or basic Path I/O calls.
+ * No reporting callable may be used as a value, binding or annotation target.
+ */
 function onlyPythonReportCalls(code: string): boolean {
   const visible = pythonReportCode(code);
   if (visible === null || /\b(?:def|class|lambda|async|await)\b/.test(visible)) return false;
   // Parenthesized Path division is data, not a callable expression. Require a
   // slash and do not consume the argument list of any function/method.
   const pathPart = String.raw`(?:[A-Za-z_]\w*(?:\.\w+)*|0)`;
-  const plain = visible.replace(new RegExp(String.raw`(?<![\w.)])\(\s*${pathPart}(?:\s*/\s*${pathPart})+\s*\)`, 'g'), 'report_path');
+  let plain = visible.replace(new RegExp(String.raw`(?<![\w.)])\(\s*${pathPart}(?:\s*/\s*${pathPart})+\s*\)`, 'g'), 'report_path');
   // Do not let names/methods below be rebound to a launcher or another callable.
   if (/\b(?:Path|print|len|subprocess)\s*=|\.\s*[A-Za-z_]\w*\s*=/.test(plain)) return false;
-  for (const m of plain.matchAll(/(?:^|[;\n])\s*((?:import|from)\b[^;\n]*)/g)) {
-    if (!/^(?:import\s+subprocess|from\s+pathlib\s+import\s+Path)\s*$/.test(m[1])) return false;
+  let importsValid = true;
+  plain = plain.replace(/(^|[;\n])\s*((?:import|from)\b[^;\n]*)/g, (_all, separator: string, statement: string) => {
+    if (!/^(?:import\s+subprocess|from\s+pathlib\s+import\s+Path)\s*$/.test(statement)) importsValid = false;
+    return separator;
+  });
+  if (!importsValid || /\b(?:subprocess|__\w*__)\b/.test(plain)) return false;
+  // Checking only `name =` misses annotations and destructuring. A reporting
+  // callable name is legal solely in its callee position, followed by `(`.
+  for (const m of plain.matchAll(/\b(?:Path|print|len|mkdir|read_bytes|write_bytes|read_text|write_text|exists|is_file)\b/g)) {
+    if (!/^\s*\(/.test(plain.slice(m.index! + m[0].length))) return false;
   }
   const reportMethod = /^(?:[A-Za-z_]\w*\.)*(?:mkdir|read_bytes|write_bytes|read_text|write_text|exists|is_file)$/;
   for (const m of plain.matchAll(/([A-Za-z_]\w*(?:\.\w+)*)\s*\(|\(/g)) {

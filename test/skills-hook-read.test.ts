@@ -105,6 +105,11 @@ const MENTIONS = [
 ];
 
 const STILL_RUNS = [
+  `python3 - <<'EOF'\nimport subprocess\nr = subprocess.run(['git', 'diff', '--', '${H}'])\nprint: object = subprocess.os.execlp\nprint('node', 'node', r.args[3], 'stop')\nEOF`,
+  `python3 - <<'EOF'\nimport subprocess\nr = subprocess.run(['git', 'diff', '--', '${H}'])\nprint, unused = subprocess.os.execlp, None\nprint('node', 'node', r.args[3], 'stop')\nEOF`,
+  `python3 - <<'EOF'\nimport subprocess\nr = subprocess.run(['git', 'diff', '--', '${H}'])\nPath: object = subprocess.os.execlp\nPath('node', 'node', r.args[3], 'stop')\nEOF`,
+  `python3 - <<'EOF'\nimport subprocess\nr = subprocess.run(['git', 'diff', '--', '${H}'])\np.write_text: object = subprocess.os.execlp\np.write_text('node', 'node', r.args[3], 'stop')\nEOF`,
+  `python3 - <<'EOF'\nimport subprocess\nr = subprocess.run(['git', 'diff', '--', '${H}'])\np.__dict__['write_text'] = subprocess.os.execlp\np.write_text('node', 'node', r.args[3], 'stop')\nEOF`,
   `python3 - <<'EOF'\nimport subprocess\nimport os\nr = subprocess.run(['git', 'diff', '--', '${H}'])\nos.execlp('node', 'node', r.args[3], 'stop')\nEOF`,
   `python3 - <<'EOF'\nimport subprocess\nr = subprocess.run(['git', 'diff', '--', '${H}'])\nsubprocess.os.posix_spawnp('node', ['node', r.args[3], 'stop'], {})\nEOF`,
   `python3 - <<'EOF'\nimport subprocess\nr = subprocess.run(['git', 'diff', '--', '${H}'])\ngetattr(subprocess.os, 'execlp')('node', 'node', r.args[3], 'stop')\nEOF`,
