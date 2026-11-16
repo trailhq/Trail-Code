@@ -499,7 +499,7 @@ function pythonReportCode(code: string): string | null {
  */
 function onlyPythonReportCalls(code: string): boolean {
   const visible = pythonReportCode(code);
-  if (visible === null || /\b(?:def|class|lambda|async|await)\b/.test(visible)) return false;
+  if (visible === null || /[^\x00-\x7f]|`|\b(?:def|class|lambda|async|await)\b/.test(visible)) return false;
   // Parenthesized Path division is data, not a callable expression. Require a
   // slash and do not consume the argument list of any function/method.
   const pathPart = String.raw`(?:[A-Za-z_]\w*(?:\.\w+)*|0)`;
