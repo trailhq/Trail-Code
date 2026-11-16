@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { underGraft, main, lastFileScopeHint, promptAskTimeout } from '../src/claude/hooks.js';
 import { readStats, readSession } from '../src/claude/state.js';
 import { runSync } from '../src/claude/sync-run.js';
+import { writeFingerprint } from '../src/graph/fingerprint.js';
 import { savingsLine } from '../src/context/savings.js';
 import { CI_ENV_VARS } from '../src/telemetry/gate.js';
 import { writeStats, emptyStats, acquireLock, resolveContextDir } from '../src/claude/state.js';
@@ -127,6 +128,26 @@ test("runSync's default build passes --dir <resolved> to graft build when GRAFT_
     const dirIdx = argsSeen.indexOf('--dir');
     assert.ok(dirIdx !== -1, 'the build call carries --dir when GRAFT_DIR is set');
     assert.equal(argsSeen[dirIdx + 1], resolveContextDir(d));
+  } finally {
+    delete process.env.GRAFT_TEST_CLI;
+    delete process.env.GRAFT_DIR;
+  }
+});
+
+test("runSync's default build retains --only-dir selection", () => {
+  const d = mkdtempSync(join(tmpdir(), 'graft-sync-only-dir-'));
+  const argsFile = join(d, 'args-seen.json');
+  const stub = join(d, 'build-stub.cjs');
+  writeFileSync(stub, `require('fs').writeFileSync(${JSON.stringify(argsFile)}, JSON.stringify(process.argv.slice(2)));`);
+  process.env.GRAFT_TEST_CLI = stub;
+  process.env.GRAFT_DIR = 'elsewhere';
+  try {
+    const outDir = resolveContextDir(d);
+    writeFingerprint(outDir, {}, ['src/a', 'src/b']);
+    runSync(d);
+    assert.deepEqual(JSON.parse(readFileSync(argsFile, 'utf8')), [
+      'build', '.', '--dir', outDir, '--only-dir', 'src/a', '--only-dir', 'src/b',
+    ]);
   } finally {
     delete process.env.GRAFT_TEST_CLI;
     delete process.env.GRAFT_DIR;

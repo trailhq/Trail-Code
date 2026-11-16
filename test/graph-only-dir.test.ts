@@ -71,7 +71,7 @@ test("--only-dir limits the walk, records the whitelist in the fingerprint, and 
   }
 });
 
-test("a plain build reuses the saved --only-dir whitelist", () => {
+test("a plain build clears a prior --only-dir limit and restores the full tree", () => {
   const d = repoWithDirs();
   try {
     runCli(["build", d, "--only-dir", "src/a"]);
@@ -80,9 +80,9 @@ test("a plain build reuses the saved --only-dir whitelist", () => {
     const graph = graphOf(d);
     assert.ok(graph, "expected a rebuilt graph");
     assert.ok(graph!.nodes.some((n) => n.path === "src/a/a.ts"), "src/a must remain indexed");
-    assert.ok(!graph!.nodes.some((n) => n.path === "src/b/b.ts"), "src/b must remain skipped");
-    assert.ok(!graph!.nodes.some((n) => n.path === "top.ts"), "top-level files must remain skipped");
-    assert.deepEqual(readFingerprint(join(d, "graft"))?.onlyDirs, ["src/a"]);
+    assert.ok(graph!.nodes.some((n) => n.path === "src/b/b.ts"), "src/b must be restored");
+    assert.ok(graph!.nodes.some((n) => n.path === "top.ts"), "top-level files must be restored");
+    assert.equal(readFingerprint(join(d, "graft"))?.onlyDirs, undefined);
   } finally {
     rmSync(d, { recursive: true, force: true });
   }
