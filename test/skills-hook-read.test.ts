@@ -81,6 +81,9 @@ test('running the hook script stays denied, through node, a shell, ./, xargs, a 
 // a python heredoc that edits source naming the shim, `cat >> notes <<EOF` prose, a hooks.json written from a heredoc.
 // Also deleting a stale copy, a syntax check, an existence test and git bookkeeping. None of them runs it.
 const MENTIONS = [
+  `python3 - <<'EOF'\nimport subprocess\nr = subprocess.run(['git', 'diff', '--binary', '--', '${H}', 'AGENTS.md'], cwd=worktree, capture_output=True, check=True)\nEOF`,
+  `python3 -c "import subprocess; subprocess.check_output(['git', 'diff', '--', '${H}'])"`,
+  `python3 - <<'EOF'\nimport subprocess\nsubprocess.run([\"/usr/bin/git\", \"diff\", \"--no-ext-diff\", \"--no-textconv\", \"--\", \"${H}\"], text=True, stdout=subprocess.PIPE)\nEOF`,
   `git diff -- ${H}`,
   `ls -la ${H}`,
   'rm -f /tmp/x/box/.claude/helpers/trail-hooks.cjs',
@@ -101,6 +104,13 @@ const MENTIONS = [
 ];
 
 const STILL_RUNS = [
+  `python3 - <<'EOF'\nimport subprocess\nsubprocess.run(['git', 'diff', '--', '${H}'], shell=True)\nEOF`,
+  `python3 - <<'EOF'\nimport subprocess\nsubprocess.run(['git', 'diff', '--', '${H}'], executable='node')\nEOF`,
+  `python3 - <<'EOF'\nimport subprocess\nsubprocess.run(['git', 'diff', '--', '${H}'], preexec_fn=run_hook)\nEOF`,
+  `python3 - <<'EOF'\nimport subprocess\nsubprocess.run(['git', 'diff', '--', '${H}'], env=custom_env)\nEOF`,
+  `python3 - <<'EOF'\nimport subprocess\nsubprocess.run(['git', 'diff', '--', '${H}'])\nsubprocess.run(['node', '${H}', 'stop'])\nEOF`,
+  `python3 - <<'EOF'\nimport subprocess\nsubprocess.run(['git', '-c', 'alias.diff=!node ${H}', 'diff', '--', '${H}'])\nEOF`,
+  `python3 - <<'EOF'\nimport subprocess\nsubprocess.run(['git', 'diff', '--', '${H}'] + extra)\nEOF`,
   `python3 - <<'EOF'\nimport subprocess\nsubprocess.run(['node', '.claude/helpers/trail-hooks.cjs', 'stop'])\nEOF`,
   `python3 -c "import os; os.system('node .claude/helpers/trail-hooks.cjs stop')"`,
   `node -e "require('./.claude/helpers/trail-hooks.cjs')"`,

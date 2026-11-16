@@ -1,0 +1,25 @@
+name: Hook read regressions
+on:
+  push:
+    paths: ['src/trace/shell-words.ts', 'src/skills/risk.ts', 'test/skills-hook-read.test.ts', '.github/workflows/hook-read.yml']
+  pull_request:
+    paths: ['src/trace/shell-words.ts', 'src/skills/risk.ts', 'test/skills-hook-read.test.ts', '.github/workflows/hook-read.yml']
+permissions:
+  contents: read
+jobs:
+  hook-read:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 'lts/*'
+          cache: npm
+      - run: npm ci
+      - name: Guard and tamper regressions
+        env:
+          HOME: ${{ runner.temp }}/hook-read-home
+          USERPROFILE: ${{ runner.temp }}/hook-read-home
+          DO_NOT_TRACK: '1'
+        run: node --import tsx --test test/skills-hook-read.test.ts test/skills-risk.test.ts test/claude-guard-review.test.ts test/skills-guard-text.test.ts

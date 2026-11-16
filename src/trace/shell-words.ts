@@ -449,10 +449,39 @@ function substitutes(text: string): boolean {
   return /\$\(|`|[<>]\(/.test(text.replace(/'[^']*'/g, "''"));
 }
 
+// A deliberately small literal grammar: no escapes, interpolation, calls or
+// expressions. Unknown subprocess options stay conservative, especially shell,
+// executable, env and preexec_fn. Only filenames after git diff's -- are data.
+const PY_STRING = String.raw`(?:'[^'"\\\r\n]*'|"[^'"\\\r\n]*")`;
+const PY_VALUE = String.raw`(?:${PY_STRING}|[A-Za-z_]\w*(?:\.\w+)*|\d+)`;
+const PY_GIT_DIFF = new RegExp(
+  String.raw`\bsubprocess\.(?:run|check_call|check_output)\s*\(\s*(\[\s*${PY_STRING}(?:\s*,\s*${PY_STRING})*\s*,?\s*\])(?:\s*,\s*(?:cwd|capture_output|check|text|encoding|timeout|stdout|stderr)\s*=\s*${PY_VALUE})*\s*,?\s*\)`,
+  'g',
+);
+const DIFF_OPTIONS = new Set(['--binary', '--stat', '--name-only', '--name-status', '--patch', '--cached', '--staged', '--no-ext-diff', '--no-textconv']);
+
+/** Hide only literal git diff path arguments, never a whole interpreter. */
+function withoutGitDiffPaths(code: string): string {
+  return code.replace(PY_GIT_DIFF, (call: string, list: string) => {
+    if (call.length > 8192) return call;
+    const argv = [...list.matchAll(new RegExp(PY_STRING, 'g'))].map((m) => m[0].slice(1, -1));
+    const separator = argv.indexOf('--', 2);
+    if (!['git', '/usr/bin/git'].includes(argv[0]) || argv[1] !== 'diff' || separator < 2
+      || !argv.slice(2, separator).every((arg) => DIFF_OPTIONS.has(arg))) return call;
+    const start = call.indexOf(list);
+    // Keep the invocation and keyword arguments visible to the rest of the guard.
+    const paths = new RegExp(PY_STRING, 'g');
+    let index = 0;
+    const clean = list.replace(paths, (literal) => index++ > separator ? "'path'" : literal);
+    return call.slice(0, start) + clean + call.slice(start + list.length);
+  });
+}
+
 /** Whether code an interpreter is given (`node -e`, `python3 - <<EOF`) runs a hook script it names. */
 function codeRunsHook(code: string): boolean {
   if (!HOOK_NAMED.test(code)) return false;
-  return CODE_RUNS_HOOK.some((re) => re.test(code)) || (SCRIPT_STARTS.test(code) && SHELL_LINE_RUNS_HOOK.test(code));
+  const executable = withoutGitDiffPaths(code);
+  return CODE_RUNS_HOOK.some((re) => re.test(executable)) || (SCRIPT_STARTS.test(executable) && SHELL_LINE_RUNS_HOOK.test(executable));
 }
 
 /**
