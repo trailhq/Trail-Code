@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.30.2
+
+- **`trail share-session` keeps sending after a trail upgrade.** The first
+  Claude Code session after an upgrade rewrites trail's hooks in
+  `~/.claude/settings.json`, and that rewrite used to take out
+  share-session's hook with them. It now leaves it in place; only `--stop`
+  and `--delete` take it out (#838).
+
 ## 0.30.1
 
 - **`trail share-session` needs no flag.** It's still for the Trail team
