@@ -462,12 +462,14 @@ const DIFF_OPTIONS = new Set(['--binary', '--stat', '--name-only', '--name-statu
 
 /** Hide only literal git diff path arguments, never a whole interpreter. */
 function withoutGitDiffPaths(code: string): string {
-  return code.replace(PY_GIT_DIFF, (call: string, list: string) => {
+  let stripped = code;
+  const clean = code.replace(PY_GIT_DIFF, (call: string, list: string) => {
     if (call.length > 8192) return call;
     const argv = [...list.matchAll(new RegExp(PY_STRING, 'g'))].map((m) => m[0].slice(1, -1));
     const separator = argv.indexOf('--', 2);
     if (!['git', '/usr/bin/git'].includes(argv[0]) || argv[1] !== 'diff' || separator < 2
       || !argv.slice(2, separator).every((arg) => DIFF_OPTIONS.has(arg))) return call;
+    stripped = stripped.replace(call, 'None');
     const start = call.indexOf(list);
     // Keep the invocation and keyword arguments visible to the rest of the guard.
     const paths = new RegExp(PY_STRING, 'g');
@@ -475,6 +477,11 @@ function withoutGitDiffPaths(code: string): string {
     const clean = list.replace(paths, (literal) => index++ > separator ? "'path'" : literal);
     return call.slice(0, start) + clean + call.slice(start + list.length);
   });
+  // Never hide the only literal used by an outer launch, a later launch using
+  // CompletedProcess.args, or an eval of the captured diff. Mixed execution is
+  // deliberately left to the existing conservative guard.
+  if (/\b(?:require|import|import_module|spawn|spawnSync|exec|execSync|execFile|execFileSync|fork|execa|Popen|run|call|check_call|check_output|getoutput|system|popen|eval|run_path)\s*\(/i.test(stripped)) return code;
+  return clean;
 }
 
 /** Whether code an interpreter is given (`node -e`, `python3 - <<EOF`) runs a hook script it names. */

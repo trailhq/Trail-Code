@@ -104,6 +104,9 @@ const MENTIONS = [
 ];
 
 const STILL_RUNS = [
+  `python3 - <<'EOF'\nimport subprocess\nsubprocess.run(['node', subprocess.run(['git', 'diff', '--', '${H}']).args[3], 'stop'])\nEOF`,
+  `python3 - <<'EOF'\nimport subprocess\nr = subprocess.run(['git', 'diff', '--', '${H}'])\nsubprocess.run(['node', r.args[3], 'stop'])\nEOF`,
+  `python3 - <<'EOF'\nimport subprocess\nr = subprocess.run(['git', 'diff', '--', '${H}'], capture_output=True)\nexec(r.stdout)\nEOF`,
   `python3 - <<'EOF'\nimport subprocess\nsubprocess.run(['git', 'diff', '--', '${H}'], shell=True)\nEOF`,
   `python3 - <<'EOF'\nimport subprocess\nsubprocess.run(['git', 'diff', '--', '${H}'], executable='node')\nEOF`,
   `python3 - <<'EOF'\nimport subprocess\nsubprocess.run(['git', 'diff', '--', '${H}'], preexec_fn=run_hook)\nEOF`,
