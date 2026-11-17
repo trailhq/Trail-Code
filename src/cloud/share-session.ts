@@ -25,16 +25,6 @@ import { sessionProjectDir } from "../notes/session-cost.js";
 import { typedText } from "../trace/claude.js";
 import { REDACTED, redactText, type Redaction } from "../trace/redact.js";
 
-/**
- * `trail share-session` ships behind this flag for one release, so it can be
- * tested end to end from npm before everyone gets it: `TRAIL_SHARE_SESSION=1`.
- * Only sending needs it. `--stop` and `--delete` always work, and a sync
- * someone turned on keeps running from the session-start hook without it,
- * because a hook's environment (Claude Desktop's) rarely has shell variables.
- */
-export function shareSessionEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.TRAIL_SHARE_SESSION === "1";
-}
 
 /** Most a zipped session can be: what trail-cloud takes. A long session zips to 1-3 MB. */
 export const MAX_GZ_BYTES = 10 * 1024 * 1024;

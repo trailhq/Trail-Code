@@ -7,7 +7,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
@@ -100,6 +100,8 @@ test("runSync: sends what changed into the same bundle, scrubbed, keeps a readab
   assert.deepEqual(after.lastRun, { at: NOW, sent: 2 }, "the run writes down what it did, for the status to show");
   assert.ok(after.setupHash);
   assert.ok(after.sessions["bbbb0000-0000-4000-8000-000000000001"], "a left-out session is passed over for good");
+  assert.equal(after.sizes?.["aaaa0000-0000-4000-8000-000000000002"], statSync(paths.fresh).size, "a sent session's size is kept");
+  assert.equal(after.sizes?.["aaaa0000-0000-4000-8000-000000000001"], statSync(paths.old).size, "one sent before sizes were kept learns its size, without going again");
 
   // Nothing changed: nothing goes.
   const quiet = collector();
@@ -113,6 +115,30 @@ test("runSync: sends what changed into the same bundle, scrubbed, keeps a readab
   assert.deepEqual(grown.got.map((b) => b.session_id), ["aaaa0000-0000-4000-8000-000000000002"]);
   assert.equal(grown.got[0]!.bundle_id, state.bundleId);
   assert.match(gunzipSync(Buffer.from(grown.got[0]!.transcript_gz, "base64")).toString("utf8"), /and one more thing/);
+});
+
+test("runSync: a session whose time moves with nothing written isn't sent again", async () => {
+  const { home, env, paths } = synced();
+  await runSync({ home, who: [home], send: collector().send, trailVersion: "0.29.0", env, now: NOW });
+  // Something on the laptop moves session files' times forward without writing to them.
+  for (const p of [paths.old, paths.fresh, paths.private]) utimesSync(p, new Date(NOW - HOUR), new Date(NOW - HOUR));
+  const again = collector();
+  assert.deepEqual(await runSync({ home, who: [home], send: again.send, trailVersion: "0.29.0", env, now: NOW + 1000 }), { sent: 0, skipped: 0 });
+  assert.deepEqual(again.got, []);
+  assert.deepEqual(changedSessions(readSyncState(env)!, home, NOW + 1000), [], "and none counts as changed");
+});
+
+test("runSync: a session sent before sizes were kept, whose time has moved, goes once more, then by its size", async () => {
+  const { home, env, paths } = synced();
+  const OLD = "aaaa0000-0000-4000-8000-000000000001";
+  utimesSync(paths.old, new Date(NOW - HOUR), new Date(NOW - HOUR));
+  const first = collector();
+  await runSync({ home, who: [home], send: first.send, trailVersion: "0.29.0", env, now: NOW });
+  assert.ok(first.got.some((b) => b.session_id === OLD), "with no size to go by, its time is all there is");
+  utimesSync(paths.old, new Date(NOW - 30 * 60_000), new Date(NOW - 30 * 60_000));
+  const second = collector();
+  await runSync({ home, who: [home], send: second.send, trailVersion: "0.29.0", env, now: NOW + 1000 });
+  assert.ok(!second.got.some((b) => b.session_id === OLD), "its size is kept now, so a moved time alone doesn't send it");
 });
 
 test("runSync: a send that fails stops there and keeps what went; the next run sends only the rest", async () => {

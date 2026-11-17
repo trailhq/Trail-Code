@@ -1,4 +1,4 @@
-import { isGraftEntry } from '../hosts/config-write.js';
+import { isGraftEntry, isShareSyncEntry } from '../hosts/config-write.js';
 
 type Json = Record<string, any>;
 
@@ -216,14 +216,16 @@ export function mergeGraftSettings(
  * piece that has to be global, because they are what a worktree loses.
  *
  * Same idempotent shape as the repo merge: graft's prior entries are dropped before
- * the current set is added, so re-running converges instead of stacking.
+ * the current set is added, so re-running converges instead of stacking. The one
+ * trail entry kept is `trail share-session`'s hook: it calls the same shim, but the
+ * person added it, and an upgrade's rewrite used to take it out with the rest.
  */
 export function mergeGraftHooks(existing: Json, helpers: string): { merged: Json } {
   const merged: Json = { ...(existing ?? {}) };
   merged.hooks = { ...(merged.hooks ?? {}) };
   for (const [event, blocks] of Object.entries(graftBlocks(helpers))) {
     const prior = Array.isArray(merged.hooks[event]) ? merged.hooks[event] : [];
-    const foreign = prior.filter((e: Json) => !isGraftEntry(e));
+    const foreign = prior.filter((e: Json) => !isGraftEntry(e) || isShareSyncEntry(e));
     merged.hooks[event] = [...foreign, ...blocks];
   }
   dropGraftFooter(merged);

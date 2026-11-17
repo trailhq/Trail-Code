@@ -10,6 +10,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hasShareSyncHook, installShareSyncHook, removeShareSyncHook, settingsPath, shareSyncCommand } from "../src/cloud/share-hook.js";
+import { installClaudeGlobal } from "../src/hosts/claude-global.js";
 
 function home(settings?: object | string): string {
   const h = mkdtempSync(join(tmpdir(), "hook-home-"));
@@ -60,6 +61,21 @@ test("removeShareSyncHook: when it was the only hook, the hooks key goes too", (
   installShareSyncHook(h);
   removeShareSyncHook(h);
   assert.deepEqual(read(h), { model: "opus" });
+});
+
+test("trail's rewrite of its user-level hooks after an upgrade keeps it, once", () => {
+  const h = home({ model: "opus" });
+  installShareSyncHook(h);
+  // What the first session after an upgrade runs, and `trail init` too: it used to drop every entry calling the shim.
+  installClaudeGlobal(h, "trail");
+  installClaudeGlobal(h, "trail");
+  const starts: Array<{ hooks: Array<{ command: string }> }> = read(h).hooks.SessionStart;
+  assert.ok(hasShareSyncHook(h), "still there after the rewrite");
+  assert.equal(starts.filter((g) => g.hooks.some((x) => x.command === shareSyncCommand(h))).length, 1, "never twice");
+  assert.ok(starts.some((g) => g.hooks.some((x) => x.command.includes('-hooks.cjs" session-start'))), "trail's own session start is there too");
+  assert.equal(removeShareSyncHook(h), "removed");
+  assert.ok(read(h).hooks.SessionStart.length > 0, "--stop takes out only this one");
+  assert.equal(hasShareSyncHook(h), false);
 });
 
 test("a settings file that isn't valid JSON is left exactly as it is", () => {
