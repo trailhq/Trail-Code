@@ -38,7 +38,8 @@ export interface SessionCost {
   read: string[];
 }
 
-const IDLE_MS = 10 * 60 * 1000;
+/** A gap between two transcript entries longer than this is time away, not work. */
+export const IDLE_MS = 10 * 60 * 1000;
 /** With nothing in the transcript naming what the note is about, at most this much active time counts. */
 export const FALLBACK_ACTIVE_MS = 30 * 60 * 1000;
 /** A transcript untouched this long belongs to some earlier session. */
