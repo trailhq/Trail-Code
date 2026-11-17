@@ -129,8 +129,8 @@ import {
   track,
   trackFirstRunIfNew,
 } from "./telemetry/index.js";
-import { bundleSession, listLines, MAX_GZ_BYTES, pickSession, previewLines, redactedCount, sessionsHere, shareSessionEnabled, shortId, sizeLabel, whoIAm } from "./cloud/share-session.js";
-import { bundlePreviewLines, deleteCode, deleteHash, itemPayload, leaveOut, newCopyDir, newSentState, parseDeleteCode, parseLeaveOut, prepareBundle, readSent, unfinishedCopy, writeSent, type Manifest, type SentState } from "./cloud/share-bundle.js";
+import { bundleSession, listLines, MAX_GZ_BYTES, pickSession, previewLines, redactedCount, sessionsHere, shortId, sizeLabel, whoIAm } from "./cloud/share-session.js";
+import { bundlePreviewLines, deleteCode, deleteHash, itemPayload, leaveOut, newCopyDir, newSentState, parseDeleteCode, parseLeaveOut, prepareBundle, readSent, SEND_ASK, SEND_REST_ASK, unfinishedCopy, writeSent, type Manifest, type SentState } from "./cloud/share-bundle.js";
 import { trailHome } from "./notes/trail-home.js";
 import { readSyncState, runSync, syncDir, writeSyncState, type SyncState } from "./cloud/share-sync.js";
 import { hasShareSyncHook, installShareSyncHook, removeShareSyncHook, settingsPath, type HookResult } from "./cloud/share-hook.js";
@@ -2583,8 +2583,13 @@ const INTERNAL_ONLY = "✗ internal only: share-session is for the Trail team, s
  * decides by the signed-in email. This repo's workspace is asked first. Null
  * after saying why there is none.
  */
-async function shareCloud(repoKey: string | null): Promise<Cloud | null> {
-  const all = readClouds();
+async function shareCloud(repoKey: string | null, dir: string): Promise<Cloud | null> {
+  let all = readClouds();
+  // A laptop that never signed in signs in here, so one install line and this command are all a teammate runs.
+  if (!all.length) {
+    if (!(await signInToShare(dir))) return null;
+    all = readClouds();
+  }
   const mine = repoKey ? cloudIn(all, repoKey) : null;
   let failed: string | null = null;
   for (const c of mine ? [mine, ...all.filter((x) => x !== mine)] : all) {
@@ -2595,6 +2600,34 @@ async function shareCloud(repoKey: string | null): Promise<Cloud | null> {
   console.error(failed ? `✗ couldn't check with Trail · ${failed}` : INTERNAL_ONLY);
   process.exitCode = 1;
   return null;
+}
+
+/**
+ * Sign this laptop in on the way to sharing, the way `trail login` does in a
+ * terminal: the link, the browser, then wait. Without a terminal there's
+ * nobody to click, so it says what to run and stops. True once signed in;
+ * whether Trail lets that email share is still asked after.
+ */
+async function signInToShare(dir: string): Promise<boolean> {
+  if (!process.stdout.isTTY) {
+    console.error(`✗ not signed in to Trail · run ${cmd("graft login")}, then ${cmd("graft share-session")} again (Trail team only: a trailhq.com or nanonets.com email)`);
+    process.exitCode = 1;
+    return false;
+  }
+  rememberRepo(dir);
+  const url = loginLink(dir);
+  console.error(`· share-session is for the Trail team: sign in to Trail first, with your trailhq.com or nanonets.com email:\n  ${url}`);
+  openBrowser(url);
+  console.error("· waiting for you to sign in · ctrl-c stops");
+  const got = await waitForConnect({ waitMs: 10 * 60 * 1000 });
+  if (got && "cloud" in got) {
+    addAgentEntries();
+    console.error(`✓ signed in to workspace ${got.cloud.workspace.name}`);
+    return true;
+  }
+  console.error(got && "error" in got ? `✗ ${got.error} · run ${cmd("graft share-session")} again for a new link` : `· not signed in yet · run ${cmd("graft share-session")} again once you have`);
+  process.exitCode = 1;
+  return false;
 }
 
 /** Ask on the terminal for a line; a closed input is null. */
@@ -2641,15 +2674,10 @@ function shareSessionCommand(name = "share-session"): Command {
     .action(async (pick: string | undefined, opts: { list?: boolean; days: string; leaveOut?: string; yes?: boolean; delete?: string; once?: boolean; stop?: boolean }) => {
       const dir = process.cwd();
       const here = workspaceRepo(dir);
-      // Taking back and stopping work without the flag: someone who tried it must always be able to undo it.
+      // Stopping needs no sign-in: someone who tried it must always be able to stop it.
       if (opts.stop) return stopSync(here.checkout);
-      if (!opts.delete && !shareSessionEnabled()) {
-        console.error(`✗ share-session isn't on in this release yet; to try it, run TRAIL_SHARE_SESSION=1 ${cmd("graft share-session")}`);
-        process.exitCode = 1;
-        return;
-      }
       const repoKey = here.git && !here.key.startsWith("local/") ? here.key : null;
-      const cloud = await shareCloud(repoKey);
+      const cloud = await shareCloud(repoKey, dir);
       if (!cloud) return;
       if (opts.delete) return deleteShared(cloud, opts.delete, here.checkout);
       if (opts.list) {
@@ -2790,9 +2818,8 @@ async function shareWholeClaude(cloud: Cloud, opts: { days: number; leaveOut?: s
     track("share_bundle", { outcome: "declined", items_bucket: shareItemsBucket(m.items.length), size_bucket: shareSizeBucket(bundleGz(m)) }, { repo: checkout });
     console.error("· nothing sent, and the copy is deleted");
   };
-  const all = opts.sync ? "Send all of this, and keep sending?" : "Send all of this?";
   for (;;) {
-    const a = await askLine(`${all} y · n · or folder numbers to leave out (like 3 7): `);
+    const a = await askLine(SEND_ASK);
     if (a === null || /^(n|no)?$/i.test(a)) return declined();
     if (/^y(es)?$/i.test(a)) return void (await sendCopy(cloud, out, m, newSentState(), checkout, opts.sync));
     const ns = parseLeaveOut(a, m);
@@ -2802,7 +2829,7 @@ async function shareWholeClaude(cloud: Cloud, opts: { days: number; leaveOut?: s
     }
     m = leaveOut(out, m, ns);
     show();
-    if (await askYes(opts.sync ? "Send the rest, and keep sending? [y/N] " : "Send the rest? [y/N] ")) return void (await sendCopy(cloud, out, m, newSentState(), checkout, opts.sync));
+    if (await askYes(SEND_REST_ASK)) return void (await sendCopy(cloud, out, m, newSentState(), checkout, opts.sync));
     return declined();
   }
 }
@@ -2862,6 +2889,7 @@ async function sendCopy(cloud: Cloud, dir: string, m: Manifest, sent: SentState,
       excluded: m.dropped,
       dirs: m.dirs ?? [],
       sessions: Object.fromEntries(m.items.filter((it) => it.kind === "session").map((it) => [it.id, it.mtime])),
+      sizes: Object.fromEntries(m.items.flatMap((it): Array<[string, number]> => (it.kind === "session" && it.size !== undefined ? [[it.id, it.size]] : []))),
       setupHash: createHash("sha256").update(setup).digest("hex"),
       lastRunAt: Date.now(),
     });

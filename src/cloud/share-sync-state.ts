@@ -25,6 +25,13 @@ export interface SyncState {
   dirs: string[];
   /** Each session as last sent (or passed over), by its last-written time. */
   sessions: Record<string, number>;
+  /**
+   * Each session's file size as last sent (or passed over). A session goes
+   * again only when this changes: a transcript grows as it's written, while its
+   * last-written time can move with nothing written to it. Absent in a state
+   * written before trail kept sizes.
+   */
+  sizes?: Record<string, number>;
   /** sha256 of the setup as last sent. */
   setupHash?: string;
   lastRunAt?: number;

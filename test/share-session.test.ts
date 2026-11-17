@@ -246,7 +246,7 @@ const CLI = resolve(process.cwd(), "src/cli.ts");
 const TSX = pathToFileURL(require.resolve("tsx")).href;
 
 function cliEnv(home: string): NodeJS.ProcessEnv {
-  return { ...process.env, HOME: home, USERPROFILE: home, TRAIL_HOME: join(home, ".trail"), [BRAND_ENV]: "trail", DO_NOT_TRACK: "1", TRAIL_CLOUD: "1", TRAIL_SHARE_SESSION: "1" };
+  return { ...process.env, HOME: home, USERPROFILE: home, TRAIL_HOME: join(home, ".trail"), [BRAND_ENV]: "trail", DO_NOT_TRACK: "1", TRAIL_CLOUD: "1" };
 }
 
 /** A stand-in Trail on this machine that allows or refuses, and keeps what it was sent. */
@@ -282,19 +282,18 @@ function signIn(home: string, url: string): void {
   writeFileSync(join(home, ".trail", "cloud.json"), JSON.stringify({ ...CLOUD, url }));
 }
 
-test("trail share-session: off in this release unless TRAIL_SHARE_SESSION=1, with nothing read or sent; --stop works without it", async () => {
+test("trail share-session: on with no TRAIL_SHARE_SESSION flag, still asking Trail first; --stop works signed out", async () => {
   const { home, repo } = fakeSession();
   const trail = await standIn(true);
   try {
     signIn(home, trail.url);
-    const env = { ...cliEnv(home), TRAIL_SHARE_SESSION: "" };
-    const off = spawnSync(process.execPath, ["--import", TSX, CLI, "share-session", "--sync"], { cwd: repo, encoding: "utf8", timeout: 60_000, env });
-    assert.equal(off.status, 1, off.stderr);
-    assert.equal(off.stdout, "");
-    assert.equal(off.stderr.trim(), "✗ share-session isn't on in this release yet; to try it, run TRAIL_SHARE_SESSION=1 trail share-session");
-    assert.deepEqual(trail.got, [], "not even the check goes out");
-    assert.ok(!existsSync(join(home, ".trail", "share")), "nothing is scrubbed or copied");
-    const stop = spawnSync(process.execPath, ["--import", TSX, CLI, "share-session", "--stop"], { cwd: repo, encoding: "utf8", timeout: 60_000, env });
+    // cliEnv sets no TRAIL_SHARE_SESSION; async, so the stand-in Trail on this process can answer.
+    const list = await spawnAsync(repo, home, ["--list"]);
+    assert.equal(list.status, 0, list.stderr);
+    assert.match(list.stdout, /^ +1 /m, "this folder's session is listed");
+    assert.deepEqual(trail.got.map((g) => g.path), ["/api/cli/shared-sessions/allowed"], "Trail is asked before anything is read");
+    const out = fakeSession();
+    const stop = spawnSync(process.execPath, ["--import", TSX, CLI, "share-session", "--stop"], { cwd: out.repo, encoding: "utf8", timeout: 60_000, env: cliEnv(out.home) });
     assert.equal(stop.status, 0, stop.stderr);
     assert.match(stop.stderr, /nothing to stop/);
   } finally {
@@ -302,12 +301,13 @@ test("trail share-session: off in this release unless TRAIL_SHARE_SESSION=1, wit
   }
 });
 
-test("trail share-session: not signed in, one line and nothing read or sent", () => {
+test("trail share-session: not signed in and no terminal, one line saying what to run, and nothing read or sent", () => {
   const { home, repo } = fakeSession();
   const r = spawnSync(process.execPath, ["--import", TSX, CLI, "share-session"], { cwd: repo, encoding: "utf8", timeout: 60_000, env: cliEnv(home) });
   assert.equal(r.status, 1, r.stderr);
   assert.equal(r.stdout, "");
-  assert.equal(r.stderr.trim(), "✗ internal only: share-session is for the Trail team, signed in to team.trailhq.com with a trailhq.com or nanonets.com email");
+  assert.equal(r.stderr.trim(), "✗ not signed in to Trail · run trail login, then trail share-session again (Trail team only: a trailhq.com or nanonets.com email)");
+  assert.ok(!existsSync(join(home, ".trail", "share")), "nothing is scrubbed or copied");
 });
 
 test("trail share-session: signed in to another workspace, the same one line, and only the check is sent", async () => {
@@ -365,10 +365,10 @@ test("trail share-session --once: without a terminal it scrubs the whole Claude 
     signIn(home, trail.url);
     const shown = await spawnAsync(repo, home, ["--once"]);
     assert.equal(shown.status, 0, shown.stderr);
-    assert.match(shown.stdout, /^Your Claude, last 30 days, ready to send to the Trail team$/m);
-    assert.match(shown.stdout, /^Sessions {2}1 session in 1 folder · [A-Z][a-z]{2} \d{1,2} · /m);
-    assert.match(shown.stdout, /^ {12}1 {2}\/work\/web {2}1 session$/m);
-    assert.match(shown.stdout, /^Copy {6}~[\\/]\.trail[\\/]share[\\/]\d{4}-\d{2}-\d{2}-\d{4} {2}every file exactly as it will go/m);
+    assert.match(shown.stdout, /^Send your Claude to the Trail team, once$/m);
+    assert.match(shown.stdout, /^ {2}Sessions {3}1 from the last 30 days \([A-Z][a-z]{2} \d{1,2}\), /m);
+    assert.match(shown.stdout, /^ {2}1 {2}\/work\/web {2}1 session$/m);
+    assert.match(shown.stdout, /^Read every file first: ~[\\/]\.trail[\\/]share[\\/]\d{4}-\d{2}-\d{2}-\d{4}[\\/]SUMMARY\.md$/m);
     assert.match(shown.stdout, /nothing sent\. Show the person what's above and the copy at ~[\\/]\.trail[\\/]share[\\/][\d-]+; only if they say yes, run trail share-session --once --yes/);
     assert.ok(!trail.got.some((g) => g.method === "POST"), "nothing is posted without a yes");
     const root = join(home, ".trail", "share");
@@ -456,10 +456,9 @@ test("trail share-session keeps sending by default: says so, --yes turns it on, 
     signIn(home, trail.url);
     const shown = await spawnAsync(repo, home, []);
     assert.equal(shown.status, 0, shown.stderr);
-    assert.match(shown.stdout, /^Your Claude, last 30 days and from now on, ready to send to the Trail team$/m);
-    assert.match(shown.stdout, /^Keeps on  after this, each Claude Code session you start sends what changed since, .* trail share-session --stop stops it$/m);
+    assert.match(shown.stdout, /^Send your Claude to the Trail team$/m);
+    assert.match(shown.stdout, /^ {2}· Each new Claude Code session sends what changed \(one hook in ~\/\.claude\/settings\.json\)\.\n {4}Stop with: trail share-session --stop$/m);
     assert.match(shown.stdout, /only if they say yes, run trail share-session --yes,/);
-    assert.match(shown.stdout, /^Hook {6}one entry in ~\/\.claude\/settings\.json, so it runs in every folder/m);
     assert.ok(!existsSync(join(home, ".claude", "settings.json")), "nothing is added before the yes");
     assert.ok(!trail.got.some((g) => g.method === "POST"));
 
@@ -481,6 +480,11 @@ test("trail share-session keeps sending by default: says so, --yes turns it on, 
 
     const oldSwitch = await spawnAsync(repo, home, ["--sync"]);
     assert.match(oldSwitch.stdout, /^Sending to the Trail team since /m, "--sync, the old switch, still works");
+
+    utimesSync(transcript, ago(20), ago(20));
+    const moved = await spawnTrail(repo, home, ["_share-sync"]);
+    assert.equal(moved.status, 0, moved.stderr);
+    assert.equal(trail.got.filter((g) => g.method === "POST").length, 2, "a session whose time moved with nothing written doesn't go again");
 
     appendFileSync(transcript, JSON.stringify({ type: "user", message: { role: "user", content: "and one more thing" } }) + "\n");
     utimesSync(transcript, ago(15), ago(15));
