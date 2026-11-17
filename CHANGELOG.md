@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.30.5
+
+- **`trail share-session` says what to type, and lets you leave folders
+  out.** After the preview, one line says what each answer does: `y` sends
+  it all, `n` sends nothing, and folder numbers leave those folders out
+  (like `2 3`). The preview then shows what's left, and you can leave out
+  more before sending (#847).
+
 ## 0.30.4
 
 - **`trail share-session` no longer stops on one unusual session.** A
