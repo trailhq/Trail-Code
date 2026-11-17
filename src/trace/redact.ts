@@ -57,9 +57,13 @@ export const REDACTED = '[redacted]';
 const PRIVATE_KEY_BLOCK = /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?(?:-----END (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----|$)/g;
 /** A word, for finding where on a line the secret is: a run between spaces, quotes and brackets. `=`, `:` and `/` stay in it. */
 const WORD = /[^\s'"`,;{}()[\]<>]+/g;
-/** The ways to take a secret out of one word and keep the rest, tried in order: a link's password, a link's key, a name's value. */
+/**
+ * The ways to take a secret out of one word and keep the rest, tried in order: a link's password, a link's key, a name's value.
+ * The link's scheme starts only where a run of scheme characters starts: tried at every letter of a long word, it read to
+ * the word's end each time, and a 2 MB word never finished.
+ */
 const IN_WORD: Array<[RegExp, string]> = [
-  [/([a-z][a-z0-9+.-]*:\/\/[^\s:/@]+:)[^\s@/]+(?=@)/gi, `$1${REDACTED}`],
+  [/(?<![a-z0-9+.-])([a-z][a-z0-9+.-]*:\/\/[^\s:/@]+:)[^\s@/]+(?=@)/gi, `$1${REDACTED}`],
   [/([?&#](?:key|sig|signature|x-amz-signature|x-goog-signature|auth|token|access_token|api_key)=)[^&#\s]+/gi, `$1${REDACTED}`],
   [/^([^=:]+[=:]+)(?=.)[\s\S]*$/, `$1${REDACTED}`],
 ];

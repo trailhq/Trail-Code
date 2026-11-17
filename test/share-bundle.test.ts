@@ -24,9 +24,11 @@ import {
   parseLeaveOut,
   prepareBundle,
   readManifest,
+  sendAsk,
   unfinishedCopy,
   writeSent,
 } from "../src/cloud/share-bundle.js";
+import { bundleSession } from "../src/cloud/share-session.js";
 import { secretReason } from "../src/notes/secrets.js";
 
 const OPENAI = "sk-" + "proj-" + "Q7x2Lm9Pz4Rt8Vb1Nc6Kw3Hy5Jd0Fs";
@@ -84,6 +86,32 @@ test("prepareBundle: the last 30 days of sessions from every folder, numbered by
   assert.deepEqual(readManifest(out), m);
 });
 
+test("prepareBundle: a session the scrub fails on is left out and named in the summary; the rest still go", () => {
+  const home = fakeHome();
+  const out = join(home, ".trail", "share", "2026-11-05-1200");
+  const bad = "aaaa1111-0000-4000-8000-000000000002";
+  const m = prepareBundle({
+    days: 30,
+    home,
+    who: [home],
+    out,
+    now: NOW,
+    scrub: (s, who) => {
+      if (s.id === bad) throw new RangeError("Maximum call stack size exceeded");
+      return bundleSession(s, who);
+    },
+  });
+  assert.deepEqual(
+    m.items.filter((it) => it.kind === "session").map((it) => it.id).sort(),
+    ["aaaa1111-0000-4000-8000-000000000001", "bbbb2222-0000-4000-8000-000000000001"],
+    "one session stopped nothing: before, the whole share ended there with nothing sent",
+  );
+  assert.deepEqual(m.unreadable, [{ folder: "/work/web", id: bad, mtime: NOW - 2 * 24 * 60 * 60 * 1000 }]);
+  assert.ok(!existsSync(join(out, "sessions", "work-web", `${bad}.jsonl.gz`)), "nothing of it is written, so nothing of it can go");
+  assert.match(readFileSync(join(out, "SUMMARY.md"), "utf8"), /^## Left out: trail couldn't scrub these\n\n- \/work\/web · Nov 3 · session aaaa1111$/m);
+  assert.match(bundlePreviewLines(m, "~/x", { url: "https://team.trailhq.com" }).join("\n"), /^ {2}1 session trail couldn't scrub, so it isn't sent$/m);
+});
+
 test("bundlePreviewLines: what's sent, from which folders, what's removed, what happens after yes, then where the copy is", () => {
   const { m } = prepared();
   const lines = bundlePreviewLines(m, "~/.trail/share/2026-11-05-1200", { url: "https://team.trailhq.com" });
@@ -112,6 +140,19 @@ test("parseLeaveOut and leaveOut: folder numbers drop those folders' files from 
   assert.deepEqual(readdirSync(join(out, "sessions")), ["work-web"]);
   assert.match(readFileSync(join(out, "SUMMARY.md"), "utf8"), /2\. \/work\/api · 1 session · left out/);
   assert.match(bundlePreviewLines(next, "~/x", { url: "https://team.trailhq.com" }).join("\n"), /^ {2}1 folder you left out: \/work\/api$/m);
+  assert.equal(parseLeaveOut("2", next), null, "a folder already left out is no longer on the list");
+});
+
+test("sendAsk: says what to type, folder numbers included while more than one folder is in, then asks about the rest", () => {
+  const { out, m } = prepared();
+  // A teammate saw only "→ Send it? [y/N]" and asked how to keep a folder back: the numbers worked, nothing said so.
+  assert.equal(sendAsk(m), "Type y to send it all, n to send nothing, or folder numbers to leave out (like 2).\n→ ");
+  const one = leaveOut(out, m, [2]);
+  assert.equal(sendAsk(one, true), "Type y to send the rest, or n to send nothing.\n→ ", "one folder left: leaving it out would send nothing");
+  assert.equal(sendAsk({ ...m, folders: [m.folders[0]!] }), "Type y to send it, or n to send nothing.\n→ ");
+  const three = { ...m, folders: [...m.folders, { n: 3, label: "/work/docs", sessions: 1 }] };
+  assert.equal(sendAsk(three), "Type y to send it all, n to send nothing, or folder numbers to leave out (like 2 3).\n→ ", "the example never names every folder");
+  assert.equal(sendAsk({ ...three, dropped: ["/work/api"] }, true), "Type y to send the rest, n to send nothing, or more folder numbers to leave out (like 3).\n→ ");
 });
 
 test("itemPayload: a session goes as its zipped file, the setup zipped on the way", () => {
