@@ -124,7 +124,7 @@ function turnEnd(input: StopInput, dir: string): string | null {
     const read = readTurnEnd(input, s);
     const billed = sampleTurnCost(s, read);
     const counted = countTallyTurn(s, read, input.last_assistant_message);
-    const asked = markVoteAsked(s, input.last_assistant_message);
+    const asked = markVoteAsked(s, input.last_assistant_message, read?.turn.asks === true);
     if (billed || counted || asked) writeSession(dir, id, s);
     return read && typeof input.transcript_path === 'string' ? input.transcript_path : null;
   } catch {

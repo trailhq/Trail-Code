@@ -92,7 +92,8 @@ export const EVENTS: Record<string, ReadonlySet<string>> = {
   learnings_committed: new Set<string>(['added_bucket', 'total_bucket', 'first_look']),
   /** Once a session at most: a reply that credited a learning asked "did it
    *  help? yes/no", and the person's next prompt answered (`none` when it moved
-   *  on). The vote and the learning's id; the prompt never travels. */
+   *  on, or the session closed unanswered). The vote and the learning's id; the
+   *  prompt never travels. */
   learning_rated: new Set<string>(['vote', 'learning_id']),
   /** `trail init` read the repo's past Claude sessions, the review comments
    *  on its merged PRs, or Claude Code's memory notes of it (`source`), for

@@ -6,12 +6,14 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BRAND_ENV } from '../src/brand.js';
 import { notesForPrompt, notesOnTouch, type AskJson } from '../src/claude/format.js';
-import { askedForVote, markVoteAsked, settleVote, voteOf, VOTE_ASK } from '../src/claude/learning-vote.js';
+import { askedForVote, asksMore, markVoteAsked, settleVote, voteOf, VOTE_ASK } from '../src/claude/learning-vote.js';
+import { catchUpTranscript } from '../src/claude/tally.js';
+import { SESSION_IDLE_MS, flushClosedSessions } from '../src/telemetry/sessions.js';
 import { handleStopEvent } from '../src/claude/stop.js';
 import { readSession, writeSession, type SessionState } from '../src/claude/state.js';
 import { track } from '../src/telemetry/track.js';
@@ -40,6 +42,7 @@ test('the credit instruction asks once a session, and remembers which learning i
   const s = {} as SessionState;
   const first = notesForPrompt(ask, s)!;
   assert.match(first, /end that line with " · did it help\? yes\/no"/);
+  assert.match(first, /if it asks the user nothing else/);
   assert.equal(s.lastLearning, 'l-3f9a2c1d');
   s.vote = { learning: 'l-3f9a2c1d' };
   const touch = notesOnTouch([{ ...note, id: 'l-0000aaaa', path: '/n/b.md' } as unknown as Note], { file: 'clone.go', verb: 'opened' }, s)!;
@@ -56,10 +59,52 @@ test('a reply asked only when its credit line carries the question', () => {
   assert.equal(askedForVote('Ship it? did it help? yes/no'), false, 'no credit line, no learning to rate');
 });
 
-test('the vote is read from the start of the person\'s words', () => {
-  for (const w of ['yes', 'Yes, now the tests', 'YES!', '👍', '👍🏽 thanks, now the tests', '+1', ':+1:', ':thumbsup: nice']) assert.equal(voteOf(w), 'up', w);
-  for (const w of ['no', 'No, it was stale', '👎', '-1 it was stale', ':-1:', ':thumbsdown:']) assert.equal(voteOf(w), 'down', w);
-  for (const w of ['y', 'n', 'yesterday it broke', 'nope', 'not yet', 'now fix the tests', '+10 more rows', '-12 is the offset', 'it helped 👍']) assert.equal(voteOf(w), 'none', w);
+test('the vote: yes words and thumbs up; a short no, nope or thumbs down; "it helped" or "didn\'t help" anywhere', () => {
+  for (const w of ['yes', 'Yes, now the tests', 'YES!', '👍', '👍🏽 thanks, now the tests', '+1', ':+1:', ':thumbsup: nice', 'yeah', 'Yep, ship it', 'sure', 'haan', 'sí', 'ja', 'it did', 'it helped 👍', 'fixed it, and yes it helped', 'that was really helpful']) assert.equal(voteOf(w), 'up', w);
+  for (const w of ['no', 'No, it was stale', '👎', '-1 it was stale', ':-1:', ':thumbsdown:', 'nope', 'nah', 'not really', 'nahi', "it didn't", "that didn't help", 'it did not help with the build', 'not very helpful', 'no, it did not help at all and I had to redo the migration']) assert.equal(voteOf(w), 'down', w);
+  for (const w of ['y', 'n', 'yse', 'kind of', 'yesterday it broke', 'not yet', 'now fix the tests', '+10 more rows', '-12 is the offset', 'no, I meant the other file', 'no worries', 'No problem!', 'no-op is fine', 'nonetheless', 'make the error more helpful', 'help me fix the tests']) assert.equal(voteOf(w), 'none', w);
+});
+
+test('strict (something else was asked since): only saying it helped or didn\'t counts', () => {
+  for (const w of ['Yes please', 'Yes, fix 1', 'no', '👍', 'nope']) assert.equal(voteOf(w, true), 'none', w);
+  assert.equal(voteOf('yes, and it helped', true), 'up');
+  assert.equal(voteOf("commit it. the learning didn't help though", true), 'down');
+});
+
+test('a reply that asks anything else makes the vote strict, then or before the answer', () => {
+  const plain = {} as SessionState;
+  assert.equal(markVoteAsked(plain, CREDIT), true);
+  assert.equal(plain.vote!.strict, undefined);
+  assert.equal(markVoteAsked(plain, 'Ran the suite: all green.'), false, 'a later reply that asks nothing');
+  assert.equal(markVoteAsked(plain, 'Save this as a learning? (y/n)'), true, "trail's own ask, before the answer");
+  assert.equal(plain.vote!.strict, true);
+
+  const mixed = {} as SessionState;
+  markVoteAsked(mixed, `Done. Want me to commit?\n\n📝 Started from Maya's learning · ${VOTE_ASK}`);
+  assert.equal(mixed.vote!.strict, true, 'Claude asked anyway');
+  const buttons = {} as SessionState;
+  markVoteAsked(buttons, CREDIT, true);
+  assert.equal(buttons.vote!.strict, true, 'a question with answer buttons');
+
+  for (const r of ['```ts\nconst a = b ? c : d;\n```', 'Use `a?.b` here.', 'See https://x.test/?q=1 for it.', CREDIT]) assert.equal(asksMore(r), false, r);
+  for (const r of ['Ship it?', 'Which one do you want? I can do both.', 'Commit it with this change? (y/n)', '**Ready?**']) assert.equal(asksMore(r), true, r);
+});
+
+test('the transcript read notices a question tool with answer buttons in the reply', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'vote-transcript-'));
+  const path = join(dir, 's.jsonl');
+  const line = (o: object) => JSON.stringify(o);
+  writeFileSync(path, [
+    line({ type: 'user', uuid: 'u1', origin: { kind: 'human' }, message: { role: 'user', content: 'fix the clone message' } }),
+    line({ type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'mcp__ccd_turn__wrap_up', input: { recap: 'Fixed.', ask: 'Commit it?' } }] } }),
+    line({ type: 'assistant', uuid: 'a2', message: { role: 'assistant', content: [{ type: 'text', text: CREDIT }] } }),
+  ].join('\n') + '\n');
+  assert.equal(catchUpTranscript(path, join(dir, 's.hooks.json')).turn.asks, true);
+  writeFileSync(path, [
+    line({ type: 'user', uuid: 'u1', origin: { kind: 'human' }, message: { role: 'user', content: 'fix the clone message' } }),
+    line({ type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'mcp__ccd_turn__wrap_up', input: { recap: 'Fixed.' } }] } }),
+  ].join('\n') + '\n');
+  assert.equal(catchUpTranscript(path, join(dir, 's2.hooks.json')).turn.asks, undefined, 'a recap alone asks nothing');
 });
 
 test('Stop marks the vote pending once; the next prompt settles it into one event with the vote and the id only', async () => {
@@ -100,4 +145,26 @@ test('the contract drops a vote outside the set and anything under learning_id t
   assert.equal('vote' in e.properties, false);
   assert.equal('learning_id' in e.properties, false);
   assert.equal('prompt' in e.properties, false);
+});
+
+test('a session closed with the question unanswered sends none, once', () => {
+  const dir = repo();
+  const h = home();
+  const file = (id: string, body: SessionState) => {
+    writeSession(dir, id, body);
+    const when = new Date(Date.now() - SESSION_IDLE_MS - 1000);
+    utimesSync(join(dir, 'graft', '.cache', 'session', `${id}.json`), when, when);
+  };
+  file('idle', { graftReads: 0, sourceReads: 0, savedTokens: 0, vote: { learning: 'l-3f9a2c1d' } });
+  file('resumed', { graftReads: 0, sourceReads: 0, savedTokens: 0, summarized: true, vote: {} });
+  file('answered', { graftReads: 0, sourceReads: 0, savedTokens: 0, vote: { learning: 'l-3f9a2c1d', settled: true } });
+  flushClosedSessions(dir, Date.now(), h, OPEN);
+  flushClosedSessions(dir, Date.now(), h, OPEN);
+  const votes = (peek(h) as Array<{ event: string; properties: Record<string, string> }>).filter((e) => e.event === 'learning_rated');
+  assert.equal(votes.length, 2, 'the idle one and the resumed one, each once');
+  assert.deepEqual(votes.map((e) => e.properties.vote), ['none', 'none']);
+  assert.equal(votes.filter((e) => e.properties.learning_id === 'l-3f9a2c1d').length, 1);
+  assert.equal(readSession(dir, 'idle').vote!.settled, true);
+  settleVote(dir, 'idle', 'yes', { home: h, env: OPEN });
+  assert.equal((peek(h) as Array<{ event: string }>).filter((e) => e.event === 'learning_rated').length, 2, 'a late yes after the close counts nothing');
 });
