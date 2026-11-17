@@ -625,7 +625,10 @@ function walk(node: SyntaxNode, ctx: WalkCtx, out: NodeV1[], edges: RawEdge[], m
     // A TS interface's `extends A, B` is heritage too: it is what lets a call on a
     // `LockingStore` find `save` declared on the `Store` it extends.
     const tsInterfaceDecl = (ctx.lang === "typescript" || ctx.lang === "tsx") && desc.kind === "interface";
-    if (desc.kind === "class" || javaTypeDecl || kotlinTypeDecl || swiftTypeDecl || tsInterfaceDecl)
+    // A Go struct embedding `Base` / `*Base` (or an interface embedding another) is the
+    // same promotion: the outer type's method set includes the embedded one's.
+    const goEmbeddingDecl = ctx.lang === "go" && (desc.kind === "struct" || desc.kind === "interface");
+    if (desc.kind === "class" || javaTypeDecl || kotlinTypeDecl || swiftTypeDecl || tsInterfaceDecl || goEmbeddingDecl)
       edges.push(...heritageEdges(node, id, ctx));
     if (ctx.lang === "php") edges.push(...phpAttributeReferenceEdges(node, id, ctx));
     if (ctx.lang === "java") edges.push(...javaAnnotationReferenceEdges(node, id, ctx));
@@ -2082,6 +2085,34 @@ function goReceiverType(node: SyntaxNode): string | null {
   return type?.type === "type_identifier" ? type.text : null;
 }
 
+/** The same-package types a Go struct or interface embeds, by bare name: `Base`, `*Base`
+ * and `Base[T]` in a struct, a bare `Reader` in an interface. A package-qualified
+ * embed (`http.Handler`) names another package, which a bare name cannot pin down, and a
+ * union or `~int` constraint element is not an embed at all. */
+function goEmbeddedTypeNames(type: SyntaxNode | null): string[] {
+  const names: string[] = [];
+  const nameOf = (t: SyntaxNode | null | undefined): string | null => {
+    let base = t?.type === "pointer_type" ? t.namedChildren.at(-1) : t;
+    if (base?.type === "generic_type") base = base.childForFieldName("type");
+    return base?.type === "type_identifier" ? base.text : null;
+  };
+  if (type?.type === "struct_type") {
+    const fields = type.namedChildren.find((c) => c.type === "field_declaration_list");
+    for (const f of fields?.namedChildren ?? []) {
+      if (f.type !== "field_declaration" || f.childForFieldName("name")) continue;
+      const name = nameOf(f.childForFieldName("type"));
+      if (name) names.push(name);
+    }
+  } else if (type?.type === "interface_type") {
+    for (const elem of type.namedChildren) {
+      if (elem.type !== "type_elem" || elem.namedChildren.length !== 1) continue;
+      const name = nameOf(elem.namedChildren[0]);
+      if (name) names.push(name);
+    }
+  }
+  return names;
+}
+
 function goInterfaceName(node: SyntaxNode): string | null {
   const spec = node.parent?.parent;
   return spec?.type === "type_spec" ? (spec.childForFieldName("name")?.text ?? null) : null;
@@ -2143,6 +2174,12 @@ function phpClosureName(node: SyntaxNode): string {
 
 function heritageEdges(node: SyntaxNode, classId: string, ctx: WalkCtx): RawEdge[] {
   const edges: RawEdge[] = [];
+  if (ctx.lang === "go") {
+    for (const name of goEmbeddedTypeNames(node.childForFieldName("type"))) {
+      edges.push({ source: classId, relation: "extends", name, file: ctx.rel });
+    }
+    return edges;
+  }
   if (ctx.lang === "java") {
     // `superclass` holds `extends X`; `super_interfaces` holds `implements A, B`
     // (and, on an interface declaration, `extends A, B` — which tree-sitter-java
