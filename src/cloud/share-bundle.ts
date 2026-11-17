@@ -38,6 +38,8 @@ export interface BundleItem {
   redacted: number;
   /** Last written, ms. */
   mtime: number;
+  /** A session's file size on the laptop, before scrubbing: how keep-sending tells it grew. */
+  size?: number;
 }
 
 export interface Manifest {
@@ -145,6 +147,7 @@ export function prepareBundle(opts: {
         gzBytes: b.gz.length,
         redacted: Object.values(b.redacted).reduce((n, c) => n + c, 0),
         mtime: s.mtime,
+        size: s.size,
       });
     }
     opts.onProgress?.(i + 1, sessions.length);
@@ -292,50 +295,78 @@ function plural(n: number, one: string, many = `${one}s`): string {
   return `${n} ${n === 1 ? one : many}`;
 }
 
-/** What will be sent, for the person to say yes to. `copy` is the folder as shown (`~/.trail/share/…`). */
+/** The question after the preview: always its last line, with Enter meaning no. */
+export const SEND_ASK = "→ Send it? [y/N] ";
+/** Asked again after folders were left out. */
+export const SEND_REST_ASK = "→ Send the rest? [y/N] ";
+
+/**
+ * What will be sent, for the person to say yes to, in four short sections:
+ * what's sent, from which folders, what isn't, and what happens after yes.
+ * `copy` is the folder as shown (`~/.trail/share/…`). The send question
+ * (`SEND_ASK`) follows it, so nothing here may read like the last line.
+ */
 export function bundlePreviewLines(m: Manifest, copy: string, to: { url: string }, opts: { sync?: string } = {}): string[] {
   const sessions = m.items.filter((it) => it.kind === "session");
   const gz = m.items.reduce((n, it) => n + it.gzBytes, 0);
   const times = sessions.map((s) => s.mtime);
   const [first, last] = times.length ? [dayLabel(Math.min(...times)), dayLabel(Math.max(...times))] : ["", ""];
-  const span = !times.length ? "none" : first === last ? first : `${first} – ${last}`;
+  const span = first === last ? first : `${first} – ${last}`;
   let host = to.url;
   try {
     host = new URL(to.url).host;
   } catch {
     // keep the address as it is
   }
+  const days = `the last ${plural(m.days, "day")}`;
   const kept = m.folders.filter((f) => !m.dropped.includes(f.label));
+  const shown = kept.slice(0, 8);
   // A long path keeps its start and end; SUMMARY.md has it whole.
   const short = (l: string) => (l.length > 48 ? `${l.slice(0, 20)}…${l.slice(-27)}` : l);
-  const width = Math.max(0, ...kept.slice(0, 8).map((f) => short(f.label).length));
-  const rows: Array<[string, string]> = [
-    ["Sessions", `${plural(sessions.length, "session")} in ${plural(kept.length, "folder")} · ${span} · ${sizeLabel(gz)} zipped`],
-    ...kept.slice(0, 8).map((f): [string, string] => ["", `${String(f.n).padStart(3)}  ${short(f.label).padEnd(width)}  ${plural(f.sessions, "session")}`]),
-    ...(kept.length > 8 ? [["", `  …  ${plural(kept.length - 8, "more folder")}, numbered in SUMMARY.md`] as [string, string]] : []),
-    ["Setup", setupLine(m.setup)],
-    ["Memory", plural(m.setup.memory, "note")],
-    ["Secrets", redactedLine(m.redacted)],
-    ["You", `${m.hidden ? `your name, email and home folder taken out in ${plural(m.hidden, "place")}` : "nothing that names you found"}; other people's names stay`],
-    ...(m.leftOut || m.tooBig.length ? [["Left out", leftOutLine(m)] as [string, string]] : []),
-    ...(m.dropped.length ? [["Dropped", `you left out ${plural(m.dropped.length, "folder")}: ${m.dropped.join(", ")}`] as [string, string]] : []),
-    ["Copy", `${copy}  every file exactly as it will go, listed in SUMMARY.md`],
-    ["Goes to", `the Trail team on ${host}, for the team-memory experiment, without your name`],
-    ...(opts.sync
-      ? ([
-          ["Keeps on", `after this, each Claude Code session you start sends what changed since, scrubbed the same way and kept in a copy you can read; ${opts.sync} stops it`],
-          ["Hook", "one entry in ~/.claude/settings.json, so it runs in every folder, in the terminal and in Claude Desktop; stopping takes it out"],
-        ] as Array<[string, string]>)
-      : []),
-    ["Delete", "any time, with the code you get once it's sent"],
+  const width = Math.max(0, ...shown.map((f) => short(f.label).length));
+  const numWidth = Math.max(1, ...shown.map((f) => String(f.n).length));
+  const countWidth = Math.max(0, ...shown.map((f) => plural(f.sessions, "session").length));
+  const row = (label: string, value: string) => `  ${label.padEnd(11)}${value}`;
+  const secrets = Object.values(m.redacted).reduce((a, c) => a + c, 0);
+  const notSent = [
+    ...(secrets ? [`${plural(secrets, "secret")}, like passwords, tokens and API keys`] : []),
+    ...(m.hidden ? ["your name, email and home folder (other people's names stay)"] : []),
+    ...(m.setup.mcp ? ["your MCP servers' env values and headers"] : []),
+    ...(m.leftOut ? [plural(m.leftOut, "image or other file that isn't text", "images and other files that aren't text")] : []),
+    ...(m.tooBig.length ? [`${plural(m.tooBig.length, "session")} over ${sizeLabel(MAX_GZ_BYTES)} zipped, too big to send`] : []),
+    ...(m.dropped.length ? [`${plural(m.dropped.length, "folder")} you left out: ${m.dropped.join(", ")}`] : []),
   ];
-  const head = `Your Claude, last ${plural(m.days, "day")}${opts.sync ? " and from now on" : ""}, ready to send to the Trail team`;
-  return [head, "", ...rows.map(([k, v]) => `${k.padEnd(10)}${v}`)];
+  return [
+    `Send your Claude to the Trail team${opts.sync ? "" : ", once"}`,
+    "",
+    "What's sent",
+    row("Sessions", sessions.length ? `${sessions.length} from ${days} (${span}), ${sizeLabel(gz)} zipped` : `none from ${days}`),
+    row("Setup", setupLine(m.setup)),
+    row("Memory", plural(m.setup.memory, "note")),
+    ...(shown.length
+      ? [
+          "",
+          "From these folders",
+          ...shown.map((f) => `  ${String(f.n).padStart(numWidth)}  ${short(f.label).padEnd(width)}  ${plural(f.sessions, "session").padStart(countWidth)}`),
+          ...(kept.length > 8 ? [`  …  ${plural(kept.length - 8, "more folder")}, numbered in SUMMARY.md`] : []),
+        ]
+      : []),
+    "",
+    "Removed before sending",
+    ...(notSent.length ? notSent : ["no secrets or personal details found"]).map((s) => `  ${s}`),
+    "",
+    "After you say yes",
+    `  · It goes to ${host}, without your name.`,
+    ...(opts.sync ? ["  · Each new Claude Code session sends what changed (one hook in ~/.claude/settings.json).", `    Stop with: ${opts.sync}`] : []),
+    "  · You get a code that deletes everything you sent.",
+    "",
+    `Read every file first: ${join(copy, "SUMMARY.md")}`,
+  ];
 }
 
 function setupLine(c: Manifest["setup"]): string {
   const parts: Array<[number, string]> = [
-    [c.mcp, `${plural(c.mcp, "MCP server")} (env values and headers left out)`],
+    [c.mcp, plural(c.mcp, "MCP server")],
     [c.skills, plural(c.skills, "skill")],
     [c.agents, plural(c.agents, "agent")],
     [c.commands, plural(c.commands, "command")],
@@ -344,24 +375,7 @@ function setupLine(c: Manifest["setup"]): string {
     [c.plugins, plural(c.plugins, "plugin")],
   ];
   const some = parts.filter(([n]) => n > 0).map(([, text]) => text);
-  return some.length ? some.join(" · ") : "nothing set up beyond Claude Code's defaults";
-}
-
-function redactedLine(r: Record<string, number>): string {
-  const n = Object.values(r).reduce((a, c) => a + c, 0);
-  if (!n) return "none found";
-  const kinds = Object.entries(r)
-    .sort((x, y) => y[1] - x[1])
-    .map(([k, c]) => `${k.replace(/^an? /, "")} ×${c}`)
-    .join(", ");
-  return `${n} redacted: ${kinds}`;
-}
-
-function leftOutLine(m: Manifest): string {
-  return [
-    ...(m.leftOut ? [`${plural(m.leftOut, "image or file that isn't text", "images and files that aren't text")}`] : []),
-    ...(m.tooBig.length ? [`${plural(m.tooBig.length, "session")} over ${sizeLabel(MAX_GZ_BYTES)} zipped`] : []),
-  ].join("; ");
+  return some.length ? some.join(", ") : "nothing beyond Claude Code's defaults";
 }
 
 /** The copy's manifest and its SUMMARY.md, rewritten together. */
