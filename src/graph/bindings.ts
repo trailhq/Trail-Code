@@ -184,9 +184,7 @@ export function goReceiverVarOf(node: SyntaxNode): string | null {
 function goReceiverTypeOf(node: SyntaxNode): string | null {
   const recv = node.childForFieldName("receiver");
   const param = recv?.namedChildren.find((c) => c.type === "parameter_declaration");
-  let type = param?.childForFieldName("type");
-  if (type?.type === "pointer_type") type = type.namedChildren.at(-1) ?? null;
-  return type?.type === "type_identifier" ? type.text : null;
+  return goTypeName(param?.childForFieldName("type") ?? null);
 }
 
 type RecvCtx = Pick<WalkCtx, "scope" | "enclosingClass" | "goReceiverVar" | "lang" | "bindings" | "rSuperClass">;
@@ -735,8 +733,7 @@ function handleGo(node: SyntaxNode, scope: string[], bindings: FileBindings): vo
     }
     let typeName: string | null = null;
     if (expr.type === "composite_literal") {
-      const t = expr.childForFieldName("type");
-      typeName = t?.type === "type_identifier" ? t.text : null;
+      typeName = goTypeName(expr.childForFieldName("type"));
     } else if (expr.type === "call_expression") {
       const fn = expr.childForFieldName("function");
       // Go convention: NewX(...) binds to X.
@@ -746,7 +743,10 @@ function handleGo(node: SyntaxNode, scope: string[], bindings: FileBindings): vo
   }
 }
 
-function goTypeName(type: SyntaxNode | null): string | null {
-  const base = type?.type === "pointer_type" ? type.namedChildren.at(-1) : type;
+/** A Go type's bare name: a pointer and a type-argument list are both erased
+ * (`*Stack[int]` → `Stack`), since the method set belongs to the generic type. */
+function goTypeName(type: SyntaxNode | null | undefined): string | null {
+  let base = type?.type === "pointer_type" ? type.namedChildren.at(-1) : type;
+  if (base?.type === "generic_type") base = base.childForFieldName("type");
   return base?.type === "type_identifier" ? base.text : null;
 }
