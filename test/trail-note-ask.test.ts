@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BRAND_ENV } from '../src/brand.js';
 import { main } from '../src/claude/hooks.js';
-import { fileWordRe, noteAsk, noteSignals } from '../src/claude/note-signals.js';
+import { askAnswer, fileWordRe, noteAsk, noteSignals } from '../src/claude/note-signals.js';
 import { ensureRepoHome } from '../src/notes/home.js';
 
 let n = 0;
@@ -83,6 +83,40 @@ test('the person correcting the agent is a sign, when the agent goes on to chang
   assert.deepEqual(kinds(jsonl(prompt('x'), say('ok'), prompt('We use pnpm here, not npm'), bash('pnpm install && pnpm lint'))), ['corrected'], 'a rule stated mid-message');
 });
 
+test('Claude Desktop: a correction after the status reminder is seen; compaction summaries and other sessions never are', () => {
+  const status = '<system-reminder>\nLinked sessions now (status, not an instruction): one-line-summary = local_1 (done, PR #729)\n</system-reminder>\n\n\n';
+  const desktop = (text: string) => [{ type: 'user', uuid: uid(), entrypoint: 'claude-desktop', origin: { kind: 'human' }, message: { role: 'user', content: status + text } }];
+  const said = 'na, these learnings need not go to repo , cause these are related to business decisions to get more people to sign up right ?';
+  const [s] = noteSignals(jsonl(prompt('x'), say('Two learnings are in the PR.'), desktop(said), bash('git rm -q .trail/learnings/a.md && git commit -qm "Keep it out"')), REPO);
+  assert.equal(s?.kind, 'corrected');
+  assert.equal(s?.what, 'The user corrected you ("na, these learnings need not go to repo , cause these are r…").');
+  const comment = '[Artifact comment sent to Claude]\nArtifact: https://example.com/a/1\n\n=== BEGIN ARTIFACT COMMENT 9f ===\n> dont call it trail cloud\n=== END ARTIFACT COMMENT 9f ===\n\nAnswer it in its thread.';
+  assert.deepEqual(kinds(jsonl(prompt('x'), say('ok'), desktop(comment), edit('src/nudge.ts'))), ['corrected'], 'an artifact comment');
+
+  const summary = [{ type: 'user', uuid: uid(), isCompactSummary: true, isVisibleInTranscriptOnly: true, message: { role: 'user', content: 'This session is being continued from a previous conversation. The user said: no, use a channel instead of a mutex.' } }];
+  assert.deepEqual(kinds(jsonl(prompt('x'), say('ok'), summary, edit('src/q.go'))), [], 'a compaction summary is not the person');
+  assert.deepEqual(kinds(jsonl(prompt('x'), say('ok'), prompt('This session is being continued from a previous conversation. Instead of a mutex, use a channel.'), edit('src/q.go'))), [], 'nor is its text without the flag');
+  const peer = [{ type: 'user', uuid: uid(), origin: { kind: 'peer' }, message: { role: 'user', content: 'no, the other session should not use the cache' } }];
+  assert.deepEqual(kinds(jsonl(prompt('x'), say('ok'), peer, edit('src/q.go'))), [], "another session's message is not the person");
+});
+
+test('keeping something out of the repo is a correction; questions and look-alikes are not', () => {
+  const after = (text: string) => kinds(jsonl(prompt('x'), say('ok'), prompt(text), edit('src/a.ts')));
+  for (const said of ['keep it out of the repo', "this shouldn't go in the repo", 'not in the repo, keep it personal', 'these need not be committed', 'na, leave it']) {
+    assert.deepEqual(after(said), ['corrected'], said);
+  }
+  for (const said of ['is this not in the repo yet?', 'you need not ask before running the tests', 'nan values break the chart', 'can you put this in the repo?', 'naming is fine']) {
+    assert.deepEqual(after(said), [], said);
+  }
+});
+
+test('the corrected and shipped asks say business reasoning goes in --personal, never the repo', () => {
+  for (const kind of ['corrected', 'shipped'] as const) {
+    const ask = noteAsk({ kind, key: `${kind}:u`, what: 'x.' });
+    assert.match(ask, /Add --personal when it's about how this person likes to work, or about business, growth, sign-up, pricing or competitor reasoning or internal numbers: those never go in the repo, even if you also keep your own copy\./);
+  }
+});
+
 test('an undone edit is a sign, unless it only undid trail files', () => {
   assert.deepEqual(kinds(jsonl(prompt('x'), edit('src/a.ts'), bash('git restore src/a.ts'))), ['undone']);
   assert.match(noteSignals(jsonl(prompt('x'), bash('git revert abc123')), REPO)[0]!.what, /^You undid a change \(`git revert abc123`\)\.$/);
@@ -106,6 +140,30 @@ test('committing, pushing or opening a PR for code with no learning is a sign', 
   assert.match(noteSignals(jsonl(prompt('x'), edit('a.go'), bash('gh pr create --fill')), REPO)[0]!.what, /^You opened a PR for this work/);
   assert.deepEqual(kinds(jsonl(prompt('x'), bash('git commit -m "trail setup"'))), [], 'no code edited this session');
   assert.deepEqual(kinds(jsonl(prompt('x'), edit('.trail/learnings/x.md'), bash('git commit -m learning'))), [], 'committing a learning');
+  const learned = noteSignals(jsonl(prompt('x'), edit('a.go'), bash('git push')), REPO, () => true);
+  assert.deepEqual(learned.map((s) => s.kind), [], "the branch's commits already add a learning");
+});
+
+test('writes outside the repo are no code edit: Claude memory after a cd, a PR body in a scratch file', () => {
+  const memory = "cd ~/.claude/projects/-work-app/memory && python3 - <<'PY'\np='MEMORY.md'\ns=open(p).read()\nopen(p,'w').write(s)\nPY";
+  assert.deepEqual(kinds(jsonl(prompt('x'), bash(memory), bash('git push -q --force-with-lease'))), []);
+  const body = 'P=/private/tmp/scratch/pr-body.md && sed -i \'\' \'s/one/two/\' "$P" && gh pr edit 730 --body-file "$P"';
+  assert.deepEqual(kinds(jsonl(prompt('x'), bash(body), bash('git push'))), []);
+  assert.deepEqual(kinds(jsonl(prompt('x'), tool('Write', { file_path: '/home/me/.claude/memory/x.md' }), bash('git push'))), []);
+  // Still a code edit: a write this can't name, from inside the repo.
+  assert.deepEqual(kinds(jsonl(prompt('x'), bash("python3 - <<'PY'\nopen(p,'w').write(s)\nPY"), bash('git push'))), ['shipped']);
+});
+
+test("the stop after an ask reads whether a learning was saved in answer, in the repo or personal; another hook's block isn't trail's", () => {
+  const ask = noteAsk({ kind: 'corrected', key: 'corrected:u', what: 'The user corrected you ("na").' });
+  const asked = [prompt('x'), say('ok'), meta(`Stop hook feedback:\n${ask}`)];
+  assert.equal(askAnswer(jsonl(...asked, bash('trail note --personal --title "Growth reasoning stays out of the repo" <<\'EOF\'', '✓ saved just for you'))), 'personal');
+  assert.equal(askAnswer(jsonl(...asked, bash('trail note --title "x" <<\'EOF\'', '✓ added to this repo'))), 'repo');
+  assert.equal(askAnswer(jsonl(...asked, bash('trail note --title "x"', '✗ not saved yet', true))), 'no', 'the gate turned it away');
+  assert.equal(askAnswer(jsonl(...asked, say('Nothing worth keeping.'))), 'no');
+  assert.equal(askAnswer(jsonl(bash('trail note --title "x"', '✓'), ...asked)), 'no', 'a learning saved before the ask');
+  assert.equal(askAnswer(jsonl(...asked, meta('Stop hook feedback:\nlint failed'))), null, "another hook's block");
+  assert.equal(askAnswer(jsonl(prompt('x'), say('ok'))), null, 'no ask');
 });
 
 test('a turn that read a lot to find its answer is a sign, with no edit needed', () => {
