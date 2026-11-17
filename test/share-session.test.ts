@@ -16,7 +16,8 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { BRAND_ENV } from "../src/brand.js";
-import { anonymize, bundleSession, pickSession, previewLines, redactedCount, sessionsHere, whoIAm, type SessionFile } from "../src/cloud/share-session.js";
+import { anonymize, bundleSession, nestsDeeper, pickSession, previewLines, redactedCount, sessionsHere, whoIAm, type SessionFile } from "../src/cloud/share-session.js";
+import { timeBar } from "./machine-speed.js";
 import { deleteSharedBundle, shareAllowed, shareSession, type Cloud } from "../src/cloud/workspace.js";
 import { claudeProjectDir } from "../src/notes/session-cost.js";
 import { secretReason } from "../src/notes/secrets.js";
@@ -161,6 +162,61 @@ test("a .env file counts as read only when a command reads it, not when its name
   assert.equal(result(2), "PORT=8787\nREGION=us-west-2", "a template holds no values");
   assert.equal(result(3), "PORT=8787\nREGION=us-west-2", "a script that only says .env reads nothing");
   assert.equal(result(4), "PORT=[redacted]\nREGION=[redacted]");
+});
+
+test("bundleSession: a line nested thousands deep goes scrubbed as text, and the rest of the session still goes", () => {
+  const home = mkdtempSync(join(tmpdir(), "share-deep-"));
+  const folder = join(home, ".claude", "projects", "-work-web");
+  mkdirSync(folder, { recursive: true });
+  const id = "dddd1111-0000-4000-8000-000000000001";
+  // A tool's output can be any JSON; walking 5,000 levels ran out of stack and stopped the whole share.
+  let nested = JSON.stringify(`rotate ${OPENAI} in /Users/maya/web`);
+  for (let i = 0; i < 5000; i++) nested = `{"a":${nested}}`;
+  const lines = [
+    JSON.stringify({ type: "user", timestamp: "2026-11-17T06:00:00.000Z", sessionId: id, cwd: "/work/web", message: { role: "user", content: "parse the tree" } }),
+    `{"type":"user","timestamp":"2026-11-17T06:01:00.000Z","toolUseResult":${nested},"message":{"role":"user","content":"tool output"}}`,
+    JSON.stringify({ type: "assistant", timestamp: "2026-11-17T06:02:00.000Z", message: { id: "msg_02", role: "assistant", content: [{ type: "text", text: "done" }] } }),
+  ];
+  const path = join(folder, `${id}.jsonl`);
+  writeFileSync(path, lines.join("\n") + "\n");
+
+  const b = bundleSession({ id, path, mtime: Date.now(), size: 0 }, ["/Users/maya", "maya"]);
+  const text = gunzipSync(b.gz).toString("utf8");
+  const out = text.trim().split("\n");
+  assert.equal(out.length, 3, "every line goes");
+  assert.equal(b.messages, 3, "the deep line still counts as a message");
+  assert.equal(secretReason(text), null, "the key in the deep line is gone");
+  assert.doesNotMatch(text, /maya/, "so is the sender's home folder");
+  assert.equal(JSON.parse(out[0]!).message.content, "parse the tree", "the lines around it are walked as before");
+  assert.equal(JSON.parse(out[2]!).message.content[0].text, "done");
+});
+
+test("nestsDeeper: counts objects and arrays, not brackets inside strings", () => {
+  assert.equal(nestsDeeper('{"a":[{"b":1}]}', 3), false);
+  assert.equal(nestsDeeper('{"a":[{"b":[1]}]}', 3), true);
+  assert.equal(nestsDeeper(JSON.stringify({ s: "[[[[[[[[{{{{{{{{" }), 2), false, "brackets in a string don't nest");
+  assert.equal(nestsDeeper(JSON.stringify({ s: 'a \\" [[[[ "' }), 2), false, "nor after an escaped quote");
+});
+
+test("redactText and anonymize read a 1 MB word once, not once per letter", () => {
+  const word = "a".repeat(1024 * 1024);
+  // Each of these never finished before: a pattern that could start at any letter read to the word's end from each.
+  const runs: Array<[string, () => unknown]> = [
+    ["a link's key then a long value", () => redactText(`https://x.test/?token=${word}`)],
+    ["a secret's name then a long value", () => redactText(`TOKEN=${word}`)],
+    ["a long word with no @", () => anonymize(word, ["maya@acme.test", "maya"])],
+  ];
+  const bar = timeBar(250, 1500);
+  for (const [name, run] of runs) {
+    const t0 = performance.now();
+    run();
+    const ms = performance.now() - t0;
+    assert.ok(ms < bar, `${name}: ${ms.toFixed(0)} ms, over ${bar.toFixed(0)} ms`);
+  }
+  assert.equal(redactText(`https://x.test/?token=${word}`).text, `https://x.test/?token=${REDACTED}`);
+  assert.equal(redactText(`TOKEN=${word}`).text, `TOKEN=${REDACTED}`);
+  assert.equal(anonymize("mail maya.k+ci@acme.test now", []).text, "mail [email] now", "an address is still found whole");
+  assert.equal(redactText("postgres://app:Xk9vQ2mL7pR4@db.acme.test/main").text, `postgres://app:${REDACTED}@db.acme.test/main`, "and a link's password");
 });
 
 test("pickSession: by number in the list, by id or its start; an unknown or ambiguous one is null", () => {
