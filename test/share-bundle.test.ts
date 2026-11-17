@@ -24,6 +24,7 @@ import {
   parseLeaveOut,
   prepareBundle,
   readManifest,
+  sendAsk,
   unfinishedCopy,
   writeSent,
 } from "../src/cloud/share-bundle.js";
@@ -139,6 +140,19 @@ test("parseLeaveOut and leaveOut: folder numbers drop those folders' files from 
   assert.deepEqual(readdirSync(join(out, "sessions")), ["work-web"]);
   assert.match(readFileSync(join(out, "SUMMARY.md"), "utf8"), /2\. \/work\/api · 1 session · left out/);
   assert.match(bundlePreviewLines(next, "~/x", { url: "https://team.trailhq.com" }).join("\n"), /^ {2}1 folder you left out: \/work\/api$/m);
+  assert.equal(parseLeaveOut("2", next), null, "a folder already left out is no longer on the list");
+});
+
+test("sendAsk: says what to type, folder numbers included while more than one folder is in, then asks about the rest", () => {
+  const { out, m } = prepared();
+  // A teammate saw only "→ Send it? [y/N]" and asked how to keep a folder back: the numbers worked, nothing said so.
+  assert.equal(sendAsk(m), "Type y to send it all, n to send nothing, or folder numbers to leave out (like 2).\n→ ");
+  const one = leaveOut(out, m, [2]);
+  assert.equal(sendAsk(one, true), "Type y to send the rest, or n to send nothing.\n→ ", "one folder left: leaving it out would send nothing");
+  assert.equal(sendAsk({ ...m, folders: [m.folders[0]!] }), "Type y to send it, or n to send nothing.\n→ ");
+  const three = { ...m, folders: [...m.folders, { n: 3, label: "/work/docs", sessions: 1 }] };
+  assert.equal(sendAsk(three), "Type y to send it all, n to send nothing, or folder numbers to leave out (like 2 3).\n→ ", "the example never names every folder");
+  assert.equal(sendAsk({ ...three, dropped: ["/work/api"] }, true), "Type y to send the rest, n to send nothing, or more folder numbers to leave out (like 3).\n→ ");
 });
 
 test("itemPayload: a session goes as its zipped file, the setup zipped on the way", () => {
