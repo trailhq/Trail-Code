@@ -1,0 +1,15 @@
+# gitleaks config for Trail-Code.
+#
+# test/ holds fixtures for Trail-Code's own secret scrubbing and redaction:
+# synthetic AWS and GitHub tokens (invalid key IDs, wrong checksums), truncated
+# PEM headers, the public jwt.io sample JWT and example curl/psql commands.
+# They exist to look like secrets, so gitleaks would flag them on every scan.
+# Everything outside test/ is still scanned with the default rules.
+title = "Trail-Code"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Synthetic secrets used as test input for redaction"
+paths = ['''(^|/)test/''']
