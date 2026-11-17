@@ -381,6 +381,19 @@ export function meaningfulSymbol(name: string): boolean {
 export function tokensOnOneLookup(repo: string, opts: { contextDir?: string; tries?: number } = {}): TokensSummary | null {
   const pr = tokensOnLastPr(repo, opts);
   if (pr) return pr;
+  const hub = lookupOnHub(repo, opts);
+  if (!hub) return null;
+  // Where the answer pointed stays on this machine: the summary carries the numbers only.
+  const { top: _top, ...summary } = hub;
+  return summary;
+}
+
+/**
+ * {@link tokensOnOneLookup}'s question about the most central symbol, with the
+ * answer's first `file:Lx-Ly` as `top`, for `trail init`'s own terminal. Null
+ * without a graph or when no lookup saves anything.
+ */
+export function lookupOnHub(repo: string, opts: { contextDir?: string; tries?: number } = {}): (TokensSummary & { top: string }) | null {
   try {
     const graph = loadGraphCached(contextDirFor(repo, opts.contextDir));
     if (!graph) return null;
@@ -398,7 +411,7 @@ export function tokensOnOneLookup(repo: string, opts: { contextDir?: string; tri
       const query = `how does ${hub.name} work`;
       const r = ask(repo, query, { source: true, limit: 5, contextDir: opts.contextDir });
       const got = parseAskSavings(formatAsk(r));
-      if (got && got.saved > 0) return { question: `how ${hub.name} works`, symbol: hub.name, ...got };
+      if (got && got.saved > 0) return { question: `how ${hub.name} works`, symbol: hub.name, ...got, top: r.hits[0]?.pointer ?? "" };
     }
     return null;
   } catch {
