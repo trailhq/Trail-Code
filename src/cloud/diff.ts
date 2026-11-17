@@ -50,6 +50,12 @@ export const WIRING = [
 
 const NOT_WIRING = ["--", ".", ...WIRING.map((p) => `:(exclude)${p}`)];
 
+/** Whether the branch's commits add a learning to `.trail/learnings/`, so what it pushes carries one. */
+export function branchAddsLearning(repo: string, base = defaultBase(repo)): boolean {
+  const from = git(repo, ["merge-base", "HEAD", base])?.trim() || base;
+  return !!git(repo, ["diff", "--name-only", "--diff-filter=A", from, "HEAD", "--", ".trail/learnings"])?.trim();
+}
+
 /** The branch's diff against its base's merge base, working tree included, without trail's own wiring. Null outside a git repo. */
 export function branchDiff(repo: string, base = defaultBase(repo), maxBytes = 400 * 1024): BranchDiff | null {
   const from = git(repo, ["merge-base", "HEAD", base])?.trim() || base;
