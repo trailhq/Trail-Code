@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.30.4
+
+- **`trail share-session` no longer stops on one unusual session.** A
+  session holding deeply nested JSON from a tool crashed the scrub with
+  "Maximum call stack size exceeded", and nothing was sent. A line that deep
+  is now scrubbed as text. A session the scrub still can't read is left out
+  and named in the summary, and the rest still go. Two scrub patterns no
+  longer slow to a halt on a very long word (#844).
+
 ## 0.30.3
 
 - **`trail share-session`'s preview is shorter and asks one question.** It
