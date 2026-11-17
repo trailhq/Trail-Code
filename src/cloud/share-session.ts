@@ -260,6 +260,19 @@ export function bundleSession(session: SessionFile, who: string[] = whoIAm()): B
         if (endedAt === undefined || at > Date.parse(endedAt)) endedAt = e.timestamp as string;
       }
       const env = touchesEnv(entry, envIds);
+      // A tool's output can be JSON nested thousands deep. Walking it, or writing it back, runs
+      // out of stack and stopped the whole share, so a line that deep is scrubbed as text, like
+      // a line that isn't JSON. A .env read that deep is left out: its values can't be found in text.
+      if (nestsDeeper(line, MAX_WALK_DEPTH)) {
+        if (env) {
+          leftOut++;
+          continue;
+        }
+        const r = redactText(line);
+        count(r.found);
+        out.push(hide(r.text));
+        continue;
+      }
       const clean = walk(entry, (s) => {
         let text = s;
         if (env) {
@@ -336,7 +349,9 @@ export function whoIAm(extra: string[] = []): string[] {
 /** Machine logins that name nobody, and would turn up as ordinary words (`test runner`). */
 const GENERIC_LOGINS = new Set(["root", "admin", "user", "users", "ubuntu", "runner", "vscode", "node", "ec2-user", "codespace", "developer", "dev", "app", "default"]);
 
-const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+// Starts only where a run of address characters starts: tried at every position of a long
+// run with no `@`, it read to the run's end each time, and a 1 MB word never finished.
+const EMAIL = /(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
 
 /**
  * `text` with nothing that names the sender: the home folder becomes `~`,
@@ -447,6 +462,35 @@ function touchesEnv(entry: unknown, ids: Set<string>): boolean {
 
 /** A long base64 run: an image or a file's bytes, not words. */
 const BASE64 = /^[A-Za-z0-9+/=\r\n]{512,}$/;
+
+/**
+ * How deep `walk` goes into one line. Claude Code's own lines nest about 10
+ * deep; walking past a few thousand, and `JSON.stringify` after it, overflows
+ * the stack. Well under that, for a hook's or a Windows thread's smaller stack.
+ */
+const MAX_WALK_DEPTH = 200;
+
+/**
+ * Whether the JSON `line` nests deeper than `max` objects and arrays. One pass
+ * over the text, without recursing, so a line too deep to walk is told apart
+ * without walking it.
+ */
+export function nestsDeeper(line: string, max: number): boolean {
+  if (line.length <= max) return false;
+  let depth = 0;
+  let inString = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line.charCodeAt(i);
+    if (inString) {
+      if (c === 0x5c) i++; // a backslash escapes the next character
+      else if (c === 0x22) inString = false;
+    } else if (c === 0x22) inString = true;
+    else if (c === 0x7b || c === 0x5b) {
+      if (++depth > max) return true;
+    } else if (c === 0x7d || c === 0x5d) depth--;
+  }
+  return false;
+}
 
 /**
  * `value` with `fix` applied to every string in it. An image's bytes are left
