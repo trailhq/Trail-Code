@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.30.3
+
+- **`trail share-session`'s preview is shorter and asks one question.** It
+  now shows four short sections: what's sent, from which folders, what's
+  removed before sending, and what happens after you say yes. Then it asks
+  `→ Send it? [y/N]`, where Enter means no. Typing folder numbers there
+  still leaves those folders out (#840).
+
 ## 0.30.2
 
 - **`trail share-session` keeps sending after a trail upgrade.** The first
