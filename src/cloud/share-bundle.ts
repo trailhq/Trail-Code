@@ -224,7 +224,8 @@ export function parseLeaveOut(answer: string, m: Manifest): number[] | null {
   const parts = answer.split(/[\s,]+/).filter(Boolean);
   if (!parts.length || !parts.every((p) => /^\d{1,4}$/.test(p))) return null;
   const ns = [...new Set(parts.map(Number))];
-  return ns.every((n) => m.folders.some((f) => f.n === n)) ? ns : null;
+  // Only folders still in: one already left out is no longer on the list.
+  return ns.every((n) => m.folders.some((f) => f.n === n && !m.dropped.includes(f.label))) ? ns : null;
 }
 
 /** Take the numbered folders out of the copy: their files go, and the summary says so. */
@@ -311,16 +312,27 @@ function plural(n: number, one: string, many = `${one}s`): string {
   return `${n} ${n === 1 ? one : many}`;
 }
 
-/** The question after the preview: always its last line, with Enter meaning no. */
-export const SEND_ASK = "→ Send it? [y/N] ";
-/** Asked again after folders were left out. */
-export const SEND_REST_ASK = "→ Send the rest? [y/N] ";
+/**
+ * What to type after the preview: one line that says each answer and what it
+ * does, then the `→` prompt, so nobody has to guess what a question with three
+ * answers wants. Folder numbers are offered while more than one folder is in:
+ * with "→ Send it? [y/N]" alone, a teammate didn't know folders could be kept
+ * back. Enter still sends nothing. `rest`: asked again after some were left out.
+ */
+export function sendAsk(m: Manifest, rest = false): string {
+  const kept = m.folders.filter((f) => !m.dropped.includes(f.label));
+  const what = rest ? "the rest" : kept.length > 1 ? "it all" : "it";
+  if (kept.length < 2) return `Type y to send ${what}, or n to send nothing.\n→ `;
+  // The example never names every folder still in: that would send nothing but the setup.
+  const example = kept.slice(kept.length > 2 ? -2 : -1).map((f) => f.n).join(" ");
+  return `Type y to send ${what}, n to send nothing, or ${rest ? "more " : ""}folder numbers to leave out (like ${example}).\n→ `;
+}
 
 /**
  * What will be sent, for the person to say yes to, in four short sections:
  * what's sent, from which folders, what isn't, and what happens after yes.
  * `copy` is the folder as shown (`~/.trail/share/…`). The send question
- * (`SEND_ASK`) follows it, so nothing here may read like the last line.
+ * (`sendAsk`) follows it, so nothing here may read like the last line.
  */
 export function bundlePreviewLines(m: Manifest, copy: string, to: { url: string }, opts: { sync?: string } = {}): string[] {
   const sessions = m.items.filter((it) => it.kind === "session");
