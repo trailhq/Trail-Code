@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { grepGraph } from '../src/search/grep.js';
-import { zeroHitNote } from '../src/search/grep-cli.js';
+import { zeroHitNote, formatGrepResult } from '../src/search/grep-cli.js';
 import { WALK_RELATIONS } from '../src/graph/relations.js';
 import { readGraph, wiringPath } from '../src/graph/write.js';
 import type { GraphV1, NodeV1 } from '../src/graph/types.js';
@@ -307,4 +307,38 @@ test('zeroHitNote (grep-cli.ts): zero hits AND unreadable indexed files mentions
   assert.match(note, /no hits for "NOPE_NOT_PRESENT"/);
   // ...but truncation is never silent: 1 unreadable file must be surfaced too.
   assert.match(note, /1 indexed file.*could not be read/);
+});
+
+// Issue #816: parse failures ride the result and the answers blame the index,
+// not the pattern. An old graph without meta.parseFailed answers exactly as
+// before — the sentence must never appear from nothing.
+test('grepResult carries parseFailed; the notes say what was never searched (#816)', () => {
+  const repo = needleRepo();
+  const graph = loadBuiltGraph(repo);
+  graph.meta.parseFailed = [
+    { path: 'big/failed1.ts', error: 'big/failed1.ts: parse failed — c_sharp grammar threw: Aborted()' },
+    { path: 'big/failed2.ts', error: 'big/failed2.ts: parse failed — c_sharp grammar threw: Aborted()' },
+  ];
+  const r = grepGraph(graph, repo, 'NEEDLE');
+  assert.equal(r.parseFailed, 2, 'the count rides the result');
+
+  const hitText = formatGrepResult(r);
+  assert.match(hitText, /2 source files failed to parse and were not searched/);
+  assert.match(hitText, /use rg for exhaustive search/);
+
+  const zero = { ...r, totalHits: 0, groups: [] };
+  const note = zeroHitNote(zero);
+  assert.match(note, /no hits for "NEEDLE"/);
+  assert.match(note, /2 source files failed to parse and were not searched/);
+  assert.doesNotMatch(note, /All indexed code was searched/, 'that sentence is a lie when files failed');
+
+  // Adversarial: an old graph (no meta.parseFailed) must answer unchanged —
+  // no sentence from nothing, retry advice intact.
+  const old = loadBuiltGraph(repo);
+  delete old.meta.parseFailed;
+  const rOld = grepGraph(old, repo, 'NOPE_NOT_PRESENT');
+  assert.equal(rOld.parseFailed, 0);
+  const noteOld = zeroHitNote(rOld);
+  assert.doesNotMatch(noteOld, /failed to parse/);
+  assert.match(noteOld, /All indexed code was searched/);
 });

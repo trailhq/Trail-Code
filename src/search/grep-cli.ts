@@ -35,10 +35,15 @@ function formatGroup(g: GrepGroup): string {
   return lines.join("\n");
 }
 
-/** `"<pattern>" — N hits in M symbols across K files (searched T indexed files)` */
+/** `"<pattern>" — N hits in M symbols across K files (searched T indexed files)`; when the graph
+ * holds parse failures, the files that were never searched are named in the same breath (#816) —
+ * a hit count is not "all usages" if a third of the repo never made it into the index. */
 export function formatGrepHeader(result: GrepResult): string {
   const filesHit = new Set(result.groups.map((g) => g.path)).size;
-  return `"${result.pattern}" — ${result.totalHits} hits in ${result.groups.length} symbols across ${filesHit} files (searched ${result.filesSearched} indexed files)`;
+  const parseFailed = result.parseFailed > 0
+    ? `; ${result.parseFailed} source file${result.parseFailed === 1 ? "" : "s"} failed to parse and were not searched (run ${cmd("graft build")} --no-reuse, or use rg for exhaustive search)`
+    : "";
+  return `"${result.pattern}" — ${result.totalHits} hits in ${result.groups.length} symbols across ${filesHit} files (searched ${result.filesSearched} indexed files${parseFailed})`;
 }
 
 /** Loud truncation note — dropped counts are never silent. */
@@ -77,9 +82,16 @@ export function formatGrepResult(result: GrepResult): string {
  * is some, the note names it instead of saying all the code was searched. */
 export function zeroHitNote(result: GrepResult, ignored: string[] = []): string {
   const retry = `no hits for "${result.pattern}" in ${result.filesSearched} indexed files. The pattern may be too specific — retry ${cmd("graft grep")} with a bare symbol name or short substring (drop the receiver, full signature, and regex anchors).`;
-  const base = ignored.length
-    ? `${retry} Git-ignored code isn't indexed and wasn't searched: ${ignoredLabel(ignored)}. Run grep -rn there, and on docs and configs`
-    : `${retry} All indexed code was searched; use raw grep -rn only for genuinely unindexed files (docs, configs, brand-new files)`;
+  const parseFailed = result.parseFailed > 0
+    ? `${result.parseFailed} source file${result.parseFailed === 1 ? "" : "s"} failed to parse and were not searched (run ${cmd("graft build")} --no-reuse, or use rg for exhaustive search)`
+    : null;
+  // "All indexed code was searched" is a lie while parse failures ride the
+  // graph, so the failure note replaces it, not joins it (#816).
+  const base = parseFailed
+    ? `${retry} ${parseFailed}`
+    : ignored.length
+      ? `${retry} Git-ignored code isn't indexed and wasn't searched: ${ignoredLabel(ignored)}. Run grep -rn there, and on docs and configs`
+      : `${retry} All indexed code was searched; use raw grep -rn only for genuinely unindexed files (docs, configs, brand-new files)`;
   const { files } = result.truncated;
   if (files === 0) return base;
   return `${base} — note: ${files} indexed file${files === 1 ? "" : "s"} could not be read (stale graph? run ${cmd("graft build")})`;

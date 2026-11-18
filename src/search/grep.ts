@@ -59,6 +59,9 @@ export interface GrepResult {
    * couldn't be read from disk. `hits`: matches found beyond `maxHits`,
    * counted but not collected. */
   truncated: { files: number; hits: number };
+  /** Source files that failed to parse at build time and were never
+   * searched (#816). 0 when the graph predates `meta.parseFailed`. */
+  parseFailed: number;
   /** Tokens-saved baseline: the files that had hits, read whole. Undefined
    * when there were no hits or the graph predates file sizing. */
   saved?: Savings;
@@ -216,6 +219,7 @@ export function grepGraph(graph: GraphV1, repoRoot: string, pattern: string, opt
     totalHits: collected,
     groups: sortedGroups,
     truncated: { files: truncatedFiles, hits: truncatedHits },
+    parseFailed: graph.meta.parseFailed?.length ?? 0,
     saved: savingsFor(graph, sortedGroups.map((g) => g.path)),
   };
 }

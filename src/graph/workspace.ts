@@ -572,6 +572,7 @@ export function federateGrep(
   let filesSearched = 0;
   let totalHits = 0;
   const truncated = { files: 0, hits: 0 };
+  let parseFailed = 0;
   let savedFiles = 0;
   let savedChars = 0;
 
@@ -584,6 +585,7 @@ export function federateGrep(
     totalHits += r.totalHits;
     truncated.files += r.truncated.files;
     truncated.hits += r.truncated.hits;
+    parseFailed += r.parseFailed;
     if (r.saved) {
       savedFiles += r.saved.files;
       savedChars += r.saved.baselineChars;
@@ -599,7 +601,7 @@ export function federateGrep(
 
   groups.sort((a, b) => b.inDegree - a.inDegree || a.path.localeCompare(b.path));
   const saved: Savings | undefined = savedChars > 0 ? { files: savedFiles, baselineChars: savedChars } : undefined;
-  const result: GrepResult = { pattern, filesSearched, totalHits, groups, truncated, saved };
+  const result: GrepResult = { pattern, filesSearched, totalHits, groups, truncated, parseFailed, saved };
   return { result, coverage: coverageNote(wg) };
 }
 
