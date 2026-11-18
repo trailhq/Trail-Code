@@ -76,7 +76,16 @@ function hookBlocks(command: (arg: string) => string): Record<string, Json[]> {
       // but the handler no-ops instantly unless there is something to record, so an
       // unrelated Bash or a plain Read costs only a stdin read. `Skill` is the
       // agent using a skill: one of the repo's goes to the workspace as a run.
-      { matcher: 'Bash|mcp__graft__|mcp__trail__|Read|Grep|Glob|Skill', hooks: [{ type: 'command', command: hookCmd_('tool-savings'), timeout: 8 }] },
+      // The matcher is anchored regex, not bare names: Claude Code reads a
+      // matcher of plain characters as a list of EXACT tool names, so a bare
+      // `mcp__trail__` would match only a tool literally named that and never a
+      // real `mcp__<server>__trail_find_code`. The native names are anchored
+      // (`^…$`) so they stay exact once the value is a regex, and MCP tools are
+      // matched by their tool-name suffix so any server key fires — including
+      // plugin-scoped servers (`mcp__plugin_<name>_<server>__…`). The handler
+      // still filters by the real tool-name list, so third-party MCP tools
+      // classify as neither and cost a stdin read.
+      { matcher: '^(Bash|Read|Grep|Glob|Skill)$|^mcp__.+__(graft|trail)_', hooks: [{ type: 'command', command: hookCmd_('tool-savings'), timeout: 8 }] },
     ],
     // Longer than the other hooks: its `graft ask` is a real query, and a query
     // brings the graph up to date first (graph/refresh.ts). The hook itself
