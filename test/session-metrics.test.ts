@@ -103,6 +103,42 @@ test('parseSavings sums every footer, tolerant of commas', () => {
   );
 });
 
+// Issue #624 part 2: a footer quoted inside prose is data, not savings. The
+// PostToolUse accumulator sweeps JSON.stringify(tool_response), so a document
+// that merely mentions the footer must not move the session total.
+test('parseSavings ignores a footer quoted inside prose', () => {
+  assert.equal(parseSavings('he wrote "[graft] tokens saved ≈ 13,509" in the doc'), 0);
+  assert.equal(
+    parseSavings(JSON.stringify({ tool_response: { stdout: 'he wrote "[graft] tokens saved ≈ 13,509" in the doc' } })),
+    0,
+  );
+});
+
+test('parseSavings still counts footers at JSON field boundaries and after escaped newlines', () => {
+  assert.equal(
+    parseSavings(JSON.stringify({ tool_response: { stdout: '[graft] tokens saved ≈ 1,200 (92%) — …' } })),
+    1200,
+  );
+  // a bare-string tool_response: the hooks stringify the WHOLE payload, so the
+  // footer sits right after the field's opening quote (`:"`)
+  assert.equal(
+    parseSavings(JSON.stringify({ session_id: 's1', tool_response: '[graft] tokens saved ≈ 517 (88%) — …' })),
+    517,
+  );
+  // a real footer of the tally-test family: bare, ending right after the number
+  assert.equal(parseSavings(JSON.stringify({ session_id: 's1', tool_response: '[graft] tokens saved ≈ 4,000' })), 4000);
+  assert.equal(
+    parseSavings(JSON.stringify({ content: [{ type: 'text', text: 'intro\n[graft] tokens saved ≈ 300 (41%) — …' }] })),
+    300,
+  );
+  assert.equal(
+    parseSavings('[graft] tokens saved ≈ 500 (36%) — …\n[trail] learnings saved ≈ 200 tokens (estimate): …'),
+    700,
+  );
+  // glued right after output content, no separator (claude-hooks.test.ts' real-line shape)
+  assert.equal(parseSavings('callers …[graft] tokens saved ≈ 1,990 (88%) — …'), 1990);
+});
+
 // ── recordToolUse ──────────────────────────────────────────────────────────
 
 test('recordToolUse increments the right counter and accumulates savings', () => {
