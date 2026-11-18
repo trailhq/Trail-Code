@@ -29,6 +29,7 @@ import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { readJson, writeJsonAtomic, cacheDir } from './util/state.js';
+import { homeFolderRefusal } from './init-guard.js';
 import { HOSTS, hostRelPath } from './hosts/registry.js';
 import { markersFor } from './hosts/sections.js';
 import { getNpmViewVersion, readCurrentVersion } from './cli-meta.js';
@@ -288,9 +289,18 @@ export function reconcileWiring(
     wired?: (repo: string) => string[];
     rewrite: (repo: string, hosts: string[], opts: WiringOpts, toTrail: boolean) => void;
     toTrail?: (repo: string) => boolean;
+    /** Overrides homedir() in tests. */
+    home?: string;
   },
 ): WiringRefresh | null {
   try {
+    // #829: user-scope agent wiring (~/.claude/helpers, ~/.claude/skills, the
+    // graft MCP entry) makes the home folder look like a wired repository, and
+    // a version-change upkeep would then refresh ~ — deleting user-scope
+    // helpers and skills and disabling the graft MCP server with nothing
+    // registered in its place. The home folder is not a repository; the same
+    // refusal `init` already gives, applied before anything is read or written.
+    if (homeFolderRefusal(repo, deps.home) !== null) return null;
     const stamp = readStamp(repo);
     const toTrail = deps.toTrail?.(repo) ?? false;
     if (stamp && stamp.version === current && !toTrail) return null;

@@ -254,3 +254,46 @@ test('formatWiringRefresh discloses machine-wide writes', () => {
   assert.ok(local);
   assert.doesNotMatch(local, /~\/\.codex/);
 });
+
+/*
+ * Issue #829: user-scope agent wiring (~/.claude/helpers/*.cjs, ~/.claude/
+ * skills, the graft MCP entry in ~/.claude.json) made the home folder look
+ * like a wired repository, so a version-change upkeep ran a full wiring
+ * refresh against ~ — deleting user-scope helpers and skills and disabling
+ * the graft MCP server with nothing registered in its place. The home folder
+ * is not a repository; reconcileWiring must refuse it no matter what its disk
+ * looks like, while a real repo under the same home keeps refreshing.
+ */
+test("reconcileWiring refuses the home folder: user-scope wiring is not a repo (#829)", () => {
+  const home = tmpRepo("upkeep-home-folder");
+  mkdirSync(join(home, ".claude", "helpers"), { recursive: true });
+  const helper = join(home, ".claude", "helpers", "graft-hooks.cjs");
+  writeFileSync(helper, "module.exports = {}; // user-scope wiring, not a repo's");
+
+  let rewrote = 0;
+  const refreshed = reconcileWiring(home, "9.9.9", { rewrite: () => { rewrote++; }, home });
+  assert.equal(refreshed, null, "home is not a repository — nothing to reconcile");
+  assert.equal(rewrote, 0, "no wiring rewrite ran against the home folder");
+  assert.ok(existsSync(helper), "the user-scope helper survives upkeep");
+});
+
+test("a home stamped by an older version stays refused on upgrade (#829)", () => {
+  const home = tmpRepo("upkeep-home-stamped");
+  mkdirSync(join(home, ".trail"), { recursive: true });
+  writeStamp(home, "0.28.0", ["claude"], { global: false, hooks: true });
+  let rewrote = 0;
+  const refreshed = reconcileWiring(home, "0.29.0", { rewrite: () => { rewrote++; }, home });
+  assert.equal(refreshed, null, "an init-wired home must not refresh either — the guard is positional, not stamp-based");
+  assert.equal(rewrote, 0);
+});
+
+test("a real repository under the same home still refreshes (#829)", () => {
+  const home = tmpRepo("upkeep-home-parent");
+  const repo = join(home, "code", "assign");
+  mkdirSync(join(repo, ".trail"), { recursive: true });
+  writeFileSync(join(repo, ".trail", "hook.cjs"), "");
+  let rewrote = 0;
+  const refreshed = reconcileWiring(repo, "9.9.9", { rewrite: () => { rewrote++; }, home });
+  assert.ok(refreshed, "the guard is positional: only ~ itself is refused");
+  assert.equal(rewrote, 1, "and the refresh really ran");
+});
