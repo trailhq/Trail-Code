@@ -53,6 +53,8 @@ export interface Manifest {
   dropped: string[];
   /** Sessions over the upload cap, left out. */
   tooBig: Array<{ folder: string; title: string; gzBytes: number }>;
+  /** Sessions the scrub failed on, left out. Absent in a copy made before trail kept it. */
+  unreadable?: Array<{ folder: string; id: string; mtime: number }>;
   /** Secrets taken out, by kind. */
   redacted: Record<string, number>;
   /** Places the person's name, email or home folder was taken out. */
@@ -105,12 +107,16 @@ export function prepareBundle(opts: {
   now?: number;
   repoOf?: (cwd: string) => string;
   onProgress?: (done: number, total: number) => void;
+  /** The scrub, bundleSession unless a test swaps it. */
+  scrub?: typeof bundleSession;
 }): Manifest {
   const now = opts.now ?? Date.now();
+  const scrub = opts.scrub ?? bundleSession;
   const sessions = sessionsSince(opts.days, opts.home, now);
   mkdirSync(opts.out, { recursive: true });
   const items: BundleItem[] = [];
   const tooBig: Manifest["tooBig"] = [];
+  const unreadable: NonNullable<Manifest["unreadable"]> = [];
   const redacted: Record<string, number> = {};
   const add = (r: Record<string, number>) => {
     for (const [k, n] of Object.entries(r)) redacted[k] = (redacted[k] ?? 0) + n;
@@ -120,9 +126,18 @@ export function prepareBundle(opts: {
   let leftOut = 0;
 
   sessions.forEach((s, i) => {
-    const b = bundleSession(s, opts.who);
     const cwd = sessionCwd(s);
     const folder = cwd ? anonymize(cwd, opts.who).text : (s.folder ?? "");
+    let b: ReturnType<typeof bundleSession>;
+    try {
+      b = scrub(s, opts.who);
+    } catch {
+      // One session the scrub can't read is left out and named in the summary, never sent
+      // unscrubbed; the rest still go. Before, it ended the whole share with nothing sent.
+      unreadable.push({ folder, id: s.id, mtime: s.mtime });
+      opts.onProgress?.(i + 1, sessions.length);
+      return;
+    }
     hidden += b.hidden;
     leftOut += b.leftOut;
     if (b.gz.length > MAX_GZ_BYTES) {
@@ -182,6 +197,7 @@ export function prepareBundle(opts: {
     folders: numberFolders(items),
     dropped: [],
     tooBig,
+    unreadable,
     redacted,
     hidden,
     leftOut,
@@ -208,7 +224,8 @@ export function parseLeaveOut(answer: string, m: Manifest): number[] | null {
   const parts = answer.split(/[\s,]+/).filter(Boolean);
   if (!parts.length || !parts.every((p) => /^\d{1,4}$/.test(p))) return null;
   const ns = [...new Set(parts.map(Number))];
-  return ns.every((n) => m.folders.some((f) => f.n === n)) ? ns : null;
+  // Only folders still in: one already left out is no longer on the list.
+  return ns.every((n) => m.folders.some((f) => f.n === n && !m.dropped.includes(f.label))) ? ns : null;
 }
 
 /** Take the numbered folders out of the copy: their files go, and the summary says so. */
@@ -295,16 +312,27 @@ function plural(n: number, one: string, many = `${one}s`): string {
   return `${n} ${n === 1 ? one : many}`;
 }
 
-/** The question after the preview: always its last line, with Enter meaning no. */
-export const SEND_ASK = "→ Send it? [y/N] ";
-/** Asked again after folders were left out. */
-export const SEND_REST_ASK = "→ Send the rest? [y/N] ";
+/**
+ * What to type after the preview: one line that says each answer and what it
+ * does, then the `→` prompt, so nobody has to guess what a question with three
+ * answers wants. Folder numbers are offered while more than one folder is in:
+ * with "→ Send it? [y/N]" alone, a teammate didn't know folders could be kept
+ * back. Enter still sends nothing. `rest`: asked again after some were left out.
+ */
+export function sendAsk(m: Manifest, rest = false): string {
+  const kept = m.folders.filter((f) => !m.dropped.includes(f.label));
+  const what = rest ? "the rest" : kept.length > 1 ? "it all" : "it";
+  if (kept.length < 2) return `Type y to send ${what}, or n to send nothing.\n→ `;
+  // The example never names every folder still in: that would send nothing but the setup.
+  const example = kept.slice(kept.length > 2 ? -2 : -1).map((f) => f.n).join(" ");
+  return `Type y to send ${what}, n to send nothing, or ${rest ? "more " : ""}folder numbers to leave out (like ${example}).\n→ `;
+}
 
 /**
  * What will be sent, for the person to say yes to, in four short sections:
  * what's sent, from which folders, what isn't, and what happens after yes.
  * `copy` is the folder as shown (`~/.trail/share/…`). The send question
- * (`SEND_ASK`) follows it, so nothing here may read like the last line.
+ * (`sendAsk`) follows it, so nothing here may read like the last line.
  */
 export function bundlePreviewLines(m: Manifest, copy: string, to: { url: string }, opts: { sync?: string } = {}): string[] {
   const sessions = m.items.filter((it) => it.kind === "session");
@@ -334,6 +362,7 @@ export function bundlePreviewLines(m: Manifest, copy: string, to: { url: string 
     ...(m.setup.mcp ? ["your MCP servers' env values and headers"] : []),
     ...(m.leftOut ? [plural(m.leftOut, "image or other file that isn't text", "images and other files that aren't text")] : []),
     ...(m.tooBig.length ? [`${plural(m.tooBig.length, "session")} over ${sizeLabel(MAX_GZ_BYTES)} zipped, too big to send`] : []),
+    ...(m.unreadable?.length ? [`${plural(m.unreadable.length, "session")} trail couldn't scrub, so it isn't sent`] : []),
     ...(m.dropped.length ? [`${plural(m.dropped.length, "folder")} you left out: ${m.dropped.join(", ")}`] : []),
   ];
   return [
@@ -411,6 +440,11 @@ function writeCopy(dir: string, m: Manifest): void {
   if (m.tooBig.length) {
     out.push("## Left out: too big to send", "");
     for (const t of m.tooBig) out.push(`- ${t.folder} · ${t.title || "(nothing typed)"} · ${sizeLabel(t.gzBytes)} zipped`);
+    out.push("");
+  }
+  if (m.unreadable?.length) {
+    out.push("## Left out: trail couldn't scrub these", "");
+    for (const u of m.unreadable) out.push(`- ${u.folder} · ${dayLabel(u.mtime)} · session ${u.id.slice(0, 8)}`);
     out.push("");
   }
   writeFileSync(join(dir, "SUMMARY.md"), `${out.join("\n")}\n`);

@@ -86,6 +86,8 @@ export async function runSync(opts: {
   repoOf?: (cwd: string) => string;
   env?: NodeJS.ProcessEnv;
   now?: number;
+  /** The scrub, bundleSession unless a test swaps it. */
+  scrub?: typeof bundleSession;
 }): Promise<{ sent: number; skipped: number; error?: string } | null> {
   const now = opts.now ?? Date.now();
   const s = readSyncState(opts.env);
@@ -105,8 +107,15 @@ export async function runSync(opts: {
       const cwd = sessionCwd(f);
       const folder = cwd ? anonymize(cwd, opts.who).text : (f.folder ?? "");
       if (cwd && existsSync(cwd)) cwds.add(cwd);
-      const b = bundleSession(f, opts.who);
-      if (s.excluded.includes(folder) || b.gz.length > MAX_GZ_BYTES) {
+      // A session the scrub fails on is skipped like one too big, until it grows: it never goes
+      // unscrubbed, and it doesn't stop the sessions after it.
+      let b: ReturnType<typeof bundleSession> | null = null;
+      try {
+        b = (opts.scrub ?? bundleSession)(f, opts.who);
+      } catch {
+        b = null;
+      }
+      if (!b || s.excluded.includes(folder) || b.gz.length > MAX_GZ_BYTES) {
         sentAs(s, f);
         skipped++;
         writeSyncState(s, opts.env);
