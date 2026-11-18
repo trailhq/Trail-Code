@@ -87,6 +87,26 @@ test('J13: with no gate file, a publish is the host\'s own business', async () =
   }
 });
 
+// Issue #832: quoted data that only names the words — another tool's CLI, a
+// commit message, a heredoc — never enters the save gate or the hook guard.
+test('quoted data that only names the words never answers, and a real gate command still does (#832)', async () => {
+  const r = rig('quoted-data');
+  try {
+    assert.equal(
+      await preBashSkills(input(r, `echo "the other tool's command is: npx skills update"`, 'tq1'), r.b.repo, r.env),
+      null,
+    );
+    assert.equal(
+      await preBashSkills(input(r, 'echo "note: graft-hooks.cjs is only named in this quoted text"', 'tq2'), r.b.repo, r.env),
+      null,
+    );
+    const d = await preBashSkills(input(r, 'trail skills add x --run run-1', 'tq3'), r.b.repo, r.env);
+    assert.ok(d, 'a real trail skills add still answers');
+  } finally {
+    done(r.b);
+  }
+});
+
 test('J13: the asking modes ask once with Trail\'s reason; the others, and headless, deny and show the command', async () => {
   for (const mode of ['default', 'acceptEdits', 'plan']) {
     const r = rig(`ask-${mode}`, { mode });
