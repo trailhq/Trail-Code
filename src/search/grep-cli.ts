@@ -11,7 +11,7 @@ import { resolve } from "node:path";
 import { contextDirFor } from "../context/node-file.js";
 import { withSavings } from "../context/savings.js";
 import { loadGraphCached } from "../graph/load.js";
-import { grepGraph, type GrepGroup, type GrepResult } from "./grep.js";
+import { grepGraph, isTestPath, type GrepGroup, type GrepResult } from "./grep.js";
 import { cmd } from "../brand.js";
 import { ignoredCode, ignoredLabel } from "./ignored-code.js";
 
@@ -20,13 +20,16 @@ export interface GrepCliOptions {
   fixed?: boolean;
   in?: string;
   json?: boolean;
+  /** #425: false = leave test files out entirely (--no-tests). Default true. */
+  includeTests?: boolean;
   /** the top-level `--dir` override, so this command respects it like every other. */
   globalDir?: string;
 }
 
 function groupHeader(g: GrepGroup): string {
-  if (g.symbol) return `${g.symbol.name} · ${g.symbol.kind} · ${g.symbol.path}:${g.symbol.span} · ${g.inDegree} in-edges`;
-  return `${g.path} (module level) · ${g.inDegree} in-edges`;
+  const testTag = isTestPath(g.path) ? " [test]" : ""; // #425: name the test file, don't let it read as production
+  if (g.symbol) return `${g.symbol.name} · ${g.symbol.kind} · ${g.symbol.path}:${g.symbol.span}${testTag} · ${g.inDegree} in-edges`;
+  return `${g.path}${testTag} (module level) · ${g.inDegree} in-edges`;
 }
 
 function formatGroup(g: GrepGroup): string {
@@ -59,7 +62,10 @@ export function formatGrepResult(result: GrepResult): string {
   // line is a header — see withSavings).
   const note = truncationNote(result);
   const head = note ? `${formatGrepHeader(result)}\n${note}` : formatGrepHeader(result);
-  const blocks = [head, "", ...result.groups.map((g) => formatGroup(g) + "\n")];
+  // #425: production groups first, test groups after — a stable partition, so
+  // the in-degree ordering inside each half is untouched.
+  const ordered = [...result.groups.filter((g) => !isTestPath(g.path)), ...result.groups.filter((g) => isTestPath(g.path))];
+  const blocks = [head, "", ...ordered.map((g) => formatGroup(g) + "\n")];
   const out = blocks.join("\n").replace(/\n+$/, "\n");
   return withSavings(out, result.saved);
 }
@@ -103,7 +109,7 @@ export function runGrepCommand(pattern: string, dir: string, opts: GrepCliOption
 
   let result: GrepResult;
   try {
-    result = grepGraph(graph, root, pattern, { ignoreCase: opts.ignoreCase, fixed: opts.fixed, in: opts.in });
+    result = grepGraph(graph, root, pattern, { ignoreCase: opts.ignoreCase, fixed: opts.fixed, in: opts.in, includeTests: opts.includeTests });
   } catch (err) {
     // `new RegExp` throws SyntaxError; anything else (an unindexed `--in` prefix)
     // is a different mistake and must not be reported as a bad pattern.

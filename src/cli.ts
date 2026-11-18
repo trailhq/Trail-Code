@@ -1111,13 +1111,14 @@ grouped(program.command("callers"), GROUP.find)
   .option("--direction <in|out>", 'edge direction: "in" = callers (default), "out" = callees')
   .option("-d, --depth <n>", 'walk transitively up to N hops for blast radius, or "all" for the full connected closure (default 1)')
   .option("--in <path>", "narrow matches to nodes at or under this path prefix")
+  .option("--no-tests", "leave test-file hits out (paths like *.test.ts, _test.go, conftest.py) — default labels them [test] and lists them last")
   .option("--json", "output as JSON")
   .option(...NO_REFRESH_FLAG)
   .action(
     async (
       symbol: string,
       dirArg: string | undefined,
-      opts: { direction?: string; depth?: string; in?: string; json?: boolean; refresh?: boolean },
+      opts: { direction?: string; depth?: string; in?: string; json?: boolean; tests?: boolean; refresh?: boolean },
     ) => {
       const dir = noteQuery(queryRoot(dirArg));
       await refreshBefore(dir, opts);
@@ -1129,6 +1130,7 @@ grouped(program.command("callers"), GROUP.find)
             ? (/^(all|full|max)$/i.test(opts.depth) ? Number.POSITIVE_INFINITY : Number(opts.depth))
             : undefined,
           in: opts.in,
+          includeTests: opts.tests !== false, // #425
         });
         return;
       }
@@ -1138,6 +1140,7 @@ grouped(program.command("callers"), GROUP.find)
         depth: opts.depth,
         in: opts.in,
         json: opts.json,
+        includeTests: opts.tests !== false, // #425
         globalDir: globalOpts.dir,
       });
     },
@@ -1182,13 +1185,14 @@ grouped(program.command("grep"), GROUP.find)
   .option("-i, --ignore-case", "case-insensitive match")
   .option("--fixed", "treat pattern as a literal string, not a regex")
   .option("--in <path>", "narrow to files at or under this path prefix")
+  .option("--no-tests", "leave test files out (paths like *.test.ts, _test.go, conftest.py) — default labels them [test] and lists them last")
   .option("--json", "output as JSON")
   .option(...NO_REFRESH_FLAG)
   .action(
     async (
       pattern: string,
       dirArg: string | undefined,
-      opts: { ignoreCase?: boolean; fixed?: boolean; in?: string; json?: boolean; refresh?: boolean },
+      opts: { ignoreCase?: boolean; fixed?: boolean; in?: string; json?: boolean; tests?: boolean; refresh?: boolean },
     ) => {
       const dir = noteQuery(queryRoot(dirArg));
       await refreshBefore(dir, opts);
@@ -1196,12 +1200,14 @@ grouped(program.command("grep"), GROUP.find)
       if (readWorkspace(dir, globalOpts.dir)) {
         runWorkspaceGrep(dir, globalOpts.dir, pattern, {
           ignoreCase: opts.ignoreCase, fixed: opts.fixed, json: opts.json,
+          includeTests: opts.tests !== false, // #425
         });
         return;
       }
       const { runGrepCommand } = await import("./search/grep-cli.js");
       runGrepCommand(pattern, dir, {
         ignoreCase: opts.ignoreCase,
+        includeTests: opts.tests !== false, // #425
         fixed: opts.fixed,
         in: opts.in,
         json: opts.json,

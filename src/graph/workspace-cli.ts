@@ -156,9 +156,9 @@ export function runWorkspaceGrep(
   root: string,
   override: string | undefined,
   pattern: string,
-  opts: { ignoreCase?: boolean; fixed?: boolean; json?: boolean },
+  opts: { ignoreCase?: boolean; fixed?: boolean; json?: boolean; includeTests?: boolean },
 ): void {
-  const { result, coverage } = federateGrep(root, override, pattern, { ignoreCase: opts.ignoreCase, fixed: opts.fixed });
+  const { result, coverage } = federateGrep(root, override, pattern, { ignoreCase: opts.ignoreCase, fixed: opts.fixed, includeTests: opts.includeTests });
   if (opts.json) {
     console.log(JSON.stringify(result, null, 2));
     return;
@@ -189,7 +189,7 @@ export function runWorkspaceCallers(
   root: string,
   override: string | undefined,
   symbol: string,
-  opts: { direction?: Direction; depth?: number; in?: string },
+  opts: { direction?: Direction; depth?: number; in?: string; includeTests?: boolean },
 ): void {
   const { text, found } = federateCallers(root, override, symbol, opts);
   if (!found) {

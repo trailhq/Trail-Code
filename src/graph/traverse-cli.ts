@@ -17,6 +17,7 @@ import { contextDirFor } from "../context/node-file.js";
 import { withSavings, savingsFor, type Savings } from "../context/savings.js";
 import { loadGraphCached } from "./load.js";
 import { resolveSymbol, edgeWalk, type Direction, type EdgeHit } from "./traverse.js";
+import { isTestPath } from "../search/grep.js";
 import type { GraphV1, NodeV1 } from "./types.js";
 import { cmd } from "../brand.js";
 
@@ -29,6 +30,8 @@ export interface CallersCliOptions {
   depth?: string;
   /** the top-level `--dir` override, so this command respects it like every other. */
   globalDir?: string;
+  /** #425: false = leave test-file edges out (--no-tests). Default true (labelled). */
+  includeTests?: boolean;
 }
 
 const ARROW: Record<Direction, "←" | "→"> = { in: "←", out: "→" };
@@ -51,9 +54,23 @@ export function headerOf(n: NodeV1): string {
 export function hitLine(direction: Direction, hit: EdgeHit, showDepth: boolean, quote?: Quote): string {
   const arrow = ARROW[direction];
   const depthTag = showDepth ? ` [depth ${hit.depth}]` : "";
-  const label = hit.node ? `${hit.node.name} (${hit.node.path}:${hit.node.span})` : `${hit.id} (unresolved import)`;
+  // #425: a caller (or callee) in a test file says so — it must not read as a
+  // production dependency.
+  const testTag = hit.node && isTestPath(hit.node.path) ? " [test]" : "";
+  const label = hit.node ? `${hit.node.name} (${hit.node.path}:${hit.node.span})${testTag}` : `${hit.id} (unresolved import)`;
   const line = `  ${hit.relation} ${arrow} ${label}${depthTag}`;
   return quote ? `${line}\n      ${quote.n}: ${quote.text.trim()}` : line;
+}
+
+/**
+ * #425: with `includeTests: false`, edges touching a test file are dropped;
+ * otherwise (default) they are kept and the list is ordered production-first —
+ * a stable partition, so the BFS order inside each half is untouched. Hits
+ * with no resolved node have no path to judge and stay.
+ */
+export function orderAndFilterTestHits(hits: EdgeHit[], includeTests: boolean): EdgeHit[] {
+  const kept = includeTests ? hits : hits.filter((h) => !h.node || !isTestPath(h.node.path));
+  return [...kept.filter((h) => !h.node || !isTestPath(h.node.path)), ...kept.filter((h) => h.node && isTestPath(h.node.path))];
 }
 
 /** A quoted source line: where the edge actually happens. */
@@ -190,6 +207,7 @@ export function runCallersCommand(query: string, dir: string, opts: CallersCliOp
   }
 
   const direction = resolveDirection(opts.direction);
+  const includeTests = opts.includeTests !== false; // #425: tests included (labelled) unless --no-tests
   let depth = DEFAULT_DEPTH;
   if (opts.depth !== undefined) {
     // `all` (aka full/max) = the whole transitive closure: walk until no new
@@ -210,7 +228,7 @@ export function runCallersCommand(query: string, dir: string, opts: CallersCliOp
   }
   const showDepth = depth > 1;
 
-  const results = matches.map((symbol) => ({ symbol, hits: edgeWalk(graph, symbol, direction, depth) }));
+  const results = matches.map((symbol) => ({ symbol, hits: orderAndFilterTestHits(edgeWalk(graph, symbol, direction, depth), includeTests) }));
   const saved = callersSavings(graph, results);
 
   if (opts.json) {
