@@ -15,6 +15,7 @@ import { newSentState } from "../src/cloud/share-bundle.js";
 import { changedSessions, maybeShareSyncInBackground, readSyncState, runSync, syncDir, syncDue, writeSyncState, type SyncState } from "../src/cloud/share-sync.js";
 import { QUIET_MS } from "../src/cloud/share-sync-state.js";
 import type { SharedSession } from "../src/cloud/workspace.js";
+import { bundleSession } from "../src/cloud/share-session.js";
 import { secretReason } from "../src/notes/secrets.js";
 
 const OPENAI = "sk-" + "proj-" + "Q7x2Lm9Pz4Rt8Vb1Nc6Kw3Hy5Jd0Fs";
@@ -150,6 +151,26 @@ test("runSync: a send that fails stops there and keeps what went; the next run s
   const next = collector();
   await runSync({ home, who: [home], send: next.send, trailVersion: "0.29.0", env, now: NOW + 1000 });
   assert.deepEqual(next.got.map((b) => b.kind), ["session", "setup"]);
+});
+
+test("runSync: a session the scrub fails on is skipped until it grows, and the rest still go", async () => {
+  const { home, env } = synced();
+  const c = collector();
+  const r = await runSync({
+    home,
+    who: [home],
+    send: c.send,
+    trailVersion: "0.29.0",
+    env,
+    now: NOW,
+    scrub: (f, who) => {
+      if (f.id === "aaaa0000-0000-4000-8000-000000000002") throw new RangeError("Maximum call stack size exceeded");
+      return bundleSession(f, who);
+    },
+  });
+  assert.deepEqual(r, { sent: 1, skipped: 2 }, "the failing session and the left-out folder are skipped; the setup still goes");
+  assert.deepEqual(c.got.map((b) => b.kind), ["setup"]);
+  assert.ok(readSyncState(env)!.sessions["aaaa0000-0000-4000-8000-000000000002"], "it isn't tried again on every run");
 });
 
 test("runSync: one run at a time, and none once stopped or never turned on", async () => {

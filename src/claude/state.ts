@@ -78,6 +78,11 @@ export interface SessionState {
    * this session (note-signals.ts keys), so each is asked about once and a
    * session at most NOTE_ASKS_PER_SESSION times. */
   noteAsks?: string[];
+  /** Id of the top learning the last injection showed, for the vote (learning-vote.ts). */
+  lastLearning?: string;
+  /** The session's one "did it help?" (learning-vote.ts): set when a reply asked, `settled` once the next prompt answered
+   * or the session closed, `strict` when a reply also asked something else, so only "it helped" or "didn't help" counts. */
+  vote?: { learning?: string; settled?: boolean; strict?: boolean };
   /** Set once this session has been rolled up into a `session_summary`
    * telemetry event, so a resumed or long-lived session is counted once.
    * A flag rather than deleting the file: the file still holds

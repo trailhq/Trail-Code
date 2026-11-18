@@ -48,6 +48,8 @@ export interface OpenTurn {
   uuid: string | null;
   /** Whether any of its text carried the tally (it can land in any block, not only the last). */
   tally: boolean;
+  /** Whether it called a tool that puts a question to the person as buttons answered by a new message (an `ask`, as the Claude app's next-step box takes): the learning vote then counts only an answer about helping. */
+  asks?: boolean;
 }
 
 /** What one read of the transcript brought. */
@@ -122,9 +124,16 @@ function fold(e: any, m: HooksMemo, bill: Bill): void {
     if (typeof e.uuid === 'string') m.turn.uuid = e.uuid;
     if (hasSavingsTally(text)) m.turn.tally = true;
   }
+  if (asksPerson(msg?.content)) m.turn.asks = true;
   billResponse(msg, m, bill);
   // Everything up to here was billed before.
   if (bill.open && bill.billedThrough && e.uuid === bill.billedThrough) bill.open = { costMicros: 0, tokens: 0 };
+}
+
+/** Whether a response's tool calls put a question to the person: a tool input with an `ask`. */
+function asksPerson(content: unknown): boolean {
+  if (!Array.isArray(content)) return false;
+  return content.some((p) => p?.type === 'tool_use' && typeof p.input?.ask === 'string' && p.input.ask.trim() !== '');
 }
 
 /** Bill one response's input once, by `message.id`: its lines (thinking, text, tool_use) each repeat the same `usage`. */

@@ -94,10 +94,10 @@ test('agent_host tells the Claude desktop app and Codex apart from the terminal,
 
 // Pinned rather than counted, so adding an event is a deliberate edit here and
 // a matching row in TELEMETRY.md, never something that arrives with a feature.
-test('the contract lists exactly the twenty-eight documented events', () => {
+test('the contract lists exactly the twenty-nine documented events', () => {
   assert.deepEqual(Object.keys(EVENTS).sort(), [
     'brain_signup_opened', 'brain_signup_settled', 'build_completed', 'build_failed',
-    'cold_start', 'first_run', 'guardrail', 'hook_ms', 'init_completed', 'install', 'learnings_committed', 'note_asked', 'note_saved', 'query', 'repo_seen', 'session_shared', 'session_summary', 'share_bundle',
+    'cold_start', 'first_run', 'guardrail', 'hook_ms', 'init_completed', 'install', 'learning_rated', 'learnings_committed', 'note_asked', 'note_saved', 'query', 'repo_seen', 'session_shared', 'session_summary', 'share_bundle',
     'skill_answer', 'skill_changed', 'skill_offered', 'skill_promoted', 'skill_saved', 'skill_stale', 'skill_used', 'skill_value', 'team_pull', 'wall_hit',
   ]);
 });
