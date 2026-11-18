@@ -246,7 +246,17 @@ export function bareCommand(simple: string): string {
 /* --------------------------------------------- words only quoted text carries (the agent guard, D89) */
 
 /** Programs that only read or print the text they are given (or read from a pipe), by their bare name: a path or a copy could be anything. No pager (`!` runs a shell). */
-const TEXT_PROGRAMS = /^(?:grep|egrep|fgrep|rg|ag|echo|printf|cat|sed|awk|gawk|mawk|nawk|git|head|tail|wc|sort|uniq|cut|tr|nl|column)$/;
+const TEXT_PROGRAMS = /^(?:grep|egrep|fgrep|rg|ag|echo|printf|cat|sed|awk|gawk|mawk|nawk|git|head|tail|wc|sort|uniq|cut|tr|nl|column|gh|paseo)$/;
+/** `gh` subcommands whose quoted arguments are data, never a local run. The remote-session and
+ *  extension-running ones (`codespace`, `extension`) stay guarded. */
+const GH_WORDS = /^(?:issue|pr|repo|release|api|gist|search|label|run|workflow|browse|auth|config|cache|org|user|project|ruleset|secret|variable|ssh-key|gpg-key|status)$/;
+/** A python interpreter fed its script on stdin through a heredoc (`python3 - <<'PY'`). A script file
+ *  argument would be a program of its own, so only `-` or bare is this shape. */
+const PYTHON_STDIN = /^python3?\s+(?:-\s+)?<<-?['"]?\w{1,64}/;
+/** Python script text that runs a command or code itself: an os/subprocess escape, eval/exec, a dynamic
+ *  import, a pty driver, or attribute/function indirection that could smuggle one (getattr, compile,
+ *  globals/locals/vars) (#827: the report case is a script that only writes text). */
+const PY_RUNS = /\bos\.(?:system|popen|posix_spawn\w*|exec\w+|spawn\w+|fork\w*|startfile)\b|\bsubprocess\b|(?:async_)?(?:exec|eval)\s*\(|__import__|importlib|\bpty\.|\bpexpect\b|\bcommands\.|\bgetattr\s*\(|\bcompile\s*\(|\b(?:globals|locals|vars)\s*\(/;
 /** Words that change what a bare program name runs: an alias, a function, PATH. */
 const RENAMES = /^(?:alias|function|hash|enable|builtin)$|^[\w.-]+\(\)|^PATH\+?=/;
 /** awk that runs a command (`system(…)`, a pipe, getline, an extension), sed's `e` command or `s///e` flag; flags that run a program. */
@@ -341,12 +351,24 @@ type Quiet = <T>(head: string, bodies: string[], hitOf: (text: string) => T | nu
 
 /** One simple command that only reads or prints its quoted text, with nothing it is given run. */
 function textProgram<T>(head: string, bodies: string[], hitOf: (text: string) => T | null): boolean {
+  // An interpreter fed its script on stdin (`python3 - <<'PY'`): to the shell
+  // the script is data. Inert when the script runs nothing itself — no
+  // system/exec/eval escape — and the words sit only inside its quoted
+  // literals (#827: a report writing the words as a string). Python only;
+  // any other interpreter stays guarded.
+  if (PYTHON_STDIN.test(head) && bodies.length === 1) {
+    const script = bodies[0]!;
+    if (PY_RUNS.test(script)) return false;
+    const bare = unquotedText(script);
+    return bare !== null && hitOf(bare) === null;
+  }
   const plain = withoutCatHeredocs(head);
   if (plain === null || !literalBodies(plain, bodies)) return false;
   const w = words(plain);
   const prog = w[0] ?? '';
   if (!TEXT_PROGRAMS.test(prog)) return false;
   if (prog === 'git' && !/^(?:commit|log|grep)$/.test(w[1] ?? '')) return false;
+  if (prog === 'gh' && !GH_WORDS.test(w[1] ?? '')) return false;
   const runs = RUNS_FLAG[prog];
   if (runs && w.some((x) => runs.test(unquote(x)))) return false;
   if (/awk$/.test(prog) && AWK_RUNS.test(plain)) return false;

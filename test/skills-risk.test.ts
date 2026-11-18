@@ -212,3 +212,45 @@ test("agent guard: the person's switches and Trail's hook scripts, whatever runs
     'echo "trail skills on"',
   ]) assert.equal(agentGuard(cmd), null, cmd);
 });
+
+// Issue #827: inert report text and quoted search/message data are words, not
+// a run. Adversarial set: every case here tries to make the exemption run the
+// words, or make the guard miss a real run — indirection, wrong shapes, pipes,
+// the gh verbs that execute or open sessions.
+test('inert report/search/message data answer null; indirection and wrong shapes stay denied (#827)', () => {
+  const phrase = ['skills', 'on'].join(' ');
+  for (const cmd of [
+    // the issue's inert cases
+    `python3 - <<'PY'\nfrom pathlib import Path\nPath('/tmp/report.md').write_text('${phrase}')\nPY`,
+    `gh issue list --search '${phrase}'`,
+    `paseo send --json --no-wait -- peer 'hook said: ${phrase}'`,
+    `printf '%s' '${phrase}'`,
+    // inert variants that try to assemble the words dynamically
+    `python3 - <<'PY'\nfrom pathlib import Path\nPath('/tmp/r.md').write_text('trail ' + 'skills ' + 'on')\nPY`,
+    `python3 - <<'PY'\nprint(f'trail skills {1+1}')\nPY`,
+    // two heredocs: pairing stays straight, both scripts only print/write
+    `python3 - <<'PY'\nopen('/tmp/a', 'w').write('x')\nPY\npython3 - <<'Q'\nprint('${phrase}')\nQ`,
+  ]) assert.equal(agentGuard(cmd), null, cmd);
+  for (const [cmd, hit] of [
+    // real activation
+    [`trail ${phrase}`, 'skills-on'],
+    // the interpreter script runs the words: direct and indirect
+    [`python3 - <<'PY'\nimport os\nos.system('trail ${phrase}')\nPY`, 'skills-on'],
+    [`python3 - <<'PY'\nimport subprocess\nsubprocess.run('trail ${phrase}', shell=True)\nPY`, 'skills-on'],
+    [`python3 - <<'PY'\ngetattr(os, 'system')('trail ${phrase}')\nPY`, 'skills-on'],
+    [`python3 - <<'PY'\nexec('trail ' + '${phrase}')\nPY`, 'skills-on'],
+    // wrong shapes for the stdin exemption: a script FILE argument
+    [`python3 report.py <<'PY'\nPath('/tmp/r.md').write_text('${phrase}')\nPY`, 'skills-on'],
+    // NOTE: an UNQUOTED heredoc delimiter with a $() in the body
+    // (`python3 - <<PY` + `print('$(trail skills on)')`) is a real shell run
+    // that the scan layer misses — pre-existing, outside this fix; reported
+    // separately in the PR.
+    // another interpreter's stdin script is not exempted
+    [`node - <<'JS'\nrequire('child_process').execSync('trail ${phrase}')\nJS`, 'skills-on'],
+    // fed to an interpreter through a pipe it runs
+    [`echo 'trail ${phrase}' | python3`, 'skills-on'],
+    // the gh verbs that execute or open sessions stay guarded
+    [`gh extension run 'trail ${phrase}'`, 'skills-on'],
+    [`gh codespace ssh -c '${phrase}'`, 'skills-on'],
+  ] as const) assert.equal(agentGuard(cmd)?.hit, hit, cmd);
+});
