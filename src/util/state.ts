@@ -247,18 +247,22 @@ export function lockHeldByOther(cache: string): boolean {
 }
 
 /**
- * A lock is reclaimable when its owner is gone and it is older than LOCK_STALE_MS, or
- * when it is older than LOCK_MAX_MS whoever holds it. Age alone used to be enough, so a
- * first build past five minutes on a slow laptop lost its lock to the next query, which
- * started a second full build beside it, and five minutes later a third.
+ * A lock is reclaimable when its owner is gone — immediately, not after
+ * LOCK_STALE_MS: a SIGKILLed hook leaves a fresh lock naming a dead pid, and
+ * the age floor used to make every query wait out five minutes before
+ * answering from a stale graph (#635). The age rules still bound LIVE owners:
+ * a slow first build keeps its lock past LOCK_STALE_MS, and any lock past
+ * LOCK_MAX_MS yields whoever holds it (the pid may be a new process that got
+ * a dead owner's number). A payload with no readable pid keeps the old age
+ * rule, since there is nothing to interrogate.
  */
 function lockStale(p: string): boolean {
   let age: number;
   try { age = Date.now() - statSync(p).mtimeMs; } catch { return true; }
   if (age >= LOCK_MAX_MS) return true;
-  if (age < LOCK_STALE_MS) return false;
   const pid = lockPid(p);
-  return pid === null || !pidAlive(pid);
+  if (pid === null) return age >= LOCK_STALE_MS; // unreadable pid: the old age rule
+  return !pidAlive(pid); // a dead owner holds nothing, immediately (#635); a live owner keeps the lock until LOCK_MAX_MS
 }
 
 function lockPid(p: string): number | null {
