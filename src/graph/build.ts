@@ -383,6 +383,7 @@ export async function buildGraph(
       languages: [...langs].sort(),
       extensions,
       scopes,
+      root: resolve(dir),
     },
     nodes,
     edges,

@@ -133,6 +133,11 @@ export interface GraphV1 {
     /** Ranking scopes: posix path prefixes relative to the graph root, "" = root scope.
      * Absent (old graphs) ≡ [{ prefix: "", label: "" }]. Sorted by prefix length desc. */
     scopes?: ScopeV1[];
+    /** The absolute source root this graph was built from. The query-time
+     * freshness check refuses to re-root the graph anywhere else (#438: a query
+     * without the repo-root positional used to wipe the graph). Absent (old
+     * graphs) ≡ unverified. */
+    root?: string;
   };
   nodes: NodeV1[];
   edges: EdgeV1[];

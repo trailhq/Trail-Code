@@ -38,7 +38,7 @@
  * waits a while for it (`buildMissingMap`).
  */
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { contextDirFor } from "../context/node-file.js";
@@ -59,6 +59,18 @@ import { cmd, tag } from "../brand.js";
  * short enough that a tool call never feels hung. */
 const LOCK_WAIT_MS = 2000;
 const LOCK_POLL_MS = 50;
+
+/** Same directory, by realpath — a symlinked entry (`hub/entry -> ../repo`) and
+ * the repo's own path are one root (#438). Falls back to the string compare when
+ * realpath fails (a deleted root can't be the same as anything). */
+function sameDir(a: string, b: string): boolean {
+  if (a === b) return true;
+  try {
+    return realpathSync(a) === realpathSync(b);
+  } catch {
+    return false;
+  }
+}
 
 /** How long a query waits for a repo's first build before answering without code.
  * A big repo (8k files) builds in about 75s, and the agent's shell gives a command
@@ -292,6 +304,20 @@ export async function ensureFreshGraph(root: string, opts: RefreshOptions = {}):
       }
     }
     const seedNote = seededFrom ? `copied the graph from the main checkout (${seededFrom})` : builtNote;
+
+    // #438: the graph records the root it was built from. A query arriving with
+    // a different root — the usual way is no repo-root positional, so cwd wins —
+    // must not re-root the fingerprint onto that directory: the rebuild would be
+    // empty and would overwrite a valid graph behind surviving cards. Answer
+    // as-is and say what root built it. A freshly seeded worktree copy is the
+    // one deliberate exception: repairing it to THIS checkout is the point.
+    const recordedRoot = loadGraphCached(outDir)?.meta.root;
+    if (!seededFrom && recordedRoot && !sameDir(dir, recordedRoot)) {
+      return {
+        refreshed: false,
+        note: `${tag()} graph was built for ${recordedRoot}; pass it as the argument, or use --no-refresh to answer as-is`,
+      };
+    }
 
     // null = no fingerprint at all: a graph built before this mechanism existed,
     // or by a different extractor build. Rebuild once — that lays the fingerprint
