@@ -20,6 +20,7 @@
  */
 import type { GraphV1, NodeV1 } from "./types.js";
 import { languageLabelOf } from "./extract.js";
+import { genericLangOf } from "./generic.js";
 import { WALK_RELATIONS } from "./relations.js";
 import { scopeLabel, scopeOf, scopesOfGraph } from "./scopes.js";
 import { withSavings, savingsFor, type Savings } from "../context/savings.js";
@@ -132,7 +133,7 @@ function topHubs(nodes: NodeV1[], inDegree: Map<string, number>, cap: number): H
 function sortedLanguages(paths: string[]): string[] {
   const set = new Set<string>();
   for (const p of paths) {
-    const label = languageLabelOf(p);
+    const label = languageLabelOf(p) ?? genericLangOf(p)?.name ?? null;
     if (label) set.add(label);
   }
   return [...set].sort();
