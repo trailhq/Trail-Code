@@ -699,8 +699,15 @@ trail build -e .ts .py               # only index these extensions (also limits 
 trail build --no-reuse               # re-parse every file instead of replaying unchanged ones from cache
 trail build --follow-submodules      # include initialized submodules; persist the choice for builds + MCP refresh
 trail build --no-follow-submodules   # exclude submodules again and persist that choice (the default)
-trail build --follow-nested-repos    # include nested git clones the index doesn't track; persist the choice
+trail build --follow-nested-repos    # include nested git clones and symlinked repos; persist the choice
 trail build --no-follow-nested-repos # exclude nested clones again and persist that choice (the default)
+
+# Index normal project source plus selected repo mounts (child ignores still apply).
+trail build --follow-nested-repos \
+  --include-repo source-material/historical-repos/widget \
+  --include-repo source-material/historical-repos/databraid-api
+trail build --all-dirs                # clear a saved --only-dir restriction; keep selected repo mounts
+trail build --no-include-ignored-repos # clear the saved ignored-repository mounts
 
 trail status [dir]                   # the graft map, learnings and tokens saved, on one screen
 trail upgrade                        # npm install -g the latest published version
@@ -791,11 +798,16 @@ The graft map supports these layouts:
   refreshes behave the same way. Run `trail build --no-follow-submodules` to
   restore and persist the default boundary.
 - **A git repo with other repos cloned inside it** (no gitlink, no index entry): the shape multi-repo manifest tools like `west`, `repo`, `gclient` and `tsrc` check dependencies out into, and the shape you get by cloning an upstream into the tree to patch it locally. `--follow-submodules` cannot reach these: they have no `160000` index entry to follow. Run `trail build --follow-nested-repos` to fold them into one graph, prefixing child paths (for example, `external/parser/src/index.ts`) while honoring each clone's own Git ignore rules. A clone at a git-ignored path stays absent, since Git never reports it. The choice is saved in `.graft/config.json` and is independent of `--follow-submodules`; neither flag implies the other. Run `trail build --no-follow-nested-repos` to restore and persist the default boundary. Prefer this over the multi-repo split below when the nested repos import from each other and you want those edges in one graph; prefer the split when you want each repo scored and refreshed on its own.
+- **A Git repo containing symlinks to other repos** (for example, a review folder with `repos/api` and `repos/frontend` pointing to separate checkouts) — run `trail build --follow-nested-repos` at the review folder's root. Git-visible links to directories with their own `.git` are followed, including linked worktrees. The single graph stays at the review folder's `graft/`, with paths such as `repos/api/src/index.ts`, so agents and queries opened at that root use the same index. Each linked repo keeps its own ignore rules; broken links, cycles, file links, and links to ordinary directories are skipped. The saved option also applies to later builds and automatic refreshes.
 - **A folder of separate git repos** (no `.git` at the top): `trail build`
   auto-splits: each child gets its own (git-ignored) `graft/`, and the parent
   gets a `graft/workspace.json` index. Queries from the parent federate across
   every child, always labeled `<child>/`. Run `trail build` inside a child to
   work on just that repo.
+
+To index the normal project source alongside selected linked repositories, use `--follow-nested-repos` and repeat `--include-repo <path>` for each mount, including mounts the parent deliberately Git-ignores. Every selected path must be a repository under the build root. Graft saves these explicit mounts in local `.graft/config.json`, preserves the parent's `.gitignore`, and continues to honor each child's ignore rules. Plain rebuilds and automatic refreshes retain this setup. `.ignore` controls ripgrep and does not override Git's visibility for Graft.
+
+`--only-dir` restricts the entire index to its paths, including project source. If an earlier build saved such a restriction, pass `--all-dirs` once to restore the normal file scope while retaining selected repository mounts. The older `--include-ignored-repos --only-dir <repo> ...` form remains available for an index limited to those repositories.
 
 In every layout, narrow to one sub-project with `trail ask "<task>" --in <scope>/`
 once you know where you're working.

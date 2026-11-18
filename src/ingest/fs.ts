@@ -4,6 +4,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { relPosix } from "../util/paths.js";
 
 /** Directories that are dependency/build output, never source. */
 export const SKIP_DIRS = new Set([
@@ -78,21 +79,27 @@ export function shouldSkipDir(name: string, includes?: ReadonlySet<string>): boo
  *
  *   - `followSubmodules` follows a GITLINK — an index entry with mode `160000`,
  *     a commit the superproject versions.
- *   - `followNestedRepos` follows a nested clone the parent's index knows
- *     nothing about. Manifest-driven multi-repo tools (west, repo, gclient,
+ *   - `followNestedRepos` follows a nested clone or a directory symlink to a
+ *     repo. Manifest-driven multi-repo tools (west, repo, gclient,
  *     tsrc, mr, …) all check dependencies out this way, and so does anyone who
  *     clones an upstream into the tree to patch it locally.
  *
  * Both default to false, preserving the historical superproject boundary. Each
  * child keeps its own ignore rules; uninitialized submodules and gitignored
- * nested clones remain absent either way (`--exclude-standard` never emits
- * them, so there is nothing to follow).
+ * nested repos remain absent either way (`--exclude-standard` never emits
+ * them, so there is nothing to follow), unless explicitly named through
+ * `includeIgnoredRepos`; that exception bypasses only the parent's ignores.
  */
 export interface WalkOptions {
   /** Include initialized Git submodules (gitlinks) recursively. Default false. */
   followSubmodules?: boolean;
-  /** Include nested Git clones the parent index does not track. Default false. */
+  /** Include nested Git clones and directory symlinks to repos. Default false. */
   followNestedRepos?: boolean;
+  /** Explicit parent-relative repo mounts, bypassing only the parent's ignores. */
+  includeIgnoredRepos?: ReadonlySet<string>;
+  /** Observe followed repository mounts during the same walk. Paths are relative
+   * to the walk root; physical targets identify checkouts, not graph node IDs. */
+  onRepository?: (mount: string, target: string) => void;
 }
 
 /**
@@ -157,8 +164,10 @@ function remapWalkPaths(requested: string, canonical: string, files: string[]): 
  * root* is unwrapped once ({@link canonicalWalkRoot}); emitted paths are remapped
  * onto the caller-facing root so `relPosix` stays `src/foo.ts` rather than a
  * `../` escape through the physical path (macOS `/tmp` → `/private/tmp`).
- * Symlinks *inside* the tree are not followed: git still `lstat`s each listed
- * path, and the filesystem walk still requires `Dirent.isFile` / `isDirectory`.
+ * Symlinks *inside* the tree are skipped by default. `followNestedRepos` also
+ * follows Git-visible directory links with their own `.git`, retaining the
+ * mounted paths and using physical repository identities to stop cycles.
+ * Other internal links and links in the filesystem fallback remain skipped.
  */
 export function walkDir(
   dir: string,
@@ -189,9 +198,18 @@ function gitVisibleFiles(
   }
 
   const state = traversal ?? { topRoot: root, activeRoots: new Set<string>() };
-  const rootKey = process.platform === "win32" ? root.toLowerCase() : root;
+  let realRoot: string;
+  try {
+    realRoot = realpathSync(root);
+  } catch {
+    realRoot = root; // Let Git's existing failure/fallback path handle it.
+  }
+  const rootKey = process.platform === "win32" ? realRoot.toLowerCase() : realRoot;
   if (state.activeRoots.has(rootKey)) return [];
   state.activeRoots.add(rootKey);
+  // Record before Git runs: a child using the filesystem fallback still needs
+  // target identity for freshness, just like a successfully enumerated checkout.
+  if (traversal) opts.onRepository?.(relPosix(state.topRoot, root), realRoot);
 
   // Following uses `-t --stage` so one process can distinguish gitlinks from
   // tracked and untracked files. `-z` keeps either form safe for unusual paths.
@@ -249,6 +267,18 @@ function gitVisibleFiles(
   }
 
   const out = new Set<string>();
+  if (!traversal && opts.followNestedRepos === true) {
+    for (const rel of opts.includeIgnoredRepos ?? []) {
+      const abs = resolve(root, rel);
+      // Persisted settings must never reach above the requested root or turn
+      // an ordinary ignored source directory into an implicit repository.
+      if (abs === root || escapedCanonical(root, abs) || !existsSync(join(abs, ".git"))) continue;
+      const mount = relative(root, abs).replace(/\\/g, "/");
+      const prior = entries.get(mount);
+      const gitlink = prior?.gitlink === true;
+      entries.set(mount, { gitlink, nested: !gitlink });
+    }
+  }
   for (const [rel, entry] of entries) {
     const abs = resolve(root, rel);
     // Filter against the original superproject path. Otherwise a submodule
@@ -256,9 +286,28 @@ function gitVisibleFiles(
     // recursion resets its relative root.
     if (skippedPath(relative(state.topRoot, abs), includes)) continue;
 
-    const followChild =
-      (entry.gitlink && opts.followSubmodules === true) ||
-      (entry.nested && opts.followNestedRepos === true);
+    let stat: ReturnType<typeof lstatSync>;
+    try {
+      stat = lstatSync(abs);
+    } catch {
+      // Git can still list tracked paths deleted from the working tree.
+      continue;
+    }
+    let linkedRepo = false;
+    if (!entry.gitlink && opts.followNestedRepos === true && stat.isSymbolicLink()) {
+      try {
+        const target = realpathSync(abs);
+        // Do not descend through a link to this repo or one of its ancestors.
+        if (target === realRoot || realRoot.startsWith(target + sep)) continue;
+        linkedRepo = statSync(target).isDirectory() && existsSync(join(abs, ".git"));
+      } catch {
+        continue; // A dangling or cyclic link is not a repository to follow.
+      }
+    }
+
+    const followChild = entry.gitlink
+      ? opts.followSubmodules === true
+      : (entry.nested || linkedRepo) && opts.followNestedRepos === true;
     if (followChild) {
       // A deinitialized gitlink can resolve upward to the superproject when Git
       // runs inside it, and a nested-looking directory may have no repo at all.
@@ -281,14 +330,7 @@ function gitVisibleFiles(
       continue;
     }
 
-    try {
-      const stat = lstatSync(abs);
-      if (!stat.isFile() || stat.size > MAX_FILE_BYTES) continue;
-    } catch {
-      // A tracked file deleted from the working tree is still printed by
-      // `--cached`; absence means it is not part of the current source set.
-      continue;
-    }
+    if (!stat.isFile() || stat.size > MAX_FILE_BYTES) continue;
     out.add(abs);
   }
 

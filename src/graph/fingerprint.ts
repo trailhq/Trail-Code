@@ -18,11 +18,12 @@
  * degrade safely: no fingerprint → "unknown, rebuild"; no parse cache → the
  * rebuild is just cold.
  */
+import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { CACHE_DIR } from "../context/node-file.js";
 import { contentHash } from "../util/id.js";
 import { readSourceFile } from "../util/source.js";
-import { readJson, writeJsonAtomic } from "../util/state.js";
+import { readFollowNestedRepos, readJson, writeJsonAtomic } from "../util/state.js";
 import { extractorStamp, pruneSidecars, type ExtractEntry } from "./extract-cache.js";
 import { listSourceStats } from "./source-files.js";
 
@@ -56,6 +57,9 @@ export interface Fingerprint {
   onlyDirs?: string[];
   /** Normalized source extension selection (`--extensions`); absent = all supported. */
   extensions?: string[];
+  /** Logical repository mounts → physical checkout paths, observed during the
+   * build's walk. Missing on older fingerprints; an empty object means no mounts. */
+  repositoryTargets?: Record<string, string>;
 }
 
 /** What moved since the last build. Empty in all three arrays = nothing to do. */
@@ -91,11 +95,12 @@ export function writeFingerprint(
   entries: Record<string, ExtractEntry>,
   onlyDirs?: string[],
   extensions?: string[],
+  repositoryTargets: Record<string, string> = {},
 ): boolean {
   const files: Record<string, Print> = {};
   for (const [rel, e] of Object.entries(entries)) files[rel] = [e.size, e.mtimeMs, e.hash];
   try {
-    const record: Fingerprint = { version: FINGERPRINT_VERSION, extractor: stamp(), files };
+    const record: Fingerprint = { version: FINGERPRINT_VERSION, extractor: stamp(), files, repositoryTargets };
     if (onlyDirs && onlyDirs.length > 0) record.onlyDirs = onlyDirs;
     if (extensions && extensions.length > 0) record.extensions = extensions;
     writeJsonAtomic(fingerprintPath(outDir), record, true);
@@ -154,6 +159,18 @@ export function driftCount(d: Drift): number {
 export function probeDrift(root: string, outDir: string): Drift | null {
   const fp = readFingerprint(outDir);
   if (!fp) return null;
+
+  // A different checkout may preserve every filename, size and mtime. Rebuild
+  // once to verify its bytes and save its identity rather than trusting the old
+  // checkout's stat shortcut. Keep legacy fingerprints readable for their filters.
+  if (!fp.repositoryTargets && readFollowNestedRepos(root)) return null;
+  for (const [mount, target] of Object.entries(fp.repositoryTargets ?? {})) {
+    try {
+      if (realpathSync(join(root, mount)) !== target) return null;
+    } catch {
+      // A removed/broken mount is handled by the ordinary removed-file diff below.
+    }
+  }
 
   const drift: Drift = { changed: [], added: [], removed: [] };
   const seen = new Set<string>();
