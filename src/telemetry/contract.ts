@@ -90,6 +90,11 @@ export const EVENTS: Record<string, ReadonlySet<string>> = {
    *  buckets, and whether it's the clone's first look. Committed learnings
    *  are trail's activation. Paths and titles never travel. */
   learnings_committed: new Set<string>(['added_bucket', 'total_bucket', 'first_look']),
+  /** Once a session at most: a reply that credited a learning asked "did it
+   *  help? yes/no", and the person's next prompt answered (`none` when it moved
+   *  on, or the session closed unanswered). The vote and the learning's id; the
+   *  prompt never travels. */
+  learning_rated: new Set<string>(['vote', 'learning_id']),
   /** `trail init` read the repo's past Claude sessions, the review comments
    *  on its merged PRs, or Claude Code's memory notes of it (`source`), for
    *  learnings: how it went, how many sessions or reviewed PRs there were,
@@ -172,6 +177,7 @@ export const HOOK_MS_BUCKETS = ['<50ms', '50-100ms', '100-300ms', '300ms-1s', '1
  * for it. Every key of the skills events is listed here.
  */
 export const VALUES: Record<string, Record<string, ReadonlySet<string>>> = {
+  learning_rated: { vote: new Set(['up', 'down', 'none']) },
   init_completed: { statusline: new Set(['trail', 'theirs', 'off']), scope: new Set(['just_me', 'team', 'unasked']) },
   cold_start: Object.fromEntries(INIT_KINDS.flatMap((k) => [`offered_${k}`, `kept_${k}`]).map((key) => [key, new Set(SMALL_COUNTS)])),
   note_asked: {
@@ -210,8 +216,14 @@ export const VALUES: Record<string, Record<string, ReadonlySet<string>>> = {
   },
 };
 
-/** Whether `value` may go under `key` of `event`: always, unless {@link VALUES} fixes the key's values. */
+/** Keys whose values are ids of one fixed shape: a learning's id is `l-` and hex, as in its file, never its title. */
+export const SHAPES: Record<string, Record<string, RegExp>> = {
+  learning_rated: { learning_id: /^l-[0-9a-f]{6,16}$/ },
+};
+
+/** Whether `value` may go under `key` of `event`: always, unless {@link VALUES} fixes the key's values or {@link SHAPES} its shape. */
 export function allowedValue(event: string, key: string, value: string): boolean {
+  if (Object.hasOwn(SHAPES, event) && Object.hasOwn(SHAPES[event]!, key)) return SHAPES[event]![key]!.test(value);
   if (!Object.hasOwn(VALUES, event)) return true;
   const keys = VALUES[event]!;
   return !Object.hasOwn(keys, key) || keys[key]!.has(value);

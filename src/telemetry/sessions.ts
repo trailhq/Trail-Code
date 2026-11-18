@@ -16,6 +16,9 @@
  * conversation that just ended via {@link summarizeSession}, skipping the idle
  * gate that would otherwise ignore the file the last tool use just wrote.
  *
+ * A closed session's unanswered "did it help?" (claude/learning-vote.ts) goes
+ * out with it as a `none` vote, so idle sessions count toward the answer rate.
+ *
  * Called from the session-start hook (the sweep) and the Cursor sessionEnd hook
  * (the force-close) — both places guaranteed to run at the right moment. A hook
  * must never touch the network (see the note atop upkeep.ts) and this doesn't:
@@ -24,6 +27,7 @@
 import { statSync } from 'node:fs';
 import { join } from 'node:path';
 import { readSession, writeSession, sessionDir, listSessionIds } from '../claude/state.js';
+import { closeVote } from '../claude/learning-vote.js';
 import { countBucket, savedTokensBucket, type AgentHost } from './contract.js';
 import { track } from './track.js';
 import { telemetryOn } from './gate.js';
@@ -55,7 +59,13 @@ export function summarizeSession(
     if (!telemetryOn(home, env)) return 0;
 
     const s = readSession(repo, id);
-    if (s.summarized) return 0;
+    // A "did it help?" still waiting when the session closes was never answered.
+    const vote = closeVote(s);
+    if (vote) track('learning_rated', { vote: 'none', learning_id: vote.learning }, { repo, host: s.host ?? host, home, env });
+    if (s.summarized) {
+      if (vote) writeSession(repo, id, s);
+      return 0;
+    }
 
     // An empty session — opened, nothing asked — is still a fact worth having:
     // it is the difference between "graft is installed" and "graft is used".
