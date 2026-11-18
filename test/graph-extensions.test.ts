@@ -10,6 +10,7 @@ import { checkGraph } from "../src/graph/check.js";
 import { fingerprintPath, isClean, probeDrift, readFingerprint } from "../src/graph/fingerprint.js";
 import { ensureFreshGraph } from "../src/graph/refresh.js";
 import { readGraph, wiringPath } from "../src/graph/write.js";
+import { readStats } from "../src/util/state.js";
 import { readWorkspace, writeWorkspace } from "../src/graph/workspace.js";
 import { callTool } from "../src/mcp/tools.js";
 import { homeEnv, runCli, tmpRepo } from "./helpers.js";
@@ -293,3 +294,38 @@ test("MCP workspace retrieval names each child's extension scope", async () => {
   }
 });
 
+
+// Issue #433: a workspace parent's build federates the children but left the
+// parent's stats.json at all zeros (or absent), so everything reading the root
+// stats sees "not built" while every query works. The parent's totals are the
+// union of the children's graphs.
+test("workspace build writes the parent's stats.json from the children's real totals (#433)", () => {
+  const parent = tmpRepo("workspace-stats");
+  const home = tmpRepo("workspace-stats-home");
+  try {
+    for (const name of ["one", "two"]) {
+      const dir = join(parent, name);
+      mkdirSync(join(dir, ".git"), { recursive: true });
+      writeFileSync(join(dir, "main.go"), "package main\nfunc main() {}\n");
+      writeFileSync(join(dir, "widget.ts"), "export const widget = 1;\n");
+    }
+    const result = runCli(["build", parent], { home });
+    assert.equal(result.status, 0, result.describe());
+
+    const stats = readStats(parent);
+    assert.ok(stats, "workspace build writes the parent stats.json");
+    const childGraphs = ["one", "two"]
+      .map((name) => readGraph(wiringPath(join(parent, name, "graft"))))
+      .filter((g) => g !== null);
+    assert.equal(childGraphs.length, 2, "both children built");
+    assert.equal(stats!.nodeCount, childGraphs.reduce((n, g) => n + g!.meta.nodeCount, 0), "node total = the children's real totals");
+    assert.equal(stats!.edgeCount, childGraphs.reduce((n, g) => n + g!.meta.edgeCount, 0), "edge total ditto");
+    assert.ok(stats!.nodeCount > 0, "not the zero signature");
+    assert.deepEqual([...stats!.languages].sort(), ["go", "typescript"], "the language union");
+    assert.equal(stats!.dirty, false);
+    assert.equal(stats!.syncing, false);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  }
+});

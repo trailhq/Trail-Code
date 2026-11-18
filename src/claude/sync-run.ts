@@ -4,6 +4,7 @@ import { pathToFileURL } from 'node:url';
 import { join } from 'node:path';
 import { readWiring, computeStats } from './stats.js';
 import { patchStats, releaseLock, resolveContextDir } from './state.js';
+import { workspaceStats } from './stats.js';
 import { claimLock } from '../util/state.js';
 import { graftCliPath } from './paths.js';
 import { contextDirFor } from '../context/node-file.js';
@@ -45,7 +46,12 @@ export function runSync(dir: string, build: (d: string) => void = realBuild): vo
     const w = readWiring(dir);
     if (!w && readWorkspace(dir, resolveContextDir(dir))) {
       // A workspace parent has no wiring.json of its own; its graph is workspace.json.
-      patchStats(dir, { dirty: false, staleCount: 0, syncing: false, syncedAt: new Date().toISOString() });
+      // Keep its totals real — the union of the children's graphs (#433) — so a sync
+      // never overwrites the build's aggregate back to zeros.
+      patchStats(dir, {
+        dirty: false, staleCount: 0, syncing: false, syncedAt: new Date().toISOString(),
+        ...(workspaceStats(dir, resolveContextDir(dir)) ?? {}),
+      });
       return;
     }
     if (!w) { patchStats(dir, { syncing: false }); return; } // build ran but output unreadable — stay dirty, retry
