@@ -78,3 +78,26 @@ test('the statusline counts learnings, not notes', () => {
   assert.match(strip(renderStatusline(s, null, { ctxPct: null, notes: 2 })[0]), /· 2 learnings/);
   assert.doesNotMatch(strip(renderStatusline(s, null, { ctxPct: null, notes: 2 })[0]), /note/);
 });
+
+// A workspace build splits the map into the children and leaves only
+// workspace.json at the parent (graph/workspace.ts) — issue #817: the parent
+// rendered "not built" forever.
+test('a workspace root with no map of its own sums the built children', () => {
+  const ws = repo();
+  mkdirSync(join(ws, '.trail', 'cache'), { recursive: true });
+  writeFileSync(join(ws, '.trail', 'cache', 'workspace.json'),
+    JSON.stringify({ version: 1, children: ['repo-a', 'repo-b'] }));
+  writeStats(join(ws, 'repo-a'), { ...emptyStats(), nodeCount: 10, edgeCount: 20 });
+  writeStats(join(ws, 'repo-b'), { ...emptyStats(), nodeCount: 12, edgeCount: 24 });
+  const s = resolveStats(ws)!;
+  assert.ok(s, 'a built workspace is not "not built"');
+  assert.equal(s.nodeCount, 22);
+  assert.equal(s.edgeCount, 44);
+});
+
+test('a workspace with no built children still reports not built', () => {
+  const ws = repo();
+  mkdirSync(join(ws, '.trail', 'cache'), { recursive: true });
+  writeFileSync(join(ws, '.trail', 'cache', 'workspace.json'), JSON.stringify({ version: 1, children: [] }));
+  assert.equal(resolveStats(ws), null);
+});
