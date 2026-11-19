@@ -30,7 +30,7 @@
  * Anything thrown lets the command through: a hook that can wedge every
  * shell command is worse than none.
  */
-import { normalizeCommand, programOf, simpleCommands, stepMatches } from '../trace/shell.js';
+import { bareCommand, normalizeCommand, programOf, simpleCommands, stepMatches } from '../trace/shell.js';
 import { markAsked, markHanded, readGateFile, skillsOnFast, trailHomeFast, type GateFile, type GateGroup } from '../trace/gate-file.js';
 import { agentGuard, gatedAnywhere, gatedKind, gatedWhat, shellWords } from '../skills/risk.js';
 import { hostFacts, isTestHome, labInteractive } from '../skills/host-facts.js';
@@ -44,6 +44,25 @@ import { join } from 'node:path';
 export const SKILLS_ADD = /\bskills\s+add\b/;
 /** save-parse.ts SAVE_GATE_RE (`skills add`, `skills lesson`, phase 2 `skills update`), kept here for the same reason (a test holds them equal). */
 export const SAVE_GATE = /\bskills\s+(?:add|lesson|update)\b/;
+/** The gate verbs, as a subcommand of the CLI. */
+const GATE_SUBS = /^(?:add|lesson|update)$/;
+/** Issue #832: does the command RUN `trail skills add|lesson|update` — some simple command's program (wrappers
+ *  gone, via `bareCommand`, the same parser the agent guard trusts) is the trail CLI and its subcommand is
+ *  `skills` + a gate verb? Quoted data that merely names the words (a commit message, a heredoc, another tool's
+ *  CLI) never fires the gate. */
+export function runsTrailSkillsGate(cmd: string): boolean {
+  return simpleCommands(cmd).some((simple) => {
+    const w = bareCommand(simple).split(' ').filter(Boolean);
+    for (let i = 0; i < w.length; i++) {
+      const cli = /(?:^|\/)(?:trail|graft)(?:-dev)?$/.test(w[i]!)
+        || (w[i] === 'npx' && /@(?:nanonets\/graft|trailhq\/trail-code)$/.test(w[i + 1] ?? ''));
+      if (!cli) continue;
+      const rest = w.slice(i + (w[i] === 'npx' ? 2 : 1));
+      return rest[0] === 'skills' && GATE_SUBS.test(rest[1] ?? '');
+    }
+    return false;
+  });
+}
 /** How long a yes to the first step of a group covers its later steps. */
 export const APPROVED_MS = 30 * 60 * 1000;
 const SHOWN_MAX = 500;
@@ -73,7 +92,7 @@ export async function preBashSkills(input: any, dir: string, env: NodeJS.Process
       return { permissionDecision: 'deny', reason: sure.deny };
     }
     // 3. The only path that loads more code.
-    if (SAVE_GATE.test(cmd) || SAVE_GATE.test(guardWords(cmd))) {
+    if (runsTrailSkillsGate(cmd)) {
       const { saveOrLessonGate } = await import('../skills/save-gate.js');
       return saveOrLessonGate(input, dir, env);
     }

@@ -212,3 +212,14 @@ test("agent guard: the person's switches and Trail's hook scripts, whatever runs
     'echo "trail skills on"',
   ]) assert.equal(agentGuard(cmd), null, cmd);
 });
+
+// Issue #832: a hook script NAMED inside quoted data is words, never a run —
+// but fed to an interpreter (a pipe) it is the run, unchanged.
+test('a hook file named in quoted data or a commit message leaves the hook unrun (#832)', () => {
+  for (const cmd of [
+    'echo "note: graft-hooks.cjs is only named in this quoted text"',
+    'git commit -m "ship it (message names trail-hooks.cjs)"',
+    'git log -S "graft-hooks.cjs" --oneline',
+  ]) assert.equal(agentGuard(cmd), null, cmd);
+  assert.equal(agentGuard("echo '{}' | node graft-hooks.cjs pre-bash")?.hit, 'hook-script');
+});

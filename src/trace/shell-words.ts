@@ -471,7 +471,8 @@ export function hookUnrun<T>(head: string, bodies: string[], hitOf: (text: strin
   const prog = base(w[0] ?? '');
   const args = w.slice(1).map((x) => unquote(x));
   const quietBodies = literalBodies(plain, bodies);
-  if (NEVER_RUNS.test(prog) || (prog === 'git' && GIT_KEEPS.test(args[0] ?? ''))) return !bodies.length && !writesFile(plain);
+  // git bookkeeping verbs: their quoted bodies are messages and search patterns — words, never a run (#832).
+  if (NEVER_RUNS.test(prog) || (prog === 'git' && GIT_KEEPS.test(args[0] ?? ''))) return !writesFile(plain);
   if (/^node(?:js)?$/.test(prog) && args.some((a) => a === '--check' || a === '-c')) return !args.some((a) => NODE_RUNS.test(a)) && !bodies.length && !writesFile(plain);
   const inline = inlineScript(w);
   if (inline !== null) {
@@ -489,6 +490,11 @@ export function hookUnrun<T>(head: string, bodies: string[], hitOf: (text: strin
     const into = /(?:^|\s)(?:\d?>>?|tee(?:\s+-a)?)\s*(['"]?)([^\s'"]{1,400})\1/.exec(plain)?.[2] ?? '';
     return quietBodies && !hookNamed(plain) && (!runs || TEXT_FILE.test(into));
   }
+  // D89 for the hook guard: echo/printf only print their arguments — a quoted
+  // word is the words, never a run (#832). A pipe is judged per segment
+  // upstream (the receiving segment's own quiet decides), and a redirect
+  // writes, never runs.
+  if (/^(?:echo|printf)$/.test(prog)) return !writesFile(plain);
   return false;
 }
 
