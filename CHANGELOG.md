@@ -1,9 +1,67 @@
 # Changelog
 
-## Unreleased
+## 0.30.5
+
+- **`trail share-session` says what to type, and lets you leave folders
+  out.** After the preview, one line says what each answer does: `y` sends
+  it all, `n` sends nothing, and folder numbers leave those folders out
+  (like `2 3`). The preview then shows what's left, and you can leave out
+  more before sending (#847).
+
+## 0.30.4
+
+- **`trail share-session` no longer stops on one unusual session.** A
+  session holding deeply nested JSON from a tool crashed the scrub with
+  "Maximum call stack size exceeded", and nothing was sent. A line that deep
+  is now scrubbed as text. A session the scrub still can't read is left out
+  and named in the summary, and the rest still go. Two scrub patterns no
+  longer slow to a halt on a very long word (#844).
+
+## 0.30.3
+
+- **`trail share-session`'s preview is shorter and asks one question.** It
+  now shows four short sections: what's sent, from which folders, what's
+  removed before sending, and what happens after you say yes. Then it asks
+  `→ Send it? [y/N]`, where Enter means no. Typing folder numbers there
+  still leaves those folders out (#840).
+
+## 0.30.2
+
+- **`trail share-session` keeps sending after a trail upgrade.** The first
+  Claude Code session after an upgrade rewrites trail's hooks in
+  `~/.claude/settings.json`, and that rewrite used to take out
+  share-session's hook with them. It now leaves it in place; only `--stop`
+  and `--delete` take it out (#838).
+
+## 0.30.1
+
+- **`trail share-session` needs no flag.** It's still for the Trail team
+  only: Trail's server checks the signed-in email before anything is read.
+  On a laptop that isn't signed in, it opens the sign-in the way
+  `trail login` does, then carries on (#836).
+
+## 0.30.0
 
 ### Added
 
+- **Trail just for you.** `trail init` asks who trail is for. Enter keeps the
+  team setup that commits as before. "Just me" keeps trail's files out of git
+  for that clone and saves every learning in `~/.trail` (#750).
+- **Claude Desktop and Codex.** AGENTS.md gets a Learnings part, and hooks
+  report the host they ran in, so learnings work in both (#733).
+- **Stale learnings are flagged.** A learning whose `touches:` names code
+  that's gone is shown as "may be stale", with what's gone and how to replace
+  it. No model call (#731).
+- **`trail init --claude-memory <file>`** imports a Claude memory export.
+  It keeps only facts about code, never personal ones or secrets, and offers
+  them just for you (#732).
+- **One learning file per session.** A later `trail note` in the same session
+  and branch adds to that file; a new branch starts a new one (#748).
+- **`trail summary one-line`** turns each sources-diff block into one line
+  (#729).
+- **New languages:** Julia, Bash, GLSL and PowerShell in the breadth tier,
+  `.svelte` and `.astro` through their script blocks, Elixir calls through
+  `alias`, and Pi as a host (#379, #354, #358, #550, #444, #351, #776).
 - **Structural graph failures can now fail the build command with `--strict`**
   instead of printing a successful wiring banner. Partial graph artifacts remain
   available, workspace builds report failed children, and `--allow-partial`
@@ -21,6 +79,20 @@
 
 ### Fixed
 
+- **Your terminal title keeps the repo name.** Trail adds its status line
+  only when you don't already have one, and takes back the line an older
+  init wrote (#749, #756, #780).
+- **Share sync re-sends a session only when it grew**, instead of on every
+  touched timestamp (#828).
+- **More callers found.** TypeScript barrel re-exports, named imports,
+  interface-typed receivers and JSX components; Go package and interface
+  calls; Kotlin constructors; Python class receivers; PHP type usages
+  (#726, #335, #768, #764, #766, #687, #316, #339).
+- **Windows:** no more console windows flashing from child processes, and the
+  post-edit blast radius shows (#683, #769, #755).
+- The tokens-saved counter counts the learnings hooks hand over, so it keeps
+  moving in long sessions (#747). Telemetry events carry the time they were
+  sent, with the event's own time as `occurred_at` (#728).
 - Prevent telemetry helpers from repeatedly starting new copies when a sandbox
   blocks writes to the telemetry state. Internal flush commands skip startup
   upkeep, and background flushes require a saved timestamp before spawning.
@@ -36,6 +108,46 @@
   macro-generated function (`use Ecto.Repo`) lands on the module node instead of vanishing;
   multi-clause heads collapse to one target. Measured on a 219-file app against
   `mix xref graph`: cross-file call-edge precision 0.38 → 0.93, recall 0.41 → 0.64.
+
+## 0.29.0
+
+### Added
+
+- **A sign-in link to your team's Trail.** At the end of Claude's reply in a
+  repo with learnings, trail now offers "sign in to Trail" by default. It
+  used to need `TRAIL_CLOUD=1`. It stays off with `DO_NOT_TRACK`, with
+  telemetry off, in CI, or with `TRAIL_CLOUD=0` (#730).
+- **`trail share-session` can send your whole Claude setup**: the last 30
+  days of Claude Code sessions, your memory notes and setup, scrubbed on your
+  laptop and sent only after you say yes. It's off unless
+  `TRAIL_SHARE_SESSION=1` is set. `--stop` and `--delete <code>` always work,
+  so anyone who tried it can take everything back (#740).
+
+### Fixed
+
+- **Background builds no longer pile up and hang a laptop.** The build lock
+  counted as abandoned after 5 minutes even while its build was still
+  running, so a slow laptop could run two or three builds at once. The lock
+  now names the process holding it, and background builds run at low CPU
+  priority (#736).
+- **Lower peak memory on big repos.** Rebuilds after an edit run in their own
+  short-lived process instead of the MCP server, queries no longer copy the
+  whole search index, and map files are written as plain ASCII. On a repo
+  with 88k symbols, one turn peaked at 2.9 GB instead of 4.3 GB (#737).
+- **Install and upgrade without sudo.** `trail upgrade` clears what a stopped
+  npm install leaves behind (ENOTEMPTY, EEXIST) and tries again, and on
+  EACCES it shows how to install into your home folder instead. On a Node
+  older than 20.16 or 22.3, `trail` stops with one plain line (#734).
+- **Installing compiles nothing.** The depth tier (TypeScript, Python, Go,
+  Java, Kotlin, Swift, PHP, R) now parses on WASM, so a laptop without a C
+  toolchain installs cleanly. The map is the same (#707).
+- `trail init`'s list of always-follow learnings says what each one makes
+  Claude do, and who gets it is said once as a heading (#724).
+
+## 0.28.1
+
+- Lists Trail Code's MCP server in MCP directories (`mcpName`, `server.json`,
+  `.mcp.json`). The code is the same as 0.28.0.
 
 ## 0.28.0
 

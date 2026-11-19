@@ -78,7 +78,7 @@ export const EVENTS: Record<string, ReadonlySet<string>> = {
    *  answer (`saved`: in the repo, just for the person, or not). The share of
    *  `kind=corrected` asks with a learning saved is how many corrections
    *  become learnings. The transcript and the learning never travel. */
-  note_asked: new Set<string>(['kind', 'saved']),
+  note_asked: new Set<string>(['kind', 'saved', 'form']),
   /** Once a day per repo, from the session-start hook, for a repo trail runs
    *  in: whether `.trail/` is committed there, how many learnings it holds,
    *  as a bucket, and whether this machine shares it with a workspace. With
@@ -193,6 +193,7 @@ export const VALUES: Record<string, Record<string, ReadonlySet<string>>> = {
   note_asked: {
     kind: new Set(['fixed', 'corrected', 'undone', 'chose', 'overrode', 'shipped', 'explored']),
     saved: new Set(['repo', 'personal', 'no']),
+    form: new Set(['block', 'feedback']),
   },
   skill_offered: { moment: new Set(['asked', 'repeated', 'repaired', 'correction', 'update', 'drift', 'retire', 'promote']) },
   skill_answer: { answer: new Set(['yes', 'no', 'show', 'none', 'off', 'retire']) },

@@ -402,13 +402,34 @@ export function noteAsk(s: NoteSignal): string {
   return `[trail] ${first}\n${CLOSE}`;
 }
 
+/** How a Stop hook's words reached the agent: a block (Claude Code shows "Stop hook error"), or a Stop's `additionalContext` ("Stop hook feedback"). */
+export type StopForm = 'block' | 'feedback';
+
+/**
+ * A Stop hook's words to the agent as Claude Code keeps them, or null for any
+ * other line: a block's isMeta "Stop hook feedback" line, or the attachment a
+ * Stop's `additionalContext` leaves (stop.ts `stopTakesContext`).
+ */
+function stopFeedback(e: any): { text: string; form: StopForm } | null {
+  if (e?.type === 'user' && e.isMeta) {
+    const t = textOf(e.message?.content);
+    return /^Stop hook feedback/i.test(t) ? { text: t, form: 'block' } : null;
+  }
+  const a = e?.type === 'attachment' ? e.attachment : null;
+  return a?.type === 'hook_additional_context' && a.hookEvent === 'Stop' && Array.isArray(a.content)
+    ? { text: a.content.join('\n'), form: 'feedback' }
+    : null;
+}
+
 /**
  * Read on the stop after an ask: whether the agent saved a learning in answer,
- * in the repo or `--personal`, or `no`. Null when the last stop hook feedback
- * in the transcript isn't trail's ask, so another hook's block isn't counted.
+ * in the repo or `--personal`, or `no`, and which form the ask took. Null when
+ * the last Stop hook feedback in the transcript, in either form, isn't trail's
+ * ask, so another hook's isn't counted.
  */
-export function askAnswer(jsonl: string): 'repo' | 'personal' | 'no' | null {
+export function askAnswer(jsonl: string): { saved: 'repo' | 'personal' | 'no'; form: StopForm } | null {
   let asked = false;
+  let form: StopForm = 'block';
   let saved: 'repo' | 'personal' | 'no' = 'no';
   const notes = new Map<string, string>();
   for (const line of jsonl.split('\n')) {
@@ -418,17 +439,19 @@ export function askAnswer(jsonl: string): 'repo' | 'personal' | 'no' | null {
     } catch {
       continue;
     }
-    const content = e?.message?.content;
-    if (e?.type === 'user' && e.isMeta && /^Stop hook feedback/i.test(textOf(content))) {
-      asked = textOf(content).includes(CLOSE);
+    const fed = stopFeedback(e);
+    if (fed !== null) {
+      asked = fed.text.includes(CLOSE);
+      form = fed.form;
       saved = 'no';
       continue;
     }
+    const content = e?.message?.content;
     for (const b of Array.isArray(content) ? content : []) {
       if (b?.type === 'tool_use' && b.name === 'Bash' && typeof b.input?.command === 'string' && NOTE_CALL.test(b.input.command)) notes.set(String(b.id), b.input.command);
       const cmd = b?.type === 'tool_result' ? notes.get(String(b.tool_use_id)) : undefined;
       if (asked && cmd !== undefined && b.is_error !== true) saved = /\s--personal\b/.test(cmd) ? 'personal' : 'repo';
     }
   }
-  return asked ? saved : null;
+  return asked ? { saved, form } : null;
 }

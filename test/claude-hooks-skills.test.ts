@@ -43,9 +43,18 @@ test('emitHook: a block is the whole answer, never with a notice or context', ()
   }
 });
 
-test('emitHook: Stop carries no additionalContext (the host has none for it), only a notice', () => {
-  assert.equal(written(() => emitHook('Stop', { context: 'c' })), '');
-  assert.deepEqual(JSON.parse(written(() => emitHook('Stop', { context: 'c', notice: 'trail: x, 6 commands, 0 failed' }))), { systemMessage: 'trail: x, 6 commands, 0 failed' });
+test("emitHook: a Stop's context is dropped (its additionalContext keeps the turn going), only a notice", () => {
+  for (const opts of [{}, { stopContext: true }]) {
+    assert.equal(written(() => emitHook('Stop', { context: 'c' }, opts)), '');
+    assert.deepEqual(JSON.parse(written(() => emitHook('Stop', { context: 'c', notice: 'trail: x, 6 commands, 0 failed' }, opts))), { systemMessage: 'trail: x, 6 commands, 0 failed' });
+  }
+});
+
+test('emitHook: with stopContext a Stop block goes out as additionalContext, which Claude Code shows as feedback, not an error', () => {
+  const text = written(() => emitHook('Stop', { block: '[trail] Before you finish', notice: 'n', context: 'c' }, { stopContext: true }));
+  assert.deepEqual(JSON.parse(text), { hookSpecificOutput: { hookEventName: 'Stop', additionalContext: '[trail] Before you finish' } });
+  const prompt = written(() => emitHook('UserPromptSubmit', { block: 'no' }, { stopContext: true }));
+  assert.deepEqual(JSON.parse(prompt), { decision: 'block', reason: 'no' }, 'only a Stop');
 });
 
 import { allowedValue } from '../src/telemetry/contract.js';
@@ -53,4 +62,9 @@ import { allowedValue } from '../src/telemetry/contract.js';
 test('hook_ms takes the skills part of PostToolUse as post-bash, and nothing that is not a hook', () => {
   for (const e of ['post-bash', 'post-bash-fail', 'stop', 'prompt', 'session-start']) assert.ok(allowedValue('hook_ms', 'event', e), e);
   assert.equal(allowedValue('hook_ms', 'event', 'npm publish'), false);
+});
+
+test("note_asked's form names how the ask reached the agent, and nothing else", () => {
+  for (const f of ['block', 'feedback']) assert.ok(allowedValue('note_asked', 'form', f), f);
+  assert.equal(allowedValue('note_asked', 'form', 'Stop hook error'), false);
 });

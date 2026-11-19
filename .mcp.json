@@ -1,0 +1,5 @@
+{
+  "mcpServers": {
+    "trail": { "command": "npx", "args": ["-y", "@trailhq/trail-code", "mcp"] }
+  }
+}
