@@ -157,13 +157,22 @@ test('writes outside the repo are no code edit: Claude memory after a cd, a PR b
 test("the stop after an ask reads whether a learning was saved in answer, in the repo or personal; another hook's block isn't trail's", () => {
   const ask = noteAsk({ kind: 'corrected', key: 'corrected:u', what: 'The user corrected you ("na").' });
   const asked = [prompt('x'), say('ok'), meta(`Stop hook feedback:\n${ask}`)];
-  assert.equal(askAnswer(jsonl(...asked, bash('trail note --personal --title "Growth reasoning stays out of the repo" <<\'EOF\'', '✓ saved just for you'))), 'personal');
-  assert.equal(askAnswer(jsonl(...asked, bash('trail note --title "x" <<\'EOF\'', '✓ added to this repo'))), 'repo');
-  assert.equal(askAnswer(jsonl(...asked, bash('trail note --title "x"', '✗ not saved yet', true))), 'no', 'the gate turned it away');
-  assert.equal(askAnswer(jsonl(...asked, say('Nothing worth keeping.'))), 'no');
-  assert.equal(askAnswer(jsonl(bash('trail note --title "x"', '✓'), ...asked)), 'no', 'a learning saved before the ask');
+  assert.deepEqual(askAnswer(jsonl(...asked, bash('trail note --personal --title "Growth reasoning stays out of the repo" <<\'EOF\'', '✓ saved just for you'))), { saved: 'personal', form: 'block' });
+  assert.equal(askAnswer(jsonl(...asked, bash('trail note --title "x" <<\'EOF\'', '✓ added to this repo')))?.saved, 'repo');
+  assert.equal(askAnswer(jsonl(...asked, bash('trail note --title "x"', '✗ not saved yet', true)))?.saved, 'no', 'the gate turned it away');
+  assert.equal(askAnswer(jsonl(...asked, say('Nothing worth keeping.')))?.saved, 'no');
+  assert.equal(askAnswer(jsonl(bash('trail note --title "x"', '✓'), ...asked))?.saved, 'no', 'a learning saved before the ask');
   assert.equal(askAnswer(jsonl(...asked, meta('Stop hook feedback:\nlint failed'))), null, "another hook's block");
   assert.equal(askAnswer(jsonl(prompt('x'), say('ok'))), null, 'no ask');
+
+  // Claude Code 2.1.163 and later: the ask as a Stop's additionalContext leaves an attachment, not a "Stop hook feedback" line.
+  const ctx = (hookEvent: string, ...content: string[]) => [{ type: 'attachment', uuid: uid(), attachment: { type: 'hook_additional_context', content, hookName: hookEvent, toolUseID: 't', hookEvent } }];
+  const fed = [prompt('x'), say('ok'), ctx('Stop', ask)];
+  assert.deepEqual(askAnswer(jsonl(...fed, bash('trail note --personal --title "x" <<\'EOF\'', '✓ saved just for you'))), { saved: 'personal', form: 'feedback' });
+  assert.deepEqual(askAnswer(jsonl(...fed, bash('trail note --title "x" <<\'EOF\'', '✓ added to this repo'))), { saved: 'repo', form: 'feedback' });
+  assert.deepEqual(askAnswer(jsonl(...fed, say('Nothing worth keeping.'))), { saved: 'no', form: 'feedback' });
+  assert.equal(askAnswer(jsonl(...fed, ctx('Stop', 'lint failed'))), null, "another hook's feedback");
+  assert.equal(askAnswer(jsonl(prompt('x'), say('ok'), ctx('SessionStart', ask))), null, "only a Stop's");
 });
 
 test('a turn that read a lot to find its answer is a sign, with no edit needed', () => {

@@ -109,12 +109,22 @@ export function emit(eventName: string, additionalContext: string): void {
  * A block (Stop: the agent goes on with `reason`; UserPromptSubmit: the
  * prompt goes no further) is the whole answer, never beside a notice or
  * context. Otherwise context is `hookSpecificOutput.additionalContext`, which
- * the agent reads (Stop has none), and a notice is the top-level
- * `systemMessage`, which the person reads.
+ * the agent reads, and a notice is the top-level `systemMessage`, which the
+ * person reads.
+ *
+ * A Stop's `additionalContext` keeps the turn going just as a block does, so
+ * a Stop carries only a block there, never passive context. With `stopContext`
+ * (stop.ts `stopTakesContext`: Claude Code 2.1.163 or later) a Stop's block
+ * goes out that way: the person sees "Stop hook feedback", where a block
+ * reads "Stop hook error". Without it, every host gets the block it acts on.
  */
-export function emitHook(eventName: string, out: HookOut): void {
+export function emitHook(eventName: string, out: HookOut, opts: { stopContext?: boolean } = {}): void {
   if (out.block) {
-    process.stdout.write(JSON.stringify({ decision: 'block', reason: out.block }));
+    const answer =
+      eventName === 'Stop' && opts.stopContext
+        ? { hookSpecificOutput: { hookEventName: 'Stop', additionalContext: out.block } }
+        : { decision: 'block', reason: out.block };
+    process.stdout.write(JSON.stringify(answer));
     return;
   }
   const context = eventName === 'Stop' ? '' : out.context ?? '';

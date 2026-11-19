@@ -11,7 +11,7 @@
  * to save a learning (note-signals.ts). An offer or notice that wins leaves
  * the sign unasked, so the ask can come at a later Stop.
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
@@ -42,6 +42,70 @@ interface StopInput {
 
 function sessionId(input: StopInput): string {
   return payloadSessionId(input);
+}
+
+/** The first Claude Code that keeps the turn going on a Stop's `additionalContext` without calling it a hook error (its changelog, 2.1.163). */
+const STOP_CONTEXT_SINCE = [2, 1, 163] as const;
+/** How much of the transcript's end `transcriptVersion` reads: the turn's last lines, a reply and its bookkeeping. */
+const VERSION_TAIL_BYTES = 256 * 1024;
+
+/**
+ * The Claude Code version that wrote the transcript, from its last entry
+ * that names one (every entry carries `version`), or null. Reads only the
+ * file's end, and a line cut by that read is skipped. Never throws.
+ */
+export function transcriptVersion(path: string): string | null {
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, 'r');
+    const size = fstatSync(fd).size;
+    const len = Math.min(size, VERSION_TAIL_BYTES);
+    const buf = Buffer.alloc(len);
+    readSync(fd, buf, 0, len, size - len);
+    const lines = buf.toString('utf8').split('\n');
+    for (let k = lines.length - 1; k >= 0; k--) {
+      let e: unknown;
+      try {
+        e = JSON.parse(lines[k]!);
+      } catch {
+        continue;
+      }
+      const v = e && typeof e === 'object' ? (e as { version?: unknown }).version : undefined;
+      if (typeof v === 'string' && /^\d+\.\d+\.\d+/.test(v)) return v;
+    }
+    return null;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+/** `version` (x.y.z, anything after ignored) is `since` or later. */
+function atLeast(version: string, since: readonly number[]): boolean {
+  const v = version.split(/[^\d]/, 3).map(Number);
+  for (let k = 0; k < since.length; k++) {
+    if ((v[k] ?? 0) !== since[k]) return (v[k] ?? 0) > since[k]!;
+  }
+  return true;
+}
+
+/**
+ * Whether this Stop's block can go out as `additionalContext` (emitHook),
+ * which Claude Code shows the person as "Stop hook feedback", not "Stop hook
+ * error", and which still keeps the turn going and sets `stop_hook_active` on
+ * the next Stop. Only Claude Code's main agent, at STOP_CONTEXT_SINCE or later
+ * by its transcript. Any other host, a subagent, a bare run
+ * (CLAUDE_CODE_SIMPLE, where Claude Code ends the turn on it instead), or an
+ * older or unknown build gets the block, which every one of them acts on: the
+ * ask is never dropped for a label.
+ */
+export function stopTakesContext(input: StopInput, env: NodeJS.ProcessEnv = process.env): boolean {
+  const host = detectHost(input);
+  if (host.host !== 'claude' || host.subagent || /^(1|true|yes|on)$/i.test((env.CLAUDE_CODE_SIMPLE ?? '').trim())) return false;
+  const path = input.transcript_path;
+  const version = typeof path === 'string' && path ? transcriptVersion(path) : null;
+  return version !== null && atLeast(version, STOP_CONTEXT_SINCE);
 }
 
 /**
@@ -138,11 +202,12 @@ function turnEnd(input: StopInput, dir: string): string | null {
  * found something the code won't tell the next person (a check that failed
  * then passed after an edit, a correction, an undone edit, a picked option, a
  * commit; see note-signals.ts) asks the agent to save a learning, by blocking
- * the stop with the reason. Each sign is asked about once, and a session is
- * asked at most NOTE_ASKS_PER_SESSION times; a saved learning starts the signs
- * over. Never blocks twice in a row: Claude Code sets `stop_hook_active` on
- * the stop that follows a block; that stop sends `note_asked`, what was asked
- * and whether a learning was saved in answer. The caller writes it only as the
+ * the stop with the reason (as `additionalContext` where Claude Code takes it,
+ * stopTakesContext). Each sign is asked about once, and a session is asked at
+ * most NOTE_ASKS_PER_SESSION times; a saved learning starts the signs over.
+ * Never blocks twice in a row: Claude Code sets `stop_hook_active` on the stop
+ * that follows either form; that stop sends `note_asked`, what was asked,
+ * in which form, and whether a learning was saved in answer. The caller writes it only as the
  * Stop's one answer, so a sign is marked asked only when it was. Never throws.
  */
 export function askForNote(input: { stop_hook_active?: unknown }, dir: string, id: string, transcript: string | null): HookOut {
@@ -151,8 +216,8 @@ export function askForNote(input: { stop_hook_active?: unknown }, dir: string, i
     const s = readSession(dir, id);
     const asked = s.noteAsks ?? [];
     if (input.stop_hook_active) {
-      const saved = asked.length ? askAnswer(readFileSync(transcript, 'utf8')) : null;
-      if (saved) track('note_asked', { kind: asked[asked.length - 1]!.split(':')[0], saved }, { repo: dir });
+      const answer = asked.length ? askAnswer(readFileSync(transcript, 'utf8')) : null;
+      if (answer) track('note_asked', { kind: asked[asked.length - 1]!.split(':')[0], saved: answer.saved, form: answer.form }, { repo: dir });
       return {};
     }
     if (asked.length >= NOTE_ASKS_PER_SESSION) return {};
@@ -211,7 +276,7 @@ export async function handleStopEvent(input: unknown, dir: string, opts: { skill
   } catch {
     // The note waits for the next Stop.
   }
-  emitHook('Stop', out);
+  emitHook('Stop', out, { stopContext: !!out.block && stopTakesContext(i) });
 }
 
 /**
