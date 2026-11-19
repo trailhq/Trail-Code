@@ -15,7 +15,8 @@ import { spawn } from 'node:child_process';
 import { statSync } from 'node:fs';
 import { graftCliPath } from '../claude/paths.js';
 import { drain, queuePath, requeue } from './queue.js';
-import { patchState, readState } from './identity.js';
+import { patchState, readState, statePath } from './identity.js';
+import { claimWindow, UPKEEP_CLAIM_STALE_MS } from '../util/state.js';
 import { sendBatch, type SendResult } from './send.js';
 import { telemetryOn } from './gate.js';
 
@@ -39,6 +40,9 @@ export function maybeFlushInBackground(home?: string, now = Date.now()): boolean
     if (!telemetryOn(home)) return false;
     if (!queueHasEvents(home)) return false;
     if (!needsFlush(readState(home)?.flushedAt, now)) return false;
+    // #833: same cross-process claim as the update check — the write-reread
+    // below excludes sequential callers only.
+    if (!claimWindow(`${statePath(home)}.claim`, UPKEEP_CLAIM_STALE_MS, now)) return false;
     patchState({ flushedAt: now }, home); // before the spawn, so a dying child costs one attempt
     // patchState tolerates write failures; only spawn if the daily limit was saved.
     if (readState(home)?.flushedAt !== now) return false;

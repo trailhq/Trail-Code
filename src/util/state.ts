@@ -28,9 +28,46 @@ export const LOCK_STALE_MS = 300000;
  * keeps its lock. */
 export const LOCK_MAX_MS = 15 * 60_000;
 
+/** How long a background-upkeep claim (#833: the cross-process once-per-window
+ * file for `_update-check` / `_telemetry-flush`) blocks rivals. Longer than any
+ * burst of concurrent session starts; short enough that a crashed winner's
+ * skipped window is retried in minutes, not a day. */
+export const UPKEEP_CLAIM_STALE_MS = 10 * 60_000;
+
 export function emptyStats(): Stats {
   return { nodeCount: 0, edgeCount: 0, languages: [], totalCount: 0, readyCount: 0,
     staleCount: 0, dirty: false, syncing: false, syncedAt: null, lastFile: null };
+}
+
+/**
+ * Claim a once-per-window right across processes (#833): the winner creates the
+ * claim file exclusively (`wx`), every concurrent caller loses until the claim
+ * goes stale. A crashed winner's claim expires after `staleMs` so it cannot
+ * block a window forever, and a corrupt claim file counts as expired too —
+ * neither may wedge the guarded action permanently. Any other error (an
+ * unwritable home, a sandbox) reports "not claimed", so the caller spawns
+ * nothing: no claim, no storm.
+ */
+export function claimWindow(claimPath: string, staleMs: number, now: number = Date.now()): boolean {
+  try {
+    mkdirSync(dirname(claimPath), { recursive: true });
+    try {
+      const fd = openSync(claimPath, 'wx');
+      try { writeSync(fd, JSON.stringify({ claimedAt: now })); } finally { closeSync(fd); }
+      return true;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') return false;
+      let claimedAt = Number.NaN;
+      try {
+        claimedAt = (JSON.parse(readFileSync(claimPath, 'utf8')) as { claimedAt?: number }).claimedAt ?? Number.NaN;
+      } catch { /* garbage counts as expired */ }
+      if (Number.isFinite(claimedAt) && now - claimedAt < staleMs) return false;
+      writeFileSync(claimPath, JSON.stringify({ claimedAt: now }));
+      return true;
+    }
+  } catch {
+    return false; // unwritable home — the guarded action just doesn't run
+  }
 }
 
 const LOCK_FILE = '.sync.lock';

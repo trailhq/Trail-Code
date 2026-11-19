@@ -28,7 +28,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { readJson, writeJsonAtomic, cacheDir } from './util/state.js';
+import { readJson, writeJsonAtomic, cacheDir, claimWindow, UPKEEP_CLAIM_STALE_MS } from './util/state.js';
 import { HOSTS, hostRelPath } from './hosts/registry.js';
 import { markersFor } from './hosts/sections.js';
 import { getNpmViewVersion, readCurrentVersion } from './cli-meta.js';
@@ -136,6 +136,11 @@ export function maybeRefreshInBackground(
   if (doNotTrack !== undefined && doNotTrack !== '' && doNotTrack !== '0') return false;
   const cache = readUpdateCache(home);
   if (!needsRefresh(cache, now)) return false;
+  // #833: the write-then-reread below only excludes sequential callers — N
+  // sessions starting in the same millisecond all read the stale cache and all
+  // passed. The claim file is the cross-process mutex: one winner per window,
+  // a crashed winner's claim expires, and no claim means no spawn.
+  if (!claimWindow(`${updateCachePath(home)}.claim`, UPKEEP_CLAIM_STALE_MS, now)) return false;
   writeUpdateCache({ latest: cache?.latest ?? null, checkedAt: now }, home);
   if (readUpdateCache(home)?.checkedAt !== now) return false;
   try {
