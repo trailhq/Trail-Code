@@ -5,7 +5,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
@@ -651,4 +651,65 @@ test("outside a repo on trail, under --dir, or in the home folder, no map is bui
     restore();
   }
   assert.deepEqual(await runsIn(log), []);
+});
+
+// Issue #438: `ask` without the repo-root positional anchors the freshness check
+// on cwd, and the rebuild re-roots the graph on an unrelated directory — wiping
+// a valid graph to 0 nodes behind surviving cards. The graph records the root it
+// was built from; a query from anywhere else must answer as-is, never rebuild.
+test("a query rooted elsewhere never re-roots the graph; the real root still refreshes normally (#438)", async () => {
+  const src = repo();
+  const hub = mkdtempSync(join(tmpdir(), "graft-hub-"));
+  const strangers = mkdtempSync(join(tmpdir(), "graft-stranger-"));
+  try {
+    await buildGraph(src, { contextDir: outOf(hub) });
+    const before = graphOf(hub);
+    assert.ok(before.meta.root, "build records the source root it built from");
+
+    writeFileSync(join(strangers, "noise.ts"), MATH);
+    const r = await ensureFreshGraph(strangers, { contextDir: outOf(hub) });
+    assert.equal(r.refreshed, false, "no rebuild from an unrelated root");
+    assert.match(r.note ?? "", /built for/, JSON.stringify(r));
+    assert.equal(graphOf(hub).meta.nodeCount, before.meta.nodeCount, "graph untouched");
+    assert.equal(graphOf(hub).nodes.length, before.nodes.length, "still holds its symbols");
+
+    // the real root (via a different symlink path to the same directory) is
+    // still the graph's root — no refusal, normal freshness
+    const link = join(hub, "entry-link");
+    symlinkSync(src, link);
+    const clean = await ensureFreshGraph(link, { contextDir: outOf(hub) });
+    assert.equal(clean.refreshed, false, "nothing changed: clean");
+    assert.equal(clean.note, undefined, "no refusal note for the true root");
+
+    // and the true root with a real edit still refreshes as before
+    writeFileSync(join(src, "src", "more.ts"), MUL);
+    const fresh = await ensureFreshGraph(src, { contextDir: outOf(hub) });
+    assert.equal(fresh.refreshed, true, "the real root refreshes normally");
+  } finally {
+    rmSync(src, { recursive: true, force: true });
+    rmSync(hub, { recursive: true, force: true });
+    rmSync(strangers, { recursive: true, force: true });
+  }
+});
+
+// Old graphs have no recorded root — behavior must be exactly as before (the
+// freshness check runs from whatever root the query brings), so an upgrade
+// never changes what a query rebuilds.
+test("a graph without a recorded root keeps the old refresh behavior (#438 back-compat)", async () => {
+  const src = repo();
+  const hub = mkdtempSync(join(tmpdir(), "graft-hub-old-"));
+  const strangers = mkdtempSync(join(tmpdir(), "graft-stranger-old-"));
+  try {
+    await buildGraph(src, { contextDir: outOf(hub) });
+    const g = graphOf(hub);
+    delete g.meta.root;
+    writeFileSync(wiringPath(outOf(hub)), JSON.stringify(g));
+    writeFileSync(join(strangers, "noise.ts"), MATH);
+    const r = await ensureFreshGraph(strangers, { contextDir: outOf(hub) });
+    assert.equal(r.refreshed, true, "old graph: the old (re-rooting) behavior, unchanged");
+  } finally {
+    rmSync(src, { recursive: true, force: true });
+    rmSync(hub, { recursive: true, force: true });
+    rmSync(strangers, { recursive: true, force: true });
+  }
 });
