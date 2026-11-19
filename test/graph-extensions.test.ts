@@ -10,6 +10,9 @@ import { checkGraph } from "../src/graph/check.js";
 import { fingerprintPath, isClean, probeDrift, readFingerprint } from "../src/graph/fingerprint.js";
 import { ensureFreshGraph } from "../src/graph/refresh.js";
 import { readGraph, wiringPath } from "../src/graph/write.js";
+import { readStats } from "../src/util/state.js";
+import { patchStats } from "../src/claude/state.js";
+import { workspaceStats } from "../src/claude/stats.js";
 import { readWorkspace, writeWorkspace } from "../src/graph/workspace.js";
 import { callTool } from "../src/mcp/tools.js";
 import { homeEnv, runCli, tmpRepo } from "./helpers.js";
@@ -293,3 +296,144 @@ test("MCP workspace retrieval names each child's extension scope", async () => {
   }
 });
 
+
+/*
+ * Issue #433, adversarial. "Totals equal the sum" alone would just restate the
+ * implementation's arithmetic. Every stage below attacks the design instead:
+ * the sync child must merge totals, never revert them to zeros; a corrupt child
+ * must degrade the aggregate without NaN; the sync's rebuild must repair the
+ * corruption; a drifting child must move the totals by exactly its real delta;
+ * inflated stale numbers must not survive; and a child leaving the workspace
+ * must take its counts with it.
+ */
+test("workspace totals track reality through syncs, corruption, drift and removal (#433)", () => {
+  const parent = tmpRepo("workspace-stats");
+  const home = tmpRepo("workspace-stats-home");
+  try {
+    /* Deliberately DIFFERENT languages per child: a union check only means
+     * something when no single child already holds the union. */
+    const one = join(parent, "one");
+    const two = join(parent, "two");
+    mkdirSync(join(one, ".git"), { recursive: true });
+    writeFileSync(join(one, "main.go"), "package main\nfunc main() {}\n");
+    mkdirSync(join(two, ".git"), { recursive: true });
+    writeFileSync(join(two, "widget.ts"), "export const widget = 1;\n");
+    const result = runCli(["build", parent], { home });
+    assert.equal(result.status, 0, result.describe());
+
+    /* runSync's default build spawns the installed CLI, which does not exist
+     * in a source checkout (src/cli.js is a build artifact), so in tests it
+     * would silently no-op its rebuild. What we are testing is the sync's own
+     * semantics — its stats merge around a rebuild — so the rebuild itself is
+     * injected here, through the same CLI entry the assertions above trust. */
+    const rebuild = (dir: string): void => {
+      const r = runCli(["build", dir], { home });
+      assert.equal(r.status, 0, "the injected rebuild succeeds");
+    };
+
+    const stats = readStats(parent);
+    assert.ok(stats, "workspace build writes the parent stats.json");
+    const childGraphs = [one, two]
+      .map((d) => readGraph(wiringPath(join(d, "graft"))))
+      .filter((g) => g !== null);
+    assert.equal(childGraphs.length, 2, "both children built");
+    assert.equal(stats!.nodeCount, childGraphs.reduce((n, g) => n + g!.meta.nodeCount, 0), "node total = the children's real totals");
+    assert.equal(stats!.edgeCount, childGraphs.reduce((n, g) => n + g!.meta.edgeCount, 0), "edge total ditto");
+    assert.deepEqual([...stats!.languages].sort(), ["go", "typescript"], "the union of genuinely different children");
+    assert.equal(stats!.dirty, false);
+    assert.equal(stats!.syncing, false);
+
+    /* ATTACK: the sync child runs after the build (its normal place in the
+     * turn cycle). The old code patched flags-only here; the design claim is
+     * that it MERGES totals. If that regresses, the statusline flips back to
+     * "not built" on the first turn after every build. */
+    runSync(parent, rebuild);
+    const afterSync = readStats(parent)!;
+    assert.equal(afterSync.nodeCount, stats!.nodeCount, "sync keeps the real totals — no revert to zeros");
+    assert.deepEqual([...afterSync.languages].sort(), ["go", "typescript"]);
+    assert.equal(afterSync.syncing, false);
+    assert.ok(afterSync.syncedAt, "sync still stamps its own state");
+
+    /* ATTACK: a child's wiring graph is corrupt garbage (a partial write, a
+     * crash mid-build). The aggregate itself must skip it and report the
+     * surviving child — no NaN, no crash on the hostile input. */
+    writeFileSync(wiringPath(join(one, "graft")), "{not json at all");
+    const degraded = workspaceStats(parent)!;
+    const twoOnly = readGraph(wiringPath(join(two, "graft")))!;
+    assert.equal(degraded.nodeCount, twoOnly.meta.nodeCount, "degrades to the surviving child");
+    assert.ok(Number.isFinite(degraded.nodeCount) && Number.isFinite(degraded.edgeCount), "no NaN leaks into stats");
+
+    /* ATTACK: the sync's rebuild now sees the corrupt graph — it must repair
+     * the child and put BOTH children back into the aggregate. */
+    runSync(parent, rebuild);
+    const oneHealed = readGraph(wiringPath(join(one, "graft")))!;
+    const healed = readStats(parent)!;
+    assert.equal(healed.nodeCount, oneHealed.meta.nodeCount + twoOnly.meta.nodeCount, "the sync's rebuild repairs a corrupt child into the aggregate");
+
+    /* ATTACK: real drift. A child grows by exactly one function; the totals
+     * must move by that delta, not stay cached at the old numbers. */
+    writeFileSync(join(one, "main.go"), "package main\nfunc main() {}\nfunc second(n int) int { return n }\n");
+    runSync(parent, rebuild);
+    const oneGrown = readGraph(wiringPath(join(one, "graft")))!;
+    const grown = readStats(parent)!;
+    assert.equal(grown.nodeCount, oneGrown.meta.nodeCount + twoOnly.meta.nodeCount, "totals track the drift");
+    assert.ok(grown.nodeCount > healed.nodeCount, "the drift actually grew the total");
+
+    /* ATTACK: inflated stale numbers (a previous bigger graph) must not
+     * survive — the aggregate reports CURRENT reality, not max(old, new). */
+    patchStats(parent, { nodeCount: 999_999, edgeCount: 888_888 });
+    runSync(parent, rebuild);
+    assert.equal(readStats(parent)!.nodeCount, oneGrown.meta.nodeCount + twoOnly.meta.nodeCount, "stale inflation is overwritten by the real aggregate");
+
+    /* ATTACK: a child LEAVES the workspace — its directory is deleted. The
+     * rebuild re-discovers the remaining git children (workspace.json is not
+     * the source of membership), so the removed repo's counts must be gone
+     * from the aggregate — no ghost repo. */
+    rmSync(two, { recursive: true, force: true });
+    runSync(parent, rebuild);
+    assert.equal(readStats(parent)!.nodeCount, oneGrown.meta.nodeCount, "a removed child takes its counts out of the aggregate");
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+/*
+ * Issue #433: the aggregate must refuse to invent numbers on hostile inputs —
+ * a listed child that does not exist, an empty workspace, and a wiring file
+ * that parses as JSON but is not a graph shape. All three stay finite, and a
+ * workspace with nothing readable reports null (the caller keeps its zeros
+ * honestly) rather than a fabricated total.
+ */
+test("workspaceStats answers null or finite on hostile workspace shapes (#433)", () => {
+  const parent = tmpRepo("workspace-stats-hostile");
+  const home = tmpRepo("workspace-stats-hostile-home");
+  try {
+    const ghost = join(parent, "ghost");
+    mkdirSync(join(ghost, ".git"), { recursive: true });
+    /* a wiring file that is valid JSON but not a graph shape */
+    mkdirSync(join(ghost, "graft", ".graph"), { recursive: true });
+    writeFileSync(wiringPath(join(ghost, "graft")), "{\"foo\": 1}");
+
+    writeWorkspace(parent, { version: 1, children: ["ghost"] });
+    const weird = workspaceStats(parent, undefined);
+    assert.ok(weird, "a readable-but-foreign graph still aggregates");
+    assert.ok(Number.isFinite(weird!.nodeCount) && Number.isFinite(weird!.edgeCount) && Number.isFinite(weird!.totalCount), "all finite on a non-graph shape");
+    assert.equal(weird!.nodeCount, 0, "no symbols invented from a foreign shape");
+
+    /* a listed child with no directory at all: skipped, not crashed on */
+    writeWorkspace(parent, { version: 1, children: ["ghost", "vanishes"] });
+    assert.ok(workspaceStats(parent, undefined), "a missing child directory is skipped");
+
+    /* nothing readable at all: null, so the caller keeps zeros honestly */
+    writeWorkspace(parent, { version: 1, children: ["vanishes"] });
+    assert.equal(workspaceStats(parent, undefined), null, "no readable graph means null, not invented zeros");
+
+    /* an empty workspace: also null */
+    writeWorkspace(parent, { version: 1, children: [] });
+    assert.equal(workspaceStats(parent, undefined), null, "an empty workspace aggregates to null");
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  }
+});

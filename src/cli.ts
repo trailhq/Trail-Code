@@ -63,6 +63,8 @@ import { NEVER_INCLUDE_DIRS } from "./ingest/fs.js";
 import { normalizePathPrefix } from "./util/paths.js";
 import { latestSession, formatSessionStats, sessionInputRate } from "./claude/session-metrics.js";
 import { listSessionIds, readSession, sessionDir } from "./claude/state.js";
+import { patchStats } from "./claude/state.js";
+import { workspaceStats } from "./claude/stats.js";
 import { costLabel, listNotes, noteName, notePlace, noteTargets, readingTokens, commitLines, PERSONAL_SAVED_LINE, PR_SPEEDUP, SECTIONS, tokensWorthSaying, sectionLead, shortDate, tokensLabel, writeNote, type Note, mentionedFiles } from "./notes/notes.js";
 import { aboutTerms, currentSessionCost } from "./notes/session-cost.js";
 import { flatLine, unmarkedWords } from "./notes/flatten.js";
@@ -728,6 +730,18 @@ grouped(program.command("build"), GROUP.setup)
         followNestedRepos: followNestedReposWasExplicit ? opts.followNestedRepos : undefined,
         packageName: readPackageName(import.meta.url),
       });
+      // #433: the parent's stats.json must carry the children's real totals —
+      // everything reading the root stats (statusline, stale-count) should see
+      // the workspace the way the federated queries serve it, not zeros.
+      patchStats(
+        buildRoot,
+        {
+          ...(workspaceStats(buildRoot, buildGlobalDir) ?? {}),
+          dirty: false,
+          syncing: false,
+          syncedAt: new Date().toISOString(),
+        },
+      );
       return;
     }
 
