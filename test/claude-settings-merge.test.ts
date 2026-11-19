@@ -17,10 +17,25 @@ test('empty settings gets the full Graft blocks', () => {
   // accumulator over the retrieval tools (Bash `graft …`, the graft_* MCP tools)
   // and the source-read tools (Read/Grep/Glob) it scores against.
   const savings = merged.hooks.PostToolUse[1];
-  assert.equal(savings.matcher, 'Bash|mcp__graft__|mcp__trail__|Read|Grep|Glob|Skill');
+  assert.equal(savings.matcher, '^(Bash|Read|Grep|Glob|Skill)$|^mcp__.+__(graft|trail)_');
   assert.ok(savings.hooks[0].command.includes('tool-savings'), 'savings hook wired');
   assert.equal(merged.footerLinksRegexes, undefined);
   assert.deepEqual(warnings, []);
+});
+
+test('the tool-savings matcher is regex: MCP tools fire under any server key, native tools stay exact', () => {
+  const { merged } = mergeGraftSettings({});
+  const re = new RegExp(merged.hooks.PostToolUse[1].matcher);
+  const fired = [
+    'Bash', 'Read', 'Grep', 'Glob', 'Skill',
+    'mcp__trail__trail_find_code', 'mcp__graft__graft_find_code',
+    'mcp__trail-map__trail_find_code', 'mcp__plugin_pack_trail__trail_find_code',
+  ];
+  for (const t of fired) assert.match(t, re, `${t} should fire the tool-savings hook`);
+  // A plain-char matcher would be read as exact names; anchored regex keeps the
+  // native names from leaking onto near-misses once the value is a regex.
+  const quiet = ['BashOutput', 'ExitPlanMode', 'mcp__trail__', 'mcp__notes__remember'];
+  for (const t of quiet) assert.doesNotMatch(t, re, `${t} must not fire the tool-savings hook`);
 });
 
 test('foreign statusLine is preserved with a warning; Graft not forced in', () => {

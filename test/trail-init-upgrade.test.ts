@@ -64,7 +64,7 @@ function assertWired(repo: string, home: string): void {
   assert.deepEqual(shared.SessionStart.at(-1).hooks[0], { type: "command", command: 'node "${CLAUDE_PROJECT_DIR:-.}/.trail/hook.cjs" session-start || exit 0', timeout: 10 });
   const user = read(join(home, ".claude", "settings.json")).hooks;
   assert.deepEqual(ours(user), {
-    PostToolUse: ["Write|Edit|MultiEdit:post-edit", "Bash|mcp__graft__|mcp__trail__|Read|Grep|Glob|Skill:tool-savings"],
+    PostToolUse: ["Write|Edit|MultiEdit:post-edit", "^(Bash|Read|Grep|Glob|Skill)$|^mcp__.+__(graft|trail)_:tool-savings"],
     UserPromptSubmit: [":prompt"],
     PreToolUse: ["Write|Edit|MultiEdit:pre-edit", "Bash:pre-bash"],
     PostToolUseFailure: ["Bash:post-bash-fail"],
