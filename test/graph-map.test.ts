@@ -87,6 +87,21 @@ test("buildRepoMap: totals count files, symbols, edges, and languages across the
   assert.deepEqual(map.totals.languages, ["python", "typescript"]);
 });
 
+// Issue #762: generic-tree-sitter-tier languages (rust, c, …) are indexed but
+// `sortedLanguages` consulted only the depth-tier EXTENSIONS table, so a Rust
+// repo with a few website .js files was labeled "javascript".
+test("buildRepoMap: generic-tier languages (rust) label the map too, not just depth-tier ones", () => {
+  const nodes = [
+    fileNode("src/lib.rs"),
+    symNode("src/lib.rs", "fnRust"),
+    fileNode("static/app.js"),
+    symNode("static/app.js", "fnJs"),
+  ];
+  const map = buildRepoMap(graphOf(nodes, []));
+  assert.deepEqual(map.totals.languages, ["javascript", "rust"]);
+  assert.match(formatRepoMap(map), /\brust\b/);
+});
+
 test("buildRepoMap: dirs are grouped by first path segment and sorted by symbol count desc", () => {
   const nodes = [
     fileNode("alpha/a.ts"),
