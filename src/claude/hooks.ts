@@ -1,10 +1,10 @@
-import { readFileSync, existsSync, realpathSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { execFileSync, spawn } from 'node:child_process';
-import { join, basename, dirname, isAbsolute, relative, resolve } from 'node:path';
+import { join, basename, isAbsolute, relative, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { readWiring } from './stats.js';
 import { formatBlastRadius, formatOrientation, notesOnTouch, standingDirective, teamNotesDirective, TOUCH_NOTES_CAP, type Touch } from './format.js';
-import { commitLines, listNotes, setupCommitLine, standingLearnings } from '../notes/notes.js';
+import { commitLines, listNotes, noteName, setupCommitLine, standingLearnings } from '../notes/notes.js';
 import { liveLearnings } from '../notes/learning-fields.js';
 import { markStale } from '../notes/stale.js';
 import { noteAuthor, teammatesOn } from '../notes/git-facts.js';
@@ -27,7 +27,7 @@ import { classifyToolUse, commandInvokesGraft, isMcpToolName, isGraftMcpTool, pa
 import { adoptRepoBrand, brand, commandOnPath, repoWiredForTrail, tag, trailHandoverLine, trailOnPath } from '../brand.js';
 import { fitTrailServerToMachine } from '../hosts/claude-global.js';
 import { globalCopyCovers } from './hook-layers.js';
-import { checkoutRoot, keepsNotes, noteCounts, repoPlace, type NoteCounts } from '../notes/home.js';
+import { keepsNotes, noteCounts, otherCheckout, repoPlace, type NoteCounts } from '../notes/home.js';
 import { branchesStale, overlapMark, readBranchCache, refreshBranches, SESSION_REFRESH_MS } from '../notes/branches.js';
 import { learningFiles } from '../notes/repo-trail.js';
 import { inWorkspace, maybeSyncInBackground } from '../cloud/workspace-sync.js';
@@ -45,6 +45,7 @@ import { trailNow } from '../skills/settings.js';
 import { recordSkillUse, skillOfToolUse } from './skill-use.js';
 import { keptContext, keptNotice } from './start-init.js';
 import { teamSignInLine } from '../cloud/team-file.js';
+import { overlapsShown } from './overlap-telemetry.js';
 
 export { lastFileScopeHint, promptAskTimeout } from './prompt-hook.js';
 
@@ -123,27 +124,34 @@ async function handlePostEdit(input: any, dir: string): Promise<void> {
 const INJECTED_OVERLAPS_CAP = 40;
 
 /**
- * Under trail, a teammate's open branch that changes the function this edit
- * just changed, for the agent to read and tell the person about, each branch
- * and function once a session. Parsing loads grammars, so it's imported only
- * when the edited file is one some branch changes. Never throws.
+ * Under trail, a teammate's open branch (or the person's own other one) that
+ * changes the function this edit just changed, for the agent to read and tell
+ * the person about, each branch and function once a session. Parsing loads
+ * grammars, so it's imported only when the edited file is one some branch
+ * changes. Never throws.
  */
 async function editOverlap(input: any, dir: string, file: string): Promise<string | null> {
   if (brand() !== 'trail' || !keepsNotes(dir)) return null;
   try {
     const top = repoPlace(dir);
     if (!top.git) return null;
+    const path = resolve(dir, file);
+    // In a worktree session the project is the main checkout and the edit is in the worktree's copy:
+    // compare from the checkout the file is in, with the branches the session start read.
+    const checkout = otherCheckout(top.checkout, path) ?? top.checkout;
     const { functionOverlaps, editOverlapDirective } = await import('../notes/edit-overlap.js');
-    const found = await functionOverlaps(top.checkout, resolve(dir, file), input?.tool_input, noteAuthor(top.checkout));
+    const cache = readBranchCache(top.checkout);
+    const found = await functionOverlaps(checkout, path, input?.tool_input, noteAuthor(top.checkout), cache);
     if (!found.length) return null;
-    const id = input?.session_id || 'default';
+    const id = payloadSessionId(input);
     const s = readSession(dir, id);
     const seen = new Set(s.injectedOverlaps ?? []);
     const fresh = found.filter((o) => o.symbols.some((x) => !seen.has(`${o.ref} ${x.id}`)));
     if (!fresh.length) return null;
     s.injectedOverlaps = [...seen, ...fresh.flatMap((o) => o.symbols.map((x) => `${o.ref} ${x.id}`))].slice(-INJECTED_OVERLAPS_CAP);
+    overlapsShown(s, fresh.slice(0, 2), cache);
     writeSession(dir, id, s);
-    const base = readBranchCache(top.checkout)?.base ?? 'origin/main';
+    const base = cache?.base ?? 'origin/main';
     return fresh.slice(0, 2).map((o) => editOverlapDirective(o, base, tag(), overlapMark())).join('\n\n');
   } catch {
     return null;
@@ -174,23 +182,17 @@ function handleToolUse(input: any, dir: string): void {
     { ...classifyAndScore(input?.tool_name, input?.tool_input?.command, () => input?.tool_response ?? input), host: telemetryHost(input) });
 }
 
-/** The repo's shared git dir (`git rev-parse --git-common-dir`) for the checkout at `cwd`, resolved; null outside git. */
-function commonGitDir(cwd: string): string | null {
-  try {
-    const out = execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], {
-      cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000, windowsHide: true,
-    }).trim();
-    return out ? realpathSync(out) : null;
-  } catch {
-    return null;
-  }
-}
-
-/** `checkout` is the project at `dir` itself, or a linked worktree of the same repo. Git runs only when it's another folder. */
-function sameRepo(checkout: string, dir: string): boolean {
-  if (resolve(checkout) === checkoutRoot(dir)) return true;
-  const theirs = commonGitDir(checkout);
-  return theirs !== null && theirs === commonGitDir(dir);
+/**
+ * The learnings a touch can bring: the project's, and in a worktree session also the worktree's own
+ * (its branch's). One in both comes from the project, as the session-start and prompt hooks read it,
+ * so the session's record of what was shown still matches and nothing is shown twice.
+ */
+function touchLearnings(dir: string, repo: string): Note[] {
+  const here = listNotes(dir, { branches: false });
+  if (repo === dir) return here;
+  const seen = new Set(here.map(noteName));
+  const there = listNotes(repo, { branches: false }).filter((n) => !seen.has(noteName(n)));
+  return [...here, ...there].sort((a, b) => (a.date === b.date ? b.path.localeCompare(a.path) : b.date.localeCompare(a.date)));
 }
 
 /**
@@ -205,25 +207,30 @@ export function learningsOnTouch(input: any, dir: string, before = false): strin
     const ti = input?.tool_input ?? {};
     const path = typeof ti.file_path === 'string' ? ti.file_path : typeof ti.notebook_path === 'string' ? ti.notebook_path : null;
     let touch: Touch;
+    // In a Claude Desktop worktree session the project is the main checkout while Claude works on the
+    // worktree's copy: name the file from the checkout it's in, and add that checkout's learnings.
+    let repo = dir;
     if (path) {
       const abs = isAbsolute(path) ? path : join(dir, path);
-      // In a Claude Desktop worktree session the project is the main checkout and the file is in
-      // the worktree: its path in its own checkout is what a learning's touches name. Only a
-      // checkout of this same repo, though: a file in an unrelated repo is no file of the project's.
-      const own = checkoutRoot(dirname(abs));
-      const rel = relative(own && sameRepo(own, dir) ? own : dir, abs).replace(/\\/g, '/');
-      if (!rel || rel.startsWith('..') || underGraft(dir, path)) return null;
+      // Only a checkout of this same repo, though: a file in an unrelated repo is no file of the project's.
+      repo = otherCheckout(dir, abs) ?? dir;
+      const rel = relative(repo, abs).replace(/\\/g, '/');
+      if (!rel || rel.startsWith('..') || underGraft(repo, abs)) return null;
       touch = { file: rel, verb: before ? 'editing' : input?.tool_name === 'Read' ? 'opened' : 'changed' };
     } else if (typeof ti.command === 'string' && ti.command && !commandInvokesGraft(ti.command)) {
       touch = { command: ti.command };
     } else return null;
-    const notes = liveLearnings(listNotes(dir, { branches: false }));
+    const notes = liveLearnings(touchLearnings(dir, repo));
     if (!notes.length) return null;
     const id = payloadSessionId(input);
     const s = readSession(dir, id);
     const text = notesOnTouch(notes, touch, s, TOUCH_NOTES_CAP, dir);
     // notesOnTouch added what they saved to the session's counter.
-    if (text) writeSession(dir, id, s);
+    if (text) {
+      writeSession(dir, id, s);
+      const via = !path ? 'command' : !before && input?.tool_name === 'Read' ? 'read' : 'edit';
+      track('learnings_on_touch', { via, worktree: String(repo !== dir) });
+    }
     return text;
   } catch {
     // A learning that doesn't arrive costs one reminder; a broken hook costs the turn.
