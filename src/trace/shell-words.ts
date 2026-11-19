@@ -449,10 +449,115 @@ function substitutes(text: string): boolean {
   return /\$\(|`|[<>]\(/.test(text.replace(/'[^']*'/g, "''"));
 }
 
+// A deliberately small literal grammar: no escapes, interpolation, calls or
+// expressions. Unknown subprocess options stay conservative, especially shell,
+// executable, env and preexec_fn. Only filenames after git diff's -- are data.
+const PY_STRING = String.raw`(?:'[^'"\\\r\n]*'|"[^'"\\\r\n]*")`;
+const PY_VALUE = String.raw`(?:${PY_STRING}|[A-Za-z_]\w*(?:\.\w+)*|\d+)`;
+const PY_GIT_DIFF = new RegExp(
+  String.raw`\bsubprocess\.(?:run|check_call|check_output)\s*\(\s*(\[\s*${PY_STRING}(?:\s*,\s*${PY_STRING})*\s*,?\s*\])(?:\s*,\s*(?:cwd|capture_output|check|text|encoding|timeout|stdout|stderr)\s*=\s*${PY_VALUE})*\s*,?\s*\)`,
+  'g',
+);
+const DIFF_OPTIONS = new Set(['--binary', '--stat', '--name-only', '--name-status', '--patch', '--cached', '--staged', '--no-ext-diff', '--no-textconv']);
+
+/** Inert Python literal/comment text, never the expressions of an f-string. */
+function pythonReportCode(code: string): string | null {
+  let out = '';
+  for (let i = 0; i < code.length;) {
+    const ch = code[i];
+    if (ch === '#') {
+      const end = code.indexOf('\n', i);
+      i = end < 0 ? code.length : end;
+    } else if (ch === "'" || ch === '"') {
+      // Prefixed strings are unnecessary for reports; notably f-strings run code.
+      if (i > 0 && /[\w]/.test(code[i - 1])) return null;
+      const quote = code.startsWith(ch.repeat(3), i) ? ch.repeat(3) : ch;
+      i += quote.length;
+      let closed = false;
+      while (i < code.length) {
+        if (code[i] === '\\') { i += 2; continue; }
+        if (code.startsWith(quote, i)) { i += quote.length; closed = true; break; }
+        if (quote.length === 1 && /[\r\n]/.test(code[i])) return null;
+        i++;
+      }
+      if (!closed) return null;
+      out += '0';
+    } else {
+      // Keep line continuations/dynamic spellings outside this small grammar.
+      if (ch === '\\') return null;
+      out += ch;
+      i++;
+    }
+  }
+  return out;
+}
+
+/**
+ * The supported companion grammar is imports of subprocess/Path, ordinary
+ * values and Path division, and direct Path/print/len or basic Path I/O calls.
+ * No reporting callable may be used as a value, binding or annotation target.
+ */
+function onlyPythonReportCalls(code: string): boolean {
+  const visible = pythonReportCode(code);
+  if (visible === null || /[^\x00-\x7f]|`|\b(?:def|class|lambda|async|await)\b/.test(visible)) return false;
+  // Parenthesized Path division is data, not a callable expression. Require a
+  // slash and do not consume the argument list of any function/method.
+  const pathPart = String.raw`(?:[A-Za-z_]\w*(?:\.\w+)*|0)`;
+  let plain = visible.replace(new RegExp(String.raw`(?<![\w.)])\(\s*${pathPart}(?:\s*/\s*${pathPart})+\s*\)`, 'g'), 'report_path');
+  // Do not let names/methods below be rebound to a launcher or another callable.
+  if (/\b(?:Path|print|len|subprocess)\s*=|\.\s*[A-Za-z_]\w*\s*=/.test(plain)) return false;
+  let importsValid = true;
+  plain = plain.replace(/(^|[;\n])\s*((?:import|from)\b[^;\n]*)/g, (_all, separator: string, statement: string) => {
+    if (!/^(?:import\s+subprocess|from\s+pathlib\s+import\s+Path)\s*$/.test(statement)) importsValid = false;
+    return separator;
+  });
+  if (!importsValid || /\b(?:subprocess|__\w*__)\b/.test(plain)) return false;
+  // Checking only `name =` misses annotations and destructuring. A reporting
+  // callable name is legal solely in its callee position, followed by `(`.
+  for (const m of plain.matchAll(/\b(?:Path|print|len|mkdir|read_bytes|write_bytes|read_text|write_text|exists|is_file)\b/g)) {
+    if (!/^\s*\(/.test(plain.slice(m.index! + m[0].length))) return false;
+  }
+  const reportMethod = /^(?:[A-Za-z_]\w*\.)*(?:mkdir|read_bytes|write_bytes|read_text|write_text|exists|is_file)$/;
+  for (const m of plain.matchAll(/([A-Za-z_]\w*(?:\.\w+)*)\s*\(|\(/g)) {
+    const name = m[1];
+    if (!name) return false; // Grouped/dynamic calls are outside this grammar.
+    if (['Path', 'print', 'len'].includes(name)) continue;
+    // A bare method name can follow a checked Path(...) constructor result.
+    if (reportMethod.test(name) && (name.includes('.') || plain[m.index! - 1] === '.')) continue;
+    return false;
+  }
+  return true;
+}
+
+/** Hide only literal git diff path arguments, never a whole interpreter. */
+function withoutGitDiffPaths(code: string): string {
+  let stripped = code;
+  const clean = code.replace(PY_GIT_DIFF, (call: string, list: string) => {
+    if (call.length > 8192) return call;
+    const argv = [...list.matchAll(new RegExp(PY_STRING, 'g'))].map((m) => m[0].slice(1, -1));
+    const separator = argv.indexOf('--', 2);
+    if (!['git', '/usr/bin/git'].includes(argv[0]) || argv[1] !== 'diff' || separator < 2
+      || !argv.slice(2, separator).every((arg) => DIFF_OPTIONS.has(arg))) return call;
+    stripped = stripped.replace(call, 'None');
+    const start = call.indexOf(list);
+    // Keep the invocation and keyword arguments visible to the rest of the guard.
+    const paths = new RegExp(PY_STRING, 'g');
+    let index = 0;
+    const clean = list.replace(paths, (literal) => index++ > separator ? "'path'" : literal);
+    return call.slice(0, start) + clean + call.slice(start + list.length);
+  });
+  // Never maintain a partial launcher blacklist: every other call must be an
+  // ordinary report operation. In particular CompletedProcess.args/stdout must
+  // not be reused by an outer/later execution function, whatever its name.
+  if (!onlyPythonReportCalls(stripped)) return code;
+  return clean;
+}
+
 /** Whether code an interpreter is given (`node -e`, `python3 - <<EOF`) runs a hook script it names. */
 function codeRunsHook(code: string): boolean {
   if (!HOOK_NAMED.test(code)) return false;
-  return CODE_RUNS_HOOK.some((re) => re.test(code)) || (SCRIPT_STARTS.test(code) && SHELL_LINE_RUNS_HOOK.test(code));
+  const executable = withoutGitDiffPaths(code);
+  return CODE_RUNS_HOOK.some((re) => re.test(executable)) || (SCRIPT_STARTS.test(executable) && SHELL_LINE_RUNS_HOOK.test(executable));
 }
 
 /**
