@@ -823,3 +823,38 @@ test("a throwing grammar is a per-file build error, cached as a failure (#139)",
     swapGrammarForTest("rust", prev);
   }
 });
+
+// Issue #816: the graph meta carries the parse-failed files, so the search
+// answers can blame the index instead of the pattern — on a fresh build and
+// on the re-parse of a cached failure, and NOT on a clean build.
+test("buildGraph meta carries parseFailed, fresh and re-parsed; a clean build has none (#816)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "graft-parse-failed-meta-"));
+  writeFileSync(join(dir, "lib.rs"), "pub fn f() {}\n");
+  await warmGenericGrammars(["rust"]);
+  const prev = swapGrammarForTest("rust", THROWING_GRAMMAR);
+  try {
+    await buildGraph(dir, { reuse: false });
+    const g = readGraph(wiringPath(contextDirFor(dir)));
+    assert.ok(g, "graph built");
+    assert.deepEqual(g!.meta.parseFailed?.map((f) => f.path), ["lib.rs"], "the failed file rides the meta");
+    assert.match(g!.meta.parseFailed?.[0]?.error ?? "", /rust grammar threw/, "with the build error");
+    await buildGraph(dir, { reuse: true });
+    const g2 = readGraph(wiringPath(contextDirFor(dir)));
+    assert.deepEqual(g2!.meta.parseFailed?.map((f) => f.path), ["lib.rs"], "the re-parsed failure still rides the meta");
+  } finally {
+    swapGrammarForTest("rust", prev);
+    rmSync(dir, { recursive: true, force: true });
+  }
+  // Clean build: the field is absent, and a search answer must not grow a
+  // parse-failure sentence for it.
+  const clean = mkdtempSync(join(tmpdir(), "graft-parse-clean-"));
+  try {
+    writeFileSync(join(clean, "ok.rs"), "pub fn g() {}\n");
+    await buildGraph(clean, { reuse: false });
+    const gc = readGraph(wiringPath(contextDirFor(clean)));
+    assert.ok(gc, "clean graph built");
+    assert.equal(gc!.meta.parseFailed, undefined, "clean build: no parseFailed");
+  } finally {
+    rmSync(clean, { recursive: true, force: true });
+  }
+});

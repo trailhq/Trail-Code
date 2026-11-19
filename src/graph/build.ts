@@ -371,6 +371,13 @@ export async function buildGraph(
   // assembled, so the merge-tiny-scopes-into-root guard runs here.
   const scopes = applyMinSubstanceGuard(discoveredScopes, nodes);
 
+  // #816: parse failures ride the meta, so the search answers can say "these
+  // were never searched" instead of blaming the pattern. Error entries here
+  // cover fresh throws AND cached failures re-parsed on this run (#312).
+  const parseFailed = Object.entries(entries).flatMap(([path, entry]) =>
+    entry.error ? [{ path, error: entry.error }] : [],
+  );
+
   // Assemble the graph BEFORE the meaning pass, so the crux pass can checkpoint it to
   // disk periodically (#128): crux/summary mutate node objects in place and never
   // change the node/edge SET, so `meta` stays valid; the opt-in LSP pass below is the
@@ -383,6 +390,7 @@ export async function buildGraph(
       languages: [...langs].sort(),
       extensions,
       scopes,
+      ...(parseFailed.length ? { parseFailed } : {}),
     },
     nodes,
     edges,

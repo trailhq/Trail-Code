@@ -1447,6 +1447,9 @@ export function skeleton(dir: string, file: string, opts: { contextDir?: string 
 
   let defs = graph.nodes.filter((n) => n.kind !== "file" && n.path === file);
   if (!defs.length) {
+    // #816: "no definitions indexed" is a lie for a file the build never
+    // parsed — name the failure instead. Same path/basename resolution as the
+    // defs match above.
     const matches = new Set(
       graph.nodes.filter((n) => n.path === file || n.path.endsWith(`/${file}`)).map((n) => n.path),
     );
@@ -1454,6 +1457,10 @@ export function skeleton(dir: string, file: string, opts: { contextDir?: string 
       return { file, entries: [], note: `ambiguous — matches: ${[...matches].sort().join(", ")}` };
     const [path] = matches;
     if (path) defs = graph.nodes.filter((n) => n.kind !== "file" && n.path === path);
+    const failed = (path ?? file) === file
+      ? graph.meta.parseFailed?.find((f) => f.path === file || f.path.endsWith(`/${file}`))
+      : graph.meta.parseFailed?.find((f) => f.path === path);
+    if (failed) return { file, entries: [], note: `this file failed to parse at build time, so nothing was indexed — ${failed.error}` };
   }
   if (!defs.length) return { file, entries: [], note: "no definitions indexed for this file" };
 

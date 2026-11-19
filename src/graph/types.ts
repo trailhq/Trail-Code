@@ -133,6 +133,9 @@ export interface GraphV1 {
     /** Ranking scopes: posix path prefixes relative to the graph root, "" = root scope.
      * Absent (old graphs) ≡ [{ prefix: "", label: "" }]. Sorted by prefix length desc. */
     scopes?: ScopeV1[];
+    /** Files that failed to parse at build time and were never searched (#816) —
+     * fresh failures and cached-abort re-parses both. Absent (old graphs) ≡ unknown. */
+    parseFailed?: { path: string; error: string }[];
   };
   nodes: NodeV1[];
   edges: EdgeV1[];

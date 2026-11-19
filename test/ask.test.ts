@@ -12,6 +12,8 @@ import { tmpdir } from "node:os";
 import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { buildGraph } from "../src/graph/build.js";
+import { readGraph, writeGraph, wiringPath } from "../src/graph/write.js";
+import { contextDirFor } from "../src/context/node-file.js";
 import { ask, formatAsk, skeleton, formatSkeleton, isTestPath } from "../src/ask/ask.js";
 
 test("isTestPath: de-ranks test files, not real source", () => {
@@ -181,6 +183,42 @@ test("skeleton lists a file's definitions in span order, matches by basename", a
     assert.match(txt, /graft skeleton — api\.ts/);
     assert.match(txt, /L\d+-L\d+ {2}function first/);
     assert.match(skeleton(dir, "nope.ts").note ?? "", /no definitions/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Issue #816: a file that failed to parse must say so, not pretend it has no
+// definitions. A file with no failure keeps the old note.
+test("skeleton blames the parse failure for a failed file, with the build error (#816)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "graft-skel-failed-"));
+  try {
+    writeFileSync(
+      join(dir, "api.ts"),
+      `export function first(a: number): number {\n  return a;\n}\n`,
+    );
+    await buildGraph(dir);
+    const outDir = contextDirFor(dir);
+    const g = readGraph(wiringPath(outDir));
+    assert.ok(g, "graph built");
+    g.meta.parseFailed = [
+      { path: "broken.cs", error: "broken.cs: parse failed — c_sharp grammar threw: Aborted()" },
+      { path: "other/thing.ts", error: "other/thing.ts: parse failed — crashed" },
+    ];
+    writeGraph(g, outDir);
+    // These paths have no nodes at all (a real build gives a failed file no
+    // file node), so without the note they would read as "no definitions".
+    const failed = skeleton(dir, "broken.cs");
+    assert.match(failed.note ?? "", /failed to parse at build time/, JSON.stringify(failed));
+    assert.match(failed.note ?? "", /Aborted\(\)/, "the build error itself is shown");
+    assert.deepEqual(failed.entries, []);
+    // basename-suffix resolves to the failure too
+    const nested = skeleton(dir, "thing.ts");
+    assert.match(nested.note ?? "", /parse failed — crashed/);
+    // a file the build really parsed keeps its entries; the failed list must
+    // not swallow it
+    const ok = skeleton(dir, "api.ts");
+    assert.equal(ok.entries.length, 1, "a parsed file is untouched by parseFailed");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
