@@ -105,6 +105,28 @@ export function referenceLine(
   return null;
 }
 
+/**
+ * Every line of `span` in `path` that matches a needle, in file order. Where
+ * {@link referenceLine} answers "is there evidence", this answers "how much": a
+ * caller that references the symbol on three lines has three call sites, and
+ * reporting one of them undercounts (#363).
+ */
+export function referenceLines(
+  path: string,
+  span: string,
+  needles: RegExp[],
+  read: (path: string) => string[] | null,
+): { n: number; text: string }[] {
+  const range = spanRange(span);
+  const lines = read(path);
+  if (!range || !lines) return [];
+  const out: { n: number; text: string }[] = [];
+  for (const [i, text] of lines.slice(range.start - 1, range.end).entries()) {
+    if (needles.some((re) => re.test(text))) out.push({ n: range.start + i, text });
+  }
+  return out;
+}
+
 /** A symbol name, matched as a whole word — `export` must not hit `exportViz`. */
 export const wordRe = (name: string): RegExp => new RegExp(`\\b${escapeRe(name)}\\b`);
 
