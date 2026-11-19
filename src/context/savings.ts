@@ -147,16 +147,32 @@ export function savingsLine(body: string, saved: Savings | undefined): string {
 }
 
 /**
+ * The savings footer, as the reader half of {@link savingsLine} sees it. The
+ * footer may sit anywhere real output puts it: at the start of raw output
+ * (`^`), glued after content (`callers …[graft] …`), after a newline, right
+ * after a JSON field's opening quote (`:"[graft] …"`, how a JSON-stringified
+ * payload renders a string field), or right after the OPENING quote of a
+ * stringified bare-string payload (`"[graft] …"` — the hooks unwrap
+ * `tool_response`, so a string result serialises with no field name before
+ * it). What must NOT count is a footer quoted as data: a prose quotation is
+ * preceded by a quote that is NOT the payload's opening one — mid-text after
+ * a word (`wrote "[graft] …`) or escaped (`\"[graft] …` inside a stringified
+ * payload) — so the quote alternatives above only fire at text start or after
+ * a JSON field colon. Real-writer footers are locale-pinned (`groupDigits`),
+ * so only comma groups. `/g`: a blob can carry several; `matchAll` clones the
+ * regex, so the shared constant carries no index state between calls.
+ */
+const SAVINGS_FOOTER_RE = /(?:^"?|(?<=[^"\\])|(?<=:"))\[(?:graft|trail)\] (?:tokens|learnings) saved ≈ ([\d,]+)/g;
+
+/**
  * Sum every `[graft] tokens saved ≈ N` footer in a blob of text — the reader
  * half of {@link savingsLine}, kept next to the writer so the two never drift.
- * A single blob can carry several (an agent that made two graft calls in one
- * turn); the nudge from `savingsTurnNudge` deliberately omits the pattern, so its example
- * text is not miscounted here.
+ * See {@link SAVINGS_FOOTER_RE} for what counts and why.
  */
 export function sumSavingsFooters(text: string): number {
   let total = 0;
   // The code a query saved reading, and the digging a reused learning saved.
-  for (const m of text.matchAll(/\[(?:graft|trail)\] (?:tokens|learnings) saved ≈ ([\d,]+)/g)) {
+  for (const m of text.matchAll(SAVINGS_FOOTER_RE)) {
     total += Number(m[1].replace(/,/g, '')) || 0;
   }
   return total;
