@@ -11,12 +11,14 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { grepGraph } from '../src/search/grep.js';
-import { zeroHitNote } from '../src/search/grep-cli.js';
+import { zeroHitNote, formatGrepResult } from '../src/search/grep-cli.js';
+import { isTestPath } from '../src/search/grep.js';
+import type { GrepResult } from '../src/search/grep.js';
 import { WALK_RELATIONS } from '../src/graph/relations.js';
 import { readGraph, wiringPath } from '../src/graph/write.js';
 import type { GraphV1, NodeV1 } from '../src/graph/types.js';
@@ -307,4 +309,50 @@ test('zeroHitNote (grep-cli.ts): zero hits AND unreadable indexed files mentions
   assert.match(note, /no hits for "NOPE_NOT_PRESENT"/);
   // ...but truncation is never silent: 1 unreadable file must be surfaced too.
   assert.match(note, /1 indexed file.*could not be read/);
+});
+
+/*
+ * Issue #425: test files flowed into `grep` unlabelled and unfilterable — in
+ * the reporter's production repro ~80% of a grep answer was test lines. The
+ * ask layer has had the detection and a rank penalty since #37; these tests
+ * pin the search layer getting the same wiring: an `includeTests: false`
+ * filter on grepGraph (excluded files are not counted as searched), and a
+ * `[test]` label + production-first ordering in the text formatter.
+ */
+test('grepGraph with includeTests: false drops test files from groups and from filesSearched (#425)', () => {
+  const d = mkdtempSync(join(tmpdir(), 'graft-grep-notests-'));
+  try {
+    mkdirSync(join(d, 'src'), { recursive: true });
+    writeFileSync(join(d, 'src', 'service.ts'), 'export function formatName(n: string): string { return NEEDLE(n); }\n');
+    writeFileSync(join(d, 'src', 'service.test.ts'), 'it("trims", () => expect(NEEDLE(" a ")).toBe("a"));\n');
+    const graph = graphOf([fileNode('src/service.ts', 2), fileNode('src/service.test.ts', 2)]);
+
+    const withTests = grepGraph(graph, d, 'NEEDLE');
+    assert.deepEqual(withTests.groups.map((g) => g.path).sort(), ['src/service.test.ts', 'src/service.ts'], 'default keeps both files');
+    assert.equal(withTests.filesSearched, 2);
+
+    const noTests = grepGraph(graph, d, 'NEEDLE', { includeTests: false });
+    assert.deepEqual(noTests.groups.map((g) => g.path), ['src/service.ts'], 'only production remains');
+    assert.equal(noTests.filesSearched, 1, 'the excluded test file was not searched, so it is not counted');
+    assert.equal(noTests.totalHits, 1);
+  } finally {
+    rmSync(d, { recursive: true, force: true });
+  }
+});
+
+test('formatGrepResult labels test-file groups [test] and lists them after production (#425)', () => {
+  const result: GrepResult = {
+    pattern: 'NEEDLE',
+    filesSearched: 2,
+    totalHits: 2,
+    groups: [
+      { symbol: null, path: 'src/service.test.ts', inDegree: 0, hits: [{ line: 1, text: 'NEEDLE inside the test' }] },
+      { symbol: null, path: 'src/service.ts', inDegree: 0, hits: [{ line: 1, text: 'NEEDLE in production' }] },
+    ],
+    truncated: { files: 0, hits: 0 },
+  };
+  const out = formatGrepResult(result);
+  assert.ok(/\[test\]/.test(out), 'the test group carries a [test] label');
+  assert.ok(!/service\.ts.*\[test\]/.test(out), 'the production file is not labelled');
+  assert.ok(out.indexOf('NEEDLE in production') < out.indexOf('NEEDLE inside the test'), 'the test group is listed after production, even though it sorted first');
 });

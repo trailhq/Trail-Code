@@ -74,11 +74,34 @@ export interface GrepOptions {
   /** Stop collecting hits after this many; the rest are tallied into
    * `truncated.hits`. Default 300. */
   maxHits?: number;
+  /** Leave test files out entirely (#425) — paths matching isTestPath.
+   * Default true: tests are included, labelled by the formatters. Excluded
+   * files are not counted into `filesSearched` (they were not searched). */
+  includeTests?: boolean;
 }
 
 const DEFAULT_MAX_HITS = 300;
 const MAX_HIT_TEXT = 160;
 const SPAN_RE = /^L(\d+)-L(\d+)$/;
+
+/** Matches a test file's repo-relative path: a test directory (`tests/`,
+ * `test/`, `__tests__/`, `spec/`), a test-suffixed file (`.test.ts`, `.spec.js`,
+ * `_test.go`), or a Python test module (`test_*.py`, `conftest.py`). The
+ * `.test.` / `.spec.` forms need the surrounding dots so `testing.ts` and
+ * `latest.ts` stay production. Case-insensitive: Windows-checked trees use
+ * `Service.Test.ts` in the wild. */
+const TEST_PATH_RE = /(^|\/)(tests?|__tests__|spec)\/|(_test|\.test|\.spec)\.[a-z]+$|(^|\/)(test_[^/]+|conftest)\.py$/i;
+
+/**
+ * Whether `path` looks like a test file. Shared by every find surface that
+ * needs test awareness (#425): `ask` de-ranks them (TEST_RANK_PENALTY),
+ * `grep`/`callers` label and can exclude them (`--no-tests`), `blast` already
+ * separated `testModules`. Lives in the search layer so the graph layer and
+ * the CLI formatters can use it without importing the ask layer.
+ */
+export function isTestPath(path: string): boolean {
+  return TEST_PATH_RE.test(path || "");
+}
 
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -154,7 +177,9 @@ export function grepGraph(graph: GraphV1, repoRoot: string, pattern: string, opt
   const inPrefix = opts.in ? normalizePathPrefix(opts.in) : undefined;
   if (inPrefix) assertPrefixIndexed(graph, inPrefix);
   const fileNodes = graph.nodes.filter(
-    (n) => n.kind === "file" && (inPrefix === undefined || pathUnderPrefix(n.path, inPrefix)),
+    (n) => n.kind === "file"
+      && (inPrefix === undefined || pathUnderPrefix(n.path, inPrefix))
+      && (opts.includeTests !== false || !isTestPath(n.path)), // #425: --no-tests
   );
   const symbolsByFile = symbolsByPath(graph);
 

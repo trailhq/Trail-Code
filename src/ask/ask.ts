@@ -201,10 +201,10 @@ function loadCorpus(outDir: string): Corpus {
  * and land as the top hit (observed: an `ask` returning a `Test…` function first,
  * sending the agent to the wrong file). A multiplicative de-rank keeps tests in
  * the results (they still matter for "where are the tests") but below the real
- * definition. Covers Go (`_test.go`), JS/TS (`.test.` / `.spec.`), and test dirs. */
-export function isTestPath(path: string): boolean {
-  return /(^|\/)(tests?|__tests__|spec)\/|(_test|\.test|\.spec)\.[a-z]+$|(^|\/)(test_[^/]+|conftest)\.py$/i.test(path || "");
-}
+ * definition. The predicate lives in the search layer (grep.ts) so grep and
+ * callers share it (#425). */
+import { isTestPath } from "../search/grep.js";
+export { isTestPath };
 const TEST_RANK_PENALTY = 0.35;
 
 function score(

@@ -35,6 +35,7 @@ import {
   looseNoteFor,
 } from "./traverse-cli.js";
 import { edgeWalk, resolveSymbol, type Direction } from "./traverse.js";
+import { orderAndFilterTestHits } from "./traverse-cli.js";
 import { wiringPath } from "./write.js";
 import type { GraphV1 } from "./types.js";
 import {
@@ -565,7 +566,7 @@ export function federateGrep(
   root: string,
   override: string | undefined,
   pattern: string,
-  opts: { ignoreCase?: boolean; fixed?: boolean } = {},
+  opts: { ignoreCase?: boolean; fixed?: boolean; includeTests?: boolean } = {},
 ): { result: GrepResult; coverage: string } {
   const wg = loadWorkspaceGraphs(root, override);
   const groups: GrepGroup[] = [];
@@ -579,6 +580,7 @@ export function federateGrep(
     const r = grepGraph(graph, join(root, child), pattern, {
       ignoreCase: opts.ignoreCase,
       fixed: opts.fixed,
+      includeTests: opts.includeTests,
     });
     filesSearched += r.filesSearched;
     totalHits += r.totalHits;
@@ -661,7 +663,7 @@ export function federateCallers(
   root: string,
   override: string | undefined,
   symbol: string,
-  opts: { direction?: Direction; depth?: number; in?: string } = {},
+  opts: { direction?: Direction; depth?: number; in?: string; includeTests?: boolean } = {},
 ): { text: string; found: boolean } {
   const wg = loadWorkspaceGraphs(root, override);
   const direction: Direction = opts.direction ?? "in";
@@ -674,7 +676,7 @@ export function federateCallers(
     const matches = resolveSymbol(graph, symbol, opts.in ? { in: opts.in } : {});
     if (matches.length === 0) continue;
     found = true;
-    const results = matches.map((m) => ({ symbol: m, hits: edgeWalk(graph, m, direction, depth) }));
+    const results = matches.map((m) => ({ symbol: m, hits: orderAndFilterTestHits(edgeWalk(graph, m, direction, depth), opts.includeTests !== false) }));
     const lines = [`## ${child}/`];
     for (const { symbol: sym, hits } of results) {
       lines.push(headerOf(sym));
