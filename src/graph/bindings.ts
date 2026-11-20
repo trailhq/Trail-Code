@@ -189,7 +189,7 @@ function goReceiverTypeOf(node: SyntaxNode): string | null {
   return type?.type === "type_identifier" ? type.text : null;
 }
 
-type RecvCtx = Pick<WalkCtx, "scope" | "enclosingClass" | "goReceiverVar" | "lang" | "bindings" | "rSuperClass">;
+type RecvCtx = Pick<WalkCtx, "scope" | "enclosingClass" | "goReceiverVar" | "lang" | "bindings" | "rSuperClass" | "tsClassRefs">;
 
 /** Resolves a call site's receiver text (from `calleeName`) to a bound type
  * name, given the enclosing walk state. `self`/`cls`/`this`/the Go receiver
@@ -232,6 +232,11 @@ export function resolveRecvType(
     // `MyService.do_thing()` — resolved to nothing, so `graft callers` reported
     // only the internal `cls.` call sites (#305).
     (ctx.lang === "python" && /^[A-Z]/.test(receiver) ? receiver : undefined) ??
+    // TypeScript/JavaScript static call `Cache.create()`: the receiver is the class itself when
+    // the file declares that class or imports it from a relative module (an external import or
+    // a local value of the same name is not a class here). A class that owns no such method
+    // still finds no owner-qualified match and drops, as it did before.
+    ((ctx.lang === "typescript" || ctx.lang === "tsx") ? ctx.tsClassRefs.get(receiver) : undefined) ??
     undefined
   );
 }

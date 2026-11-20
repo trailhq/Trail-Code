@@ -337,6 +337,10 @@ export interface WalkCtx {
   enclosingClass: string | null; // nearest enclosing class (py/ts `self`/`this`)
   goReceiverVar: string | null; // Go receiver var, e.g. `w` in `func (w *Worker)`
   importedSymbols: ReadonlyMap<string, { name: string; specifier: string }>;
+  /** TS/JS names that stand for a class here: a class declared in the file, or a
+   * named import from a relative module, mapped to the class's own name. A receiver
+   * outside it (an external import, a local value) is never read as a class. */
+  tsClassRefs: ReadonlyMap<string, string>;
   goImports: ReadonlyMap<string, string>;
   goLocals: ReadonlyMap<string, number>;
   // R6 (Phase 2): which list we're inside while walking an `R6Class(...)` call's
@@ -388,6 +392,7 @@ export function extractFile(rel: string, source: string, lang: Language): Extrac
 function extractTree(rel: string, source: string, lang: Language, root: SyntaxNode): ExtractResult {
   const bindings = collectBindings(root, lang);
   const importedSymbols = collectImportedSymbols(root, lang);
+  const tsClassRefs = lang === "typescript" || lang === "tsx" ? collectTsClassRefs(root, importedSymbols) : new Map<string, string>();
   const goImports = lang === "go" ? collectGoImports(root) : new Map<string, string>();
   const rGenerics = lang === "r" ? collectRGenerics(root) : EMPTY_SET;
 
@@ -422,6 +427,7 @@ function extractTree(rel: string, source: string, lang: Language, root: SyntaxNo
     enclosingClass: null,
     goReceiverVar: null,
     importedSymbols,
+    tsClassRefs,
     goImports,
     goLocals: new Map(),
     rR6Access: null,
@@ -648,6 +654,10 @@ function walk(node: SyntaxNode, ctx: WalkCtx, out: NodeV1[], edges: RawEdge[], m
         desc.kind === "function" || desc.kind === "method"
           ? withoutShadowedImports(ctx.importedSymbols, node)
           : ctx.importedSymbols,
+      tsClassRefs:
+        (desc.kind === "function" || desc.kind === "method") && ctx.tsClassRefs.size > 0
+          ? withoutDeclaredNames(ctx.tsClassRefs, node)
+          : ctx.tsClassRefs,
       // Reset on every new definition — this is a purely local marker for "we're
       // still inside THIS class-defining call's own public=/private=/active=
       // argument chain," not something that should leak into a nested definition
@@ -900,6 +910,49 @@ function collectImportedSymbols(
   }
   if (lang === "php") return collectPhpImportedSymbols(root);
   return new Map();
+}
+
+function collectTsClassRefs(
+  root: SyntaxNode,
+  imports: ReadonlyMap<string, { name: string; specifier: string }>,
+): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const [local, { name, specifier }] of imports) if (specifier.startsWith(".")) out.set(local, name);
+  for (const top of root.namedChildren) {
+    const decl = top.type === "export_statement" ? top.childForFieldName("declaration") : top;
+    if (decl?.type !== "class_declaration" && decl?.type !== "abstract_class_declaration") continue;
+    const name = decl.childForFieldName("name")?.text;
+    if (name) out.set(name, name);
+  }
+  return out;
+}
+
+/** Drop the class names a function redeclares anywhere inside it (a local, a parameter,
+ * a nested function or class): the name then stands for that value, not the class. */
+function withoutDeclaredNames(refs: ReadonlyMap<string, string>, definition: SyntaxNode): ReadonlyMap<string, string> {
+  const declared = new Set<string>();
+  const collect = (pattern: SyntaxNode | null): void => {
+    if (!pattern) return;
+    if (pattern.type === "identifier" || pattern.type === "shorthand_property_identifier_pattern") declared.add(pattern.text);
+    for (const c of pattern.namedChildren) collect(c);
+  };
+  const visit = (node: SyntaxNode): void => {
+    if (node.type === "variable_declarator") collect(node.childForFieldName("name"));
+    else if (node.type === "required_parameter" || node.type === "optional_parameter") collect(node.childForFieldName("pattern"));
+    else if (node.type === "formal_parameters") {
+      for (const c of node.namedChildren) if (c.type === "identifier") declared.add(c.text);
+    }
+    else if (node.type === "arrow_function") collect(node.childForFieldName("parameter"));
+    else if (node.type === "catch_clause") collect(node.childForFieldName("parameter"));
+    else if (!sameSyntaxNode(node, definition) && /^(function|generator_function|class|abstract_class)_declaration$/.test(node.type)) {
+      const name = node.childForFieldName("name")?.text;
+      if (name) declared.add(name);
+    }
+    for (const c of node.namedChildren) visit(c);
+  };
+  visit(definition);
+  if (![...declared].some((name) => refs.has(name))) return refs;
+  return new Map([...refs].filter(([local]) => !declared.has(local)));
 }
 
 function collectGoLocals(definition: SyntaxNode): Map<string, number> {
