@@ -342,6 +342,14 @@ export function resolveEdges(
         continue;
       }
       if (e.viaMember) {
+        if (e.recvModule && !e.recvType) {
+          // `util.f()` / `u.f()` / `sub.f()`: the receiver is an imported module, so
+          // look the name up inside that module's file only. Anything the module does
+          // not define, or a module that is not in the repo, links nothing.
+          const hit = resolvePyModuleMember(e, perFileName, byId);
+          if (hit) add(e.source, hit.id, "calls", "extracted");
+          continue;
+        }
         if (!e.recvType) continue;
         const hit = resolveTypedMember(e.recvType, e.name!, e.file, ownerMethod, classParents, classTraits, e.argCount);
         if (hit === "ambiguous") continue; // drop — never guess past an ambiguous owner
@@ -441,6 +449,86 @@ export function resolveEdges(
     }
   }
   return out;
+}
+
+/** The directories a Python import can be rooted at, from `file`, nearest first: the
+ * importer's own package tree up from the first ancestor that is not itself a
+ * package (a package directory, one with an `__init__.py`, is never on `sys.path`),
+ * then each higher ancestor, then the repo root, each followed by its `src/` and
+ * `lib/`. A module is importable as `a.b` only at one of these, so a file whose path
+ * merely ENDS in `a/b.py` (an `app/serializers/json.py` against the stdlib `json`)
+ * is not a match. */
+function pyImportRoots(file: string, byId: Map<string, NodeV1>): string[] {
+  const tops: string[] = [];
+  for (let dir = posix.dirname(toPosixPath(file)); dir !== "." && dir !== "/"; dir = posix.dirname(dir)) {
+    if (!byId.has(`${dir}/__init__.py`)) tops.push(dir);
+  }
+  tops.push("");
+  return tops.flatMap((t) => [t, posix.join(t, "src"), posix.join(t, "lib")]);
+}
+
+/** Memo for {@link resolvePyModule}, per node index: every `util.f()` call in a file
+ * asks the same `(file, spec)` question. */
+const pyModuleMemo = new WeakMap<Map<string, NodeV1>, Map<string, string | null>>();
+
+/** The repo file a Python module specifier denotes, or null when it is external,
+ * unresolvable or ambiguous. Relative specifiers (`.`, `..a`) are anchored at the
+ * importing file's package. Absolute ones are looked up under {@link pyImportRoots}
+ * in order, as `sys.path` would: the first root holding the module wins, and two
+ * different files at that one root (`m.py` and `m/__init__.py`) drop. */
+function resolvePyModule(spec: string, file: string, byId: Map<string, NodeV1>): string | null {
+  let memo = pyModuleMemo.get(byId);
+  if (!memo) pyModuleMemo.set(byId, (memo = new Map()));
+  const key = `${file}\0${spec}`;
+  if (memo.has(key)) return memo.get(key)!;
+  const found = lookupPyModule(spec, file, byId);
+  memo.set(key, found);
+  return found;
+}
+
+function lookupPyModule(spec: string, file: string, byId: Map<string, NodeV1>): string | null {
+  const dots = /^\.*/.exec(spec)![0].length;
+  const rest = spec.slice(dots).split(".").join("/");
+  const filesAt = (base: string): string[] =>
+    [`${base}.py`, `${base}.pyi`, posix.join(base, "__init__.py")].filter((c) => byId.get(c)?.kind === "file");
+  if (dots > 0) {
+    let dir = posix.dirname(toPosixPath(file));
+    for (let i = 1; i < dots; i++) dir = posix.dirname(dir);
+    // A bare `.` / `..` is the package itself: only its `__init__` can stand for it,
+    // never a `<dir>.py` that happens to sit beside the directory.
+    if (!rest) return byId.get(posix.join(dir, "__init__.py"))?.kind === "file" ? posix.join(dir, "__init__.py") : null;
+    return filesAt(posix.join(dir, rest))[0] ?? null;
+  }
+  for (const root of pyImportRoots(file, byId)) {
+    const hits = filesAt(posix.join(root, rest));
+    if (hits.length > 0) return hits.length === 1 ? hits[0] : null;
+  }
+  return null;
+}
+
+/** Resolve `<module>.<name>()` to a function (or, failing that, a class
+ * constructor) defined in the module's own file. Null unless exactly one matches. */
+function resolvePyModuleMember(
+  e: RawEdge,
+  perFileName: Map<string, Map<string, NodeV1[]>>,
+  byId: Map<string, NodeV1>,
+): NodeV1 | null {
+  if (!PY_EXT.test(e.file) || !e.name || !e.recvModule) return null;
+  // `from pkg import m`: if `pkg` itself defines `m`, that attribute wins over a
+  // submodule of the same name, and `m.f()` is a call on that value, not a module.
+  if (e.recvModuleOf) {
+    const pkgFile = resolvePyModule(e.recvModuleOf.pkg, e.file, byId);
+    if (pkgFile && perFileName.get(pkgFile)?.has(e.recvModuleOf.name)) return null;
+  }
+  const target = resolvePyModule(e.recvModule, e.file, byId);
+  if (!target) return null;
+  const inFile = perFileName.get(target)?.get(e.name) ?? [];
+  for (const kinds of [["function"], PY_CTOR_KINDS] as Kind[][]) {
+    const matches = inFile.filter((n) => kinds.includes(n.kind));
+    if (matches.length === 1) return matches[0];
+    if (matches.length > 1) return null;
+  }
+  return null;
 }
 
 function push<T>(map: Map<string, T[]>, key: string, val: T): void {

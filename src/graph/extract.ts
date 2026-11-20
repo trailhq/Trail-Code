@@ -95,6 +95,15 @@ export interface RawEdge {
   /** calls with viaMember: the receiver's resolved type name (from bindings /
    * self / this / Go receiver), when a confident local clue exists. */
   recvType?: string;
+  /** Python calls with viaMember: the receiver is a name bound by `import m` /
+   * `import m as x` / `from p import m`, so it names a MODULE, not a typed value.
+   * Holds the dotted module specifier (`util`, `pkg.sub`, or a relative `.sub`);
+   * resolve.ts maps it to a file and looks `name` up inside that file only. */
+  recvModule?: string;
+  /** With `recvModule` from a `from pkg import m` binding: `m` may be a name
+   * `pkg` itself defines rather than a submodule. Python's own order puts the
+   * attribute first, so resolve.ts drops the edge when `pkg` defines `name`. */
+  recvModuleOf?: { pkg: string; name: string };
   /** calls without viaMember: which kinds the bare-name match may resolve to.
    * Every other language's bare-name call is always a free function, so this
    * is absent for them (resolve.ts defaults to `["function"]`). R (Phase 4) is
@@ -325,6 +334,13 @@ const FUNCTION_VALUE_TYPES = new Set([
 
 const EMPTY_SET: ReadonlySet<string> = new Set();
 
+/** What a Python import binds a local name to: a dotted module specifier, plus —
+ * for `from pkg import name` — the package it may instead be an attribute of. */
+export interface PyModuleBinding {
+  specifier: string;
+  of?: { pkg: string; name: string };
+}
+
 export interface WalkCtx {
   rel: string;
   source: string;
@@ -339,6 +355,9 @@ export interface WalkCtx {
   importedSymbols: ReadonlyMap<string, { name: string; specifier: string }>;
   goImports: ReadonlyMap<string, string>;
   goLocals: ReadonlyMap<string, number>;
+  /** Python: local name → module it binds (`import m`, `import m as x`,
+   * `from p import m`). Empty for every other language. */
+  pyModules: ReadonlyMap<string, PyModuleBinding>;
   // R6 (Phase 2): which list we're inside while walking an `R6Class(...)` call's
   // arguments — set only for the direct span of a `public =`/`private =`/
   // `active =` `list(...)`'s own entries (see walk()'s special-cased `argument`
@@ -389,6 +408,7 @@ function extractTree(rel: string, source: string, lang: Language, root: SyntaxNo
   const bindings = collectBindings(root, lang);
   const importedSymbols = collectImportedSymbols(root, lang);
   const goImports = lang === "go" ? collectGoImports(root) : new Map<string, string>();
+  const pyModules = lang === "python" ? collectPyModules(root) : new Map<string, PyModuleBinding>();
   const rGenerics = lang === "r" ? collectRGenerics(root) : EMPTY_SET;
 
   const nodes: NodeV1[] = [
@@ -424,6 +444,7 @@ function extractTree(rel: string, source: string, lang: Language, root: SyntaxNo
     importedSymbols,
     goImports,
     goLocals: new Map(),
+    pyModules,
     rR6Access: null,
     rGenerics,
     rSuperClass: null,
@@ -648,6 +669,10 @@ function walk(node: SyntaxNode, ctx: WalkCtx, out: NodeV1[], edges: RawEdge[], m
         desc.kind === "function" || desc.kind === "method"
           ? withoutShadowedImports(ctx.importedSymbols, node)
           : ctx.importedSymbols,
+      pyModules:
+        ctx.lang === "python" && (desc.kind === "function" || desc.kind === "method")
+          ? withoutShadowedPyModules(ctx.pyModules, node)
+          : ctx.pyModules,
       // Reset on every new definition — this is a purely local marker for "we're
       // still inside THIS class-defining call's own public=/private=/active=
       // argument chain," not something that should leak into a nested definition
@@ -793,7 +818,16 @@ function walk(node: SyntaxNode, ctx: WalkCtx, out: NodeV1[], edges: RawEdge[], m
           !recvType && callee.receiver && node.startIndex < (ctx.goLocals.get(callee.receiver) ?? Infinity)
             ? ctx.goImports.get(callee.receiver)
             : undefined;
-        edges.push(recvType ? { ...callEdge, recvType } : goPackage ? { ...callEdge, specifier: goPackage } : callEdge);
+        const pyModule = !recvType && callee.receiver ? ctx.pyModules.get(callee.receiver) : undefined;
+        if (recvType) edges.push({ ...callEdge, recvType });
+        else if (goPackage) edges.push({ ...callEdge, specifier: goPackage });
+        else if (pyModule)
+          edges.push({
+            ...callEdge,
+            recvModule: pyModule.specifier,
+            ...(pyModule.of ? { recvModuleOf: pyModule.of } : {}),
+          });
+        else edges.push(callEdge);
       }
     }
   } else if (ctx.lang === "php" && node.type === "use_declaration") {
@@ -1128,6 +1162,172 @@ function sameSyntaxNode(
   b: SyntaxNode | null | undefined,
 ): boolean {
   return !!a && !!b && a.tree === b.tree && a.id === b.id;
+}
+
+/**
+ * Python module bindings: `import util` / `import util as u` / `import a.b as x`
+ * bind a local name to a module, and `from pkg import sub` binds `sub` to the
+ * submodule `pkg.sub` when `pkg` does not itself define a `sub` (resolve.ts
+ * checks that, since only it can see other files). `import a.b` binds `a`, the
+ * top package. Wildcard imports bind nothing nameable.
+ */
+function collectPyModules(root: SyntaxNode): Map<string, PyModuleBinding> {
+  const out = new Map<string, PyModuleBinding>();
+  // One table serves the whole file, function-local imports included, so a name
+  // imported as two different things (`import json` here, `import ujson as json`
+  // there) cannot be attributed to either — it is dropped, not guessed.
+  const conflicted = new Set<string>();
+  const bind = (local: string, binding: PyModuleBinding): void => {
+    const prev = out.get(local);
+    if (prev && prev.specifier !== binding.specifier) conflicted.add(local);
+    out.set(local, binding);
+  };
+  const visit = (node: SyntaxNode): void => {
+    if (node.type === "import_statement") {
+      // Every named child is an imported module (`dotted_name`, or `aliased_import`
+      // for `as`); `import` itself is an anonymous token, comments are skipped.
+      for (const n of node.namedChildren) {
+        if (n.type === "aliased_import") {
+          const mod = n.childForFieldName("name")?.text;
+          const alias = n.childForFieldName("alias")?.text;
+          if (mod && alias) bind(alias, { specifier: mod });
+        } else if (n.type === "dotted_name") {
+          const top = n.text.split(".")[0];
+          bind(top, { specifier: top });
+        }
+      }
+      return;
+    }
+    if (node.type === "import_from_statement") {
+      const pkg = node.childForFieldName("module_name")?.text;
+      if (!pkg) return;
+      // The module (`pkg`, `.`, `.a`) is a `dotted_name` or `relative_import`
+      // BEFORE the `import` keyword, and the imported names are `dotted_name` /
+      // `aliased_import` nodes AFTER it. Filtering namedChildren by type alone
+      // would take `pkg` for a name, so only look past the keyword. Wildcards
+      // (`wildcard_import`) and comments match neither type below.
+      const keyword = node.children.findIndex((c) => c.type === "import");
+      if (keyword < 0) return;
+      for (const n of node.children.slice(keyword + 1)) {
+        if (n.type !== "dotted_name" && n.type !== "aliased_import") continue;
+        const imported = n.type === "aliased_import" ? n.childForFieldName("name") : n;
+        const alias = n.type === "aliased_import" ? n.childForFieldName("alias")?.text : undefined;
+        if (imported?.type !== "dotted_name" || imported.text.includes(".")) continue;
+        // `from . import x` → `.x`; `from .a import x` → `.a.x`.
+        const specifier = pkg.endsWith(".") ? `${pkg}${imported.text}` : `${pkg}.${imported.text}`;
+        bind(alias ?? imported.text, { specifier, of: { pkg, name: imported.text } });
+      }
+      return;
+    }
+    for (const child of node.namedChildren) visit(child);
+  };
+  visit(root);
+  for (const local of conflicted) out.delete(local);
+  for (const local of pyRebindsAtModuleLevel(root)) out.delete(local);
+  return out;
+}
+
+/**
+ * The names a Python scope binds other than by `import`: parameters (functions
+ * only), assignment / `for` / `with ... as` / walrus targets, and nested `def` /
+ * `class` names. A nested function or class is its own scope: only its name counts.
+ */
+function pyBoundNames(scope: SyntaxNode, moduleScope: boolean): Set<string> {
+  const bound = new Set<string>();
+  const bindTargets = (n: SyntaxNode | null): void => {
+    if (!n) return;
+    if (n.type === "identifier") bound.add(n.text);
+    else if (n.type === "pattern_list" || n.type === "tuple_pattern" || n.type === "list_pattern" || n.type === "list_splat_pattern")
+      for (const c of n.namedChildren) bindTargets(c);
+  };
+  const visit = (node: SyntaxNode): void => {
+    if (!sameSyntaxNode(node, scope) && (node.type === "function_definition" || node.type === "class_definition")) {
+      const name = node.childForFieldName("name");
+      if (name) bound.add(name.text);
+      return;
+    }
+    switch (node.type) {
+      case "identifier":
+        // A lambda's parameters are its own scope, so they only count (conservatively)
+        // inside a function; at module level they would drop bindings for nothing.
+        if (!moduleScope && (node.parent?.type === "parameters" || node.parent?.type === "lambda_parameters"))
+          bound.add(node.text);
+        break;
+      case "default_parameter":
+      case "typed_parameter":
+      case "typed_default_parameter":
+        bindTargets(node.childForFieldName("name") ?? node.namedChildren[0] ?? null);
+        break;
+      case "list_splat_pattern":
+      case "dictionary_splat_pattern":
+        bindTargets(node.namedChildren[0] ?? null);
+        break;
+      case "assignment":
+        // `mod = None` at module level is the `except ImportError:` fallback for an
+        // optional import, not a rebinding to some other value.
+        if (moduleScope && node.childForFieldName("right")?.type === "none") break;
+        bindTargets(node.childForFieldName("left"));
+        break;
+      case "augmented_assignment":
+      case "for_statement":
+      case "for_in_clause":
+        bindTargets(node.childForFieldName("left"));
+        break;
+      case "named_expression":
+        bindTargets(node.childForFieldName("name"));
+        break;
+      case "as_pattern": {
+        const target = node.childForFieldName("alias");
+        bindTargets(target?.namedChildren[0] ?? target);
+        break;
+      }
+    }
+    for (const child of node.namedChildren) visit(child);
+  };
+  visit(scope);
+  return bound;
+}
+
+/**
+ * Module names the file rebinds: `config = config.load()` at module level turns
+ * `config` into a value, so a later `config.get()` is a call on that value, not on
+ * the module. The same goes for a function that declares `global config` and
+ * assigns it. Any rebinding anywhere in the file drops the name, whether or not
+ * it comes before the call: stay silent rather than guess an order.
+ */
+function pyRebindsAtModuleLevel(root: SyntaxNode): Set<string> {
+  const rebound = pyBoundNames(root, true);
+  const visit = (node: SyntaxNode): void => {
+    if (node.type === "function_definition") {
+      const globals = new Set<string>();
+      const findGlobals = (n: SyntaxNode): void => {
+        if (n.type === "global_statement") for (const c of n.namedChildren) globals.add(c.text);
+        // Nested defs have their own `global` declarations and are visited below.
+        else if (n.type !== "function_definition" && n.type !== "class_definition") for (const c of n.namedChildren) findGlobals(c);
+      };
+      for (const child of node.namedChildren) findGlobals(child);
+      if (globals.size > 0) for (const name of pyBoundNames(node, false)) if (globals.has(name)) rebound.add(name);
+    }
+    for (const child of node.namedChildren) visit(child);
+  };
+  visit(root);
+  return rebound;
+}
+
+/**
+ * A parameter, or a name assigned / bound by `for` / `with` / `as` inside a
+ * Python function, wins over a module binding of the same name there: `util.f()`
+ * is then a call on a local value, not on the module. Nested functions and
+ * classes are separate scopes and filter themselves.
+ */
+function withoutShadowedPyModules(
+  modules: ReadonlyMap<string, PyModuleBinding>,
+  definition: SyntaxNode,
+): ReadonlyMap<string, PyModuleBinding> {
+  if (modules.size === 0) return modules;
+  const shadowed = pyBoundNames(definition, false);
+  if (![...shadowed].some((name) => modules.has(name))) return modules;
+  return new Map([...modules].filter(([local]) => !shadowed.has(local)));
 }
 
 /**
