@@ -19,14 +19,22 @@ export class FileBindings {
   private map = new Map<string, string>();
 
   set(scopePath: string, name: string, type: string): void {
-    this.map.set(`${scopePath}|${name}`, type);
+    const key = `${scopePath}|${name}`;
+    if (this.map.get(key) === "") return;
+    this.map.set(key, type);
+  }
+
+  /** `name` is declared in this scope with a type we cannot read, so it hides any outer
+   * binding of the same name and nothing binds it again. */
+  shadow(scopePath: string, name: string): void {
+    this.map.set(`${scopePath}|${name}`, "");
   }
 
   /** Innermost-first: for scope ["a","b"] name "x", tries `a.b|x`, `a|x`, `|x`. */
   lookup(scope: string[], name: string): string | null {
     for (let i = scope.length; i >= 0; i--) {
       const hit = this.map.get(`${scope.slice(0, i).join(".")}|${name}`);
-      if (hit) return hit;
+      if (hit !== undefined) return hit || null;
     }
     return null;
   }
@@ -712,6 +720,29 @@ function handleGo(node: SyntaxNode, scope: string[], bindings: FileBindings): vo
     const name = node.childForFieldName("name");
     const type = goTypeName(node.childForFieldName("type"));
     if (name?.type === "identifier" && type) bindings.set(scopePath, name.text, type);
+    else for (const id of node.namedChildren.filter((c) => c.type === "identifier")) bindings.shadow(scopePath, id.text);
+    return;
+  }
+  if (node.type === "parameter_declaration") {
+    // A declared function's or method's parameter, which is how Go code receives its
+    // collaborators (`func handle(s *Server)`). A func literal's parameters share the
+    // enclosing definition's scope here, so they hide the outer name instead of binding.
+    const owner = node.parent?.parent;
+    const declared = owner?.type === "function_declaration" || owner?.type === "method_declaration";
+    if (!declared && owner?.type !== "func_literal") return;
+    const type = declared ? goTypeName(node.childForFieldName("type")) : null;
+    for (const name of node.namedChildren.filter((c) => c.type === "identifier")) {
+      if (type) bindings.set(scopePath, name.text, type);
+      else bindings.shadow(scopePath, name.text);
+    }
+    return;
+  }
+  if (node.type === "range_clause" || node.type === "receive_statement") {
+    for (const id of node.childForFieldName("left")?.namedChildren ?? []) if (id.type === "identifier") bindings.shadow(scopePath, id.text);
+    return;
+  }
+  if (node.type === "type_switch_statement") {
+    for (const id of node.childForFieldName("alias")?.namedChildren ?? []) if (id.type === "identifier") bindings.shadow(scopePath, id.text);
     return;
   }
   if (node.type === "field_declaration") {
@@ -729,7 +760,11 @@ function handleGo(node: SyntaxNode, scope: string[], bindings: FileBindings): vo
   for (let i = 0; i < names.length; i++) {
     const nameNode = names[i];
     let expr = exprs[i];
-    if (!nameNode || nameNode.type !== "identifier" || !expr) continue;
+    if (!nameNode || nameNode.type !== "identifier") continue;
+    if (!expr) {
+      bindings.shadow(scopePath, nameNode.text);
+      continue;
+    }
     if (expr.type === "unary_expression") {
       expr = expr.namedChildren.find((c) => c.type === "composite_literal") ?? expr;
     }
@@ -743,6 +778,7 @@ function handleGo(node: SyntaxNode, scope: string[], bindings: FileBindings): vo
       if (fn?.type === "identifier" && /^New[A-Z]/.test(fn.text)) typeName = fn.text.slice(3);
     }
     if (typeName) bindings.set(scopePath, nameNode.text, typeName);
+    else bindings.shadow(scopePath, nameNode.text);
   }
 }
 
