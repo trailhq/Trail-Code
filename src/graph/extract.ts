@@ -775,7 +775,7 @@ function walk(node: SyntaxNode, ctx: WalkCtx, out: NodeV1[], edges: RawEdge[], m
       // resolve.ts's class/struct/enum fallback instead — extension nodes (kind
       // "module") can never false-match it.
       const swiftImplicitSelf =
-        ctx.lang === "swift" &&
+        (ctx.lang === "swift" || (ctx.lang === "kotlin" && !kotlinInReceiverLambda(node))) &&
         !callee.viaMember &&
         !callee.kinds &&
         ctx.enclosingClass &&
@@ -1173,6 +1173,22 @@ function isFunctionBoundary(node: SyntaxNode): boolean {
     node.type === "function_expression" ||
     node.type === "function"
   );
+}
+
+const KOTLIN_RECEIVER_SCOPES = new Set(["apply", "run", "with", "buildString", "buildList", "buildMap", "buildSet"]);
+
+/** Is this Kotlin call inside a lambda whose implicit receiver is another object
+ * (`list.apply { add(x) }`, `with(sb) { append(x) }`)? A bare call there reaches that
+ * receiver's member, which this pass cannot read, so it must not read as the enclosing class's. */
+function kotlinInReceiverLambda(node: SyntaxNode): boolean {
+  for (let n = node.parent; n && n.type !== "function_declaration"; n = n.parent) {
+    if (n.type !== "lambda_literal") continue;
+    let callee = n.parent?.parent?.parent?.namedChildren[0];
+    if (callee?.type === "call_expression") callee = callee.namedChildren[0];
+    if (callee?.type === "navigation_expression") callee = callee.namedChildren.at(-1)?.namedChildren[0];
+    if (callee?.type === "simple_identifier" && KOTLIN_RECEIVER_SCOPES.has(callee.text)) return true;
+  }
+  return false;
 }
 
 /** A direct invocation already emits a stronger `calls` edge. Java names the callee
@@ -2395,8 +2411,23 @@ if (lang === "kotlin") {
       if (!name) return null;
       if (receiver?.type === "simple_identifier")
         return { name: name.text, viaMember: true, receiver: receiver.text };
-      if (receiver?.type === "this_expression" || receiver?.type === "super_expression")
-        return { name: name.text, viaMember: true, receiver: receiver.type === "this_expression" ? "this" : "super" };
+      if (receiver?.type === "this_expression" || receiver?.type === "super_expression") {
+        // `this@Outer` is the enclosing class `Outer`, not the innermost one.
+        const label = receiver.namedChildren.find((c) => c.type === "type_identifier");
+        const self = receiver.type === "this_expression" ? "this" : "super";
+        return { name: name.text, viaMember: true, receiver: label ? label.text : self };
+      }
+      if (receiver?.type === "navigation_expression") {
+        // `this.repo.save()` — one hop off `this` is a field access and binds like TS's
+        // `this.x`; deeper chains and call-result receivers carry no confident clue.
+        const field = receiver.namedChildren
+          .find((c) => c.type === "navigation_suffix")
+          ?.namedChildren.find((c) => c.type === "simple_identifier");
+        const owner = receiver.namedChildren[0];
+        if (owner?.type === "this_expression" && owner.namedChildren.length === 0 && field)
+          return { name: name.text, viaMember: true, receiver: `this.${field.text}` };
+      }
+      return { name: name.text, viaMember: true };
     }
     return null;
   }

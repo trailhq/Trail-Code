@@ -19,14 +19,22 @@ export class FileBindings {
   private map = new Map<string, string>();
 
   set(scopePath: string, name: string, type: string): void {
-    this.map.set(`${scopePath}|${name}`, type);
+    const key = `${scopePath}|${name}`;
+    if (this.map.get(key) === "") return;
+    this.map.set(key, type);
+  }
+
+  /** `name` is declared in this scope with a type we cannot read, so it hides any outer
+   * binding of the same name and nothing binds it again. */
+  shadow(scopePath: string, name: string): void {
+    this.map.set(`${scopePath}|${name}`, "");
   }
 
   /** Innermost-first: for scope ["a","b"] name "x", tries `a.b|x`, `a|x`, `|x`. */
   lookup(scope: string[], name: string): string | null {
     for (let i = scope.length; i >= 0; i--) {
       const hit = this.map.get(`${scope.slice(0, i).join(".")}|${name}`);
-      if (hit) return hit;
+      if (hit !== undefined) return hit || null;
     }
     return null;
   }
@@ -60,6 +68,7 @@ export function defName(node: SyntaxNode, lang: Language): string | null {
   }
   if (lang === "r") return rDefName(node);
   if (lang === "swift") return swiftDefName(node);
+  if (lang === "kotlin") return kotlinDefName(node);
   if (lang === "php") {
     const phpDefTypes = new Set([
       "class_declaration",
@@ -126,6 +135,28 @@ function swiftDefName(node: SyntaxNode): string | null {
   if (node.type === "init_declaration") {
     const owner = node.parent?.parent; // class_body / protocol_body → the declaration
     return owner ? swiftDefName(owner) : null;
+  }
+  return null;
+}
+
+/** Kotlin definitions that push a scope segment, mirroring extract.ts's describeKotlin:
+ * types and objects by their `type_identifier`, functions by their `simple_identifier`,
+ * a secondary constructor under its class, and a top-level property under its name. An
+ * unnamed `companion object` pushes nothing, so its members scope under the outer class. */
+function kotlinDefName(node: SyntaxNode): string | null {
+  if (node.type === "class_declaration" || node.type === "object_declaration" || node.type === "type_alias") {
+    return node.namedChildren.find((c) => c.type === "type_identifier")?.text ?? null;
+  }
+  if (node.type === "function_declaration") {
+    return node.namedChildren.find((c) => c.type === "simple_identifier")?.text ?? null;
+  }
+  if (node.type === "secondary_constructor") {
+    const owner = node.parent?.parent;
+    return owner ? kotlinDefName(owner) : null;
+  }
+  if (node.type === "property_declaration" && node.parent?.type === "source_file") {
+    const decl = node.namedChildren.find((c) => c.type === "variable_declaration");
+    return decl?.namedChildren.find((c) => c.type === "simple_identifier")?.text ?? null;
   }
   return null;
 }
@@ -223,7 +254,7 @@ export function resolveRecvType(
     // Swift type-member call `Animal.staticThing()`: an uppercase receiver with no
     // local binding is the type itself (Swift naming: types are UpperCamelCase,
     // values lowerCamelCase — and a shadowing binding was already tried above).
-    (ctx.lang === "swift" && /^[A-Z]/.test(receiver) ? receiver : undefined) ??
+    ((ctx.lang === "swift" || ctx.lang === "kotlin") && /^[A-Z]/.test(receiver) ? receiver : undefined) ??
     // Python type-member call `SomeClass.method()`: classmethods and staticmethods
     // are invoked on the class itself, so an uppercase receiver with no local
     // binding is the type. Same shape as Swift above, and PEP 8 gives the same
@@ -253,6 +284,7 @@ function isClassNode(node: SyntaxNode, lang: Language): boolean {
   if (lang === "swift") {
     return node.type === "class_declaration" || node.type === "protocol_declaration";
   }
+  if (lang === "kotlin") return node.type === "class_declaration" || node.type === "object_declaration";
   return false;
 }
 
@@ -323,6 +355,7 @@ function visit(
   else if (lang === "r") void 0;
   else if (lang === "java") handleJava(node, scope, classScope, bindings);
   else if (lang === "swift") handleSwift(node, scope, classScope, bindings);
+  else if (lang === "kotlin") handleKotlin(node, scope, classScope, bindings);
   else if (lang === "php") handlePhp(node, scope, bindings);
   else handleTs(node, scope, classScope, bindings, aliases);
 
@@ -403,6 +436,85 @@ function handleSwift(
   const target = isField ? (classScope ?? scopePath) : scopePath;
   bindings.set(target, name, type);
   if (isField) bindings.set(target, `self.${name}`, type);
+}
+
+/** Kotlin variable->type bindings from the syntax-local clues: a `val`/`var` constructor
+ * parameter (a field), a function parameter, and a `val`/`var` with a declared type or a
+ * constructor-call initializer (`val repo = Repo()`), as a field in a class body or a
+ * local elsewhere. A plain constructor parameter (no `val`/`var`) is not visible to the
+ * methods, so it binds nothing. */
+function handleKotlin(
+  node: SyntaxNode,
+  scope: string[],
+  classScope: string | null,
+  bindings: FileBindings,
+): void {
+  const scopePath = scope.join(".");
+  const typeOf = (n: SyntaxNode) =>
+    kotlinTypeName(n.namedChildren.find((c) => c.type === "user_type" || c.type === "nullable_type"));
+  if (node.type === "class_parameter") {
+    if (!node.namedChildren.some((c) => c.type === "binding_pattern_kind")) return;
+    const name = node.namedChildren.find((c) => c.type === "simple_identifier")?.text;
+    const type = typeOf(node);
+    if (!name || !type) return;
+    const target = classScope ?? scopePath;
+    bindings.set(target, name, type);
+    bindings.set(target, `self.${name}`, type);
+    return;
+  }
+  if (node.type === "parameter") {
+    const name = node.namedChildren.find((c) => c.type === "simple_identifier")?.text;
+    if (!name) return;
+    const type = typeOf(node);
+    if (type) bindings.set(scopePath, name, type);
+    else bindings.shadow(scopePath, name);
+    return;
+  }
+  if (node.type === "variable_declaration" && KOTLIN_LOOSE_DECLARATIONS.has(node.parent?.type ?? "")) {
+    // A lambda parameter, a `for` variable or a destructured name: it hides a field of the
+    // same name, and its type is only known when written out.
+    const name = node.namedChildren.find((c) => c.type === "simple_identifier")?.text;
+    if (!name) return;
+    const type = typeOf(node);
+    if (type) bindings.set(scopePath, name, type);
+    else bindings.shadow(scopePath, name);
+    return;
+  }
+  if (node.type !== "property_declaration") return;
+  const decl = node.namedChildren.find((c) => c.type === "variable_declaration");
+  const name = decl?.namedChildren.find((c) => c.type === "simple_identifier")?.text;
+  if (!decl || !name) return;
+  const isField = node.parent?.type === "class_body";
+  const target = isField ? (classScope ?? scopePath) : scopePath;
+  const type = typeOf(decl) ?? kotlinCtorTypeName(node.namedChildren.find((c) => c.type === "call_expression"));
+  if (!type) {
+    bindings.shadow(target, name);
+    return;
+  }
+  bindings.set(target, name, type);
+  if (isField) bindings.set(target, `self.${name}`, type);
+}
+
+const KOTLIN_LOOSE_DECLARATIONS = new Set(["lambda_parameters", "for_statement", "multi_variable_declaration"]);
+
+/** A Kotlin type node's bare name: a `user_type`'s LAST type_identifier (a qualified
+ * `a.b.Repo` binds as `Repo`; generic arguments live in nested nodes), unwrapping a
+ * nullable (`Repo?`). Function types, collections and the like bind nothing. */
+function kotlinTypeName(node: SyntaxNode | null | undefined): string | null {
+  if (!node) return null;
+  if (node.type === "nullable_type") return kotlinTypeName(node.namedChildren.find((c) => c.type === "user_type"));
+  if (node.type !== "user_type") return null;
+  return node.namedChildren.filter((c) => c.type === "type_identifier").at(-1)?.text ?? null;
+}
+
+/** The type built by a constructor call (`Repo()` -> `Repo`), or null when the callee is
+ * not a bare UpperCamelCase name: a lowercase callee is a function whose return type a
+ * single-file pass cannot know. */
+function kotlinCtorTypeName(call: SyntaxNode | null | undefined): string | null {
+  if (call?.type !== "call_expression") return null;
+  const fn = call.namedChildren[0];
+  if (fn?.type !== "simple_identifier") return null;
+  return /^[A-Z]/.test(fn.text) ? fn.text : null;
 }
 
 /** A Swift type node's bare name: a `user_type`'s LAST type_identifier (so a
