@@ -718,7 +718,16 @@ function walk(node: SyntaxNode, ctx: WalkCtx, out: NodeV1[], edges: RawEdge[], m
   const callTypes = CALL_TYPES[ctx.lang];
   if (isImport(node, ctx.lang)) {
     const spec = importSpecifier(node, ctx.lang);
-    if (spec) edges.push({ source: ctx.rel, relation: "imports", specifier: spec, file: ctx.rel });
+    if (spec) {
+      edges.push({ source: ctx.rel, relation: "imports", specifier: spec, file: ctx.rel });
+      // `export { X } from "./y"` also names X, so the barrel file mentions it.
+      // Without this edge `callers X` never lists the barrel and the chain stops.
+      if ((ctx.lang === "typescript" || ctx.lang === "tsx") && node.type === "export_statement") {
+        for (const name of tsReExportedNames(node)) {
+          edges.push({ source: ctx.rel, relation: "references", name, specifier: spec, file: ctx.rel });
+        }
+      }
+    }
     // Imported identifiers are declarations, not uses. The import-binding pass
     // above already recorded them, so do not descend and emit false references.
     return;
@@ -1097,6 +1106,24 @@ function javaAnnotationTypeName(anno: SyntaxNode): string | null {
   if (!nameNode) return null;
   if (nameNode.type === "identifier" || nameNode.type === "scoped_identifier") return nameNode.text;
   return null;
+}
+
+/**
+ * Original names listed in `export { a, b as c } from "./y"` (here `a` and `b`).
+ * `export *` lists no names, and `default` is not a symbol name to look up.
+ */
+function tsReExportedNames(exportStatement: SyntaxNode): string[] {
+  const names: string[] = [];
+  const visit = (node: SyntaxNode): void => {
+    if (node.type === "export_specifier") {
+      const name = node.childForFieldName("name")?.text;
+      if (name && name !== "default") names.push(name);
+      return;
+    }
+    for (const child of node.namedChildren) visit(child);
+  };
+  visit(exportStatement);
+  return names;
 }
 
 function collectTsImportBindings(
