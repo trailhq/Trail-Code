@@ -270,8 +270,12 @@ export function resolveEdges(
     } else if (e.relation === "extends" || e.relation === "implements") {
       // `implements` also resolves to a `trait` — PHP models trait composition
       // (`use SomeTrait;`) as an implements edge, and a trait is a valid target.
-      const kinds: Kind[] = e.relation === "implements" ? ["interface", "trait"] : ["class", "interface"];
-      const hit = resolveName(e.name!, e.file, kinds, perFileName, globalName);
+      const isGo = e.file.endsWith(".go");
+      const kinds: Kind[] =
+        e.relation === "implements" ? ["interface", "trait"] : isGo ? ["struct", "interface"] : ["class", "interface"];
+      let hit = resolveName(e.name!, e.file, kinds, perFileName, globalName);
+      // A Go embed names a type in the embedder's own package, never one elsewhere.
+      if (isGo && hit && posix.dirname(hit.id.split("#")[0]) !== posix.dirname(toPosixPath(e.file))) hit = null;
       // an unresolved base is usually an external/imported type — keep the name.
       add(e.source, hit?.id ?? e.name!, e.relation, hit?.confidence ?? "inferred");
     } else if (e.relation === "references" && e.name) {
@@ -558,6 +562,11 @@ function resolveTypedMember(
   const visited = new Set<string>([recvType]);
   let frontier = [recvType];
   for (let depth = 0; depth <= MAX_DEPTH && frontier.length; depth++) {
+    // Go: the same method promoted from two embedded types at one depth is an ambiguous
+    // selector, which the compiler rejects, so no call can mean either of them.
+    if (file.endsWith(".go") && frontier.filter((t) => ownerMethod.get(`${t}.${name}`)?.some((c) => reachable(file, c.path))).length > 1) {
+      return "ambiguous";
+    }
     for (const type of frontier) {
       const all = ownerMethod.get(`${type}.${name}`)?.filter((c) => reachable(file, c.path));
       if (all && all.length > 0) {
