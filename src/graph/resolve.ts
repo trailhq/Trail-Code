@@ -17,6 +17,7 @@ import { toPosixPath } from "../util/paths.js";
 import type { EdgeV1, Kind, NodeV1, Relation } from "./types.js";
 import { languageOf, type RawEdge } from "./extract.js";
 import { genericLangOf } from "./generic.js";
+import { resolveTsAlias, type TsPathConfig } from "./ts-paths.js";
 
 const IMPORT_EXTS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".py"];
 /** C/C++ source + header extensions, for resolving `#include` targets. */
@@ -126,6 +127,9 @@ export interface ResolveOptions {
    * (`example.com/app/pkg/util`) to the in-repo directory they name, relative to the
    * owning module's `go.mod` location. Empty/absent → Go imports stay external strings. */
   goModules?: GoModule[];
+  /** Compiled TS/JS path aliases. They are scoped to config directories and
+   * resolve only when a candidate is present in this graph. */
+  tsAliases?: TsPathConfig[];
 }
 
 export function resolveEdges(
@@ -265,7 +269,7 @@ export function resolveEdges(
                   ? resolvePhpUse(e.specifier, phpFilesBySuffix)
                   : e.file.endsWith(".gleam")
                     ? resolveGleamImport(e.specifier, gleamFilesBySuffix)
-                    : resolveImport(e.specifier, e.file, byId);
+                    : resolveImport(e.specifier, e.file, byId, opts.tsAliases);
       add(e.source, target, "imports", "extracted");
     } else if (e.relation === "extends" || e.relation === "implements") {
       // `implements` also resolves to a `trait` — PHP models trait composition
@@ -283,7 +287,7 @@ export function resolveEdges(
           ? resolvePhpUse(e.specifier, phpFilesBySuffix)
           : e.file.endsWith(".gleam")
             ? resolveGleamImport(e.specifier, gleamFilesBySuffix)
-            : resolveImport(e.specifier, e.file, byId);
+            : resolveImport(e.specifier, e.file, byId, opts.tsAliases);
         if (!byId.has(targetFile)) continue; // external or unresolved module
         const candidates = narrowGleamByKind(perFileName.get(targetFile)?.get(e.name) ?? [], e.file, TYPE_KINDS);
         if (candidates.length === 1) add(e.source, candidates[0].id, "references", "extracted");
@@ -408,7 +412,7 @@ export function resolveEdges(
       // module that defines the name resolves to that definition alone; one
       // that does not (a barrel re-export) keeps the name-based fallback.
       if (e.specifier) {
-        const targetFile = resolveImport(e.specifier, e.file, byId);
+        const targetFile = resolveImport(e.specifier, e.file, byId, opts.tsAliases);
         if (!byId.has(targetFile)) continue;
         const inModule = (perFileName.get(targetFile)?.get(e.name!) ?? []).filter((n) =>
           callKinds.includes(n.kind),
@@ -628,12 +632,25 @@ function resolveTraitMember(
  * Resolve a module specifier to a file node id when it points inside the repo;
  * otherwise return the raw specifier (external package or unresolved path).
  */
-function resolveImport(spec: string, file: string, byId: Map<string, NodeV1>): string {
-  if (!spec.startsWith(".")) return spec;
+function resolveImport(
+  spec: string,
+  file: string,
+  byId: Map<string, NodeV1>,
+  tsAliases?: TsPathConfig[],
+): string {
+  if (!spec.startsWith(".")) {
+    if (!/\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|vue|svelte|astro)$/i.test(file)) return spec;
+    return resolveTsAlias(spec, file, tsAliases, (candidate) => findImportCandidate(candidate, byId)) ?? spec;
+  }
   // Belt-and-braces: `node.path` is posix by construction (`../util/paths.ts`),
   // but this also accepts a hand-written or hand-edited graph.
   const dir = posix.dirname(toPosixPath(file));
   const base = posix.normalize(posix.join(dir, spec));
+  return findImportCandidate(base, byId) ?? spec;
+}
+
+/** The shared candidate order keeps aliases and relative imports equally certain. */
+function findImportCandidate(base: string, byId: Map<string, NodeV1>): string | null {
   const noExt = base.replace(/\.(js|jsx|mjs|cjs|ts|tsx|py)$/, "");
   const candidates = [
     base,
@@ -641,7 +658,7 @@ function resolveImport(spec: string, file: string, byId: Map<string, NodeV1>): s
     ...IMPORT_EXTS.map((e) => `${noExt}/index${e}`),
   ];
   for (const c of candidates) if (byId.has(c)) return c;
-  return spec;
+  return null;
 }
 
 /**

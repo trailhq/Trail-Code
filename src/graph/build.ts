@@ -36,6 +36,7 @@ import { writeFingerprint } from "./fingerprint.js";
 import { seedGraph, type SeedResult } from "./seed.js";
 import { filterByOnlyDirs, listSourceStats, normalizeExtensions } from "./source-files.js";
 import { resolveEdges, type GoModule } from "./resolve.js";
+import { readTsAliases } from "./ts-paths.js";
 import { enrichGraph, type EnrichStats } from "./enrich.js";
 import { readGraph, writeGraph, wiringPath } from "./write.js";
 import { writeCards, writeIndex, writeCovers, type CardStats } from "./cards.js";
@@ -220,7 +221,7 @@ export async function buildGraph(
 ): Promise<GraphBuildResult> {
   const root = resolve(dir);
   const outDir = contextDirFor(root, opts.contextDir);
-  // Enumerate once: source extraction, scope discovery, and Go module
+  // Enumerate once: source extraction, scope discovery, Go module, and TS alias
   // resolution must agree on the same Git-ignore-aware working-tree view —
   // including the repo's persisted directory and submodule choices.
   const walked = walkDir(root, readIncludeDirs(root), {
@@ -365,7 +366,10 @@ export async function buildGraph(
     files: entries,
   });
 
-  const edges = resolveEdges(nodes, rawEdges, { goModules: readGoModules(root, repoFiles) });
+  const edges = resolveEdges(nodes, rawEdges, {
+    goModules: readGoModules(root, repoFiles),
+    tsAliases: readTsAliases(root, repoFiles),
+  });
 
   // Guard 5 (minimum-substance): node counts aren't known until nodes are
   // assembled, so the merge-tiny-scopes-into-root guard runs here.
