@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, statSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { installPiHooks, piHookTargets, piExtensionPathFor, piShimPathFor, piExtensionTemplate } from '../src/hosts/pi-hooks.js';
+import { installPiHooks, piHookTargets, piExtensionPathFor, piShimPathFor, piExtensionTemplate, legacyPiShimPathFor } from '../src/hosts/pi-hooks.js';
 
 function fresh(): string { return mkdtempSync(join(tmpdir(), 'graft-pihooks-')); }
 
@@ -67,6 +67,37 @@ test('trail naming replaces graft copies so pi never loads both', () => {
   assert.ok(!existsSync(piShimPathFor(home, 'graft')), 'graft shim removed');
   assert.ok(existsSync(piExtensionPathFor(home, 'trail')), 'trail adapter present');
   assert.ok(existsSync(piShimPathFor(home, 'trail')), 'trail shim present');
+});
+
+test('shim stays out of ~/.pi/hooks, which pi reads as a project hooks dir (#871)', () => {
+  const home = fresh();
+  mkdirSync(join(home, '.pi'), { recursive: true });
+  installPiHooks(home, 'trail');
+  assert.equal(piShimPathFor(home, 'trail'), join(home, '.pi', 'agent', 'trail', 'trail-hooks.cjs'));
+  assert.ok(!existsSync(join(home, '.pi', 'hooks')), 'no ~/.pi/hooks dir created');
+});
+
+test('re-running init moves a shim from the pre-#871 location', () => {
+  const home = fresh();
+  const legacy = legacyPiShimPathFor(home, 'trail');
+  mkdirSync(join(home, '.pi', 'hooks', 'trail'), { recursive: true });
+  writeFileSync(legacy, '// old shim\n');
+  installPiHooks(home, 'trail');
+  assert.ok(!existsSync(legacy), 'old shim removed');
+  assert.ok(!existsSync(join(home, '.pi', 'hooks')), 'emptied ~/.pi/hooks removed');
+  assertRunnableShim(piShimPathFor(home, 'trail'), 'new shim written');
+  assert.ok(readFileSync(piExtensionPathFor(home, 'trail'), 'utf8').includes(JSON.stringify(piShimPathFor(home, 'trail'))),
+    'adapter points at the new shim');
+});
+
+test('a ~/.pi/hooks holding other files is kept', () => {
+  const home = fresh();
+  mkdirSync(join(home, '.pi', 'hooks', 'trail'), { recursive: true });
+  writeFileSync(legacyPiShimPathFor(home, 'trail'), '// old shim\n');
+  writeFileSync(join(home, '.pi', 'hooks', 'theirs.ts'), '// not ours\n');
+  installPiHooks(home, 'trail');
+  assert.ok(!existsSync(join(home, '.pi', 'hooks', 'trail')), 'our old dir removed');
+  assert.ok(existsSync(join(home, '.pi', 'hooks', 'theirs.ts')), 'foreign file kept');
 });
 
 test('re-heals shim exec bit when a prior install had its mode stripped', () => {

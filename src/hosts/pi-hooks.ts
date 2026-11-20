@@ -3,7 +3,7 @@
  * extensions — so the four hook events arrive as extension events instead of
  * host config entries. Two files, mirroring the Codex install:
  *
- *   - the SAME shim Codex uses (`~/.pi/hooks/graft/graft-hooks.cjs`): the real
+ *   - the SAME shim Codex uses (`~/.pi/agent/graft/graft-hooks.cjs`): the real
  *     hook logic stays in the package (`hooks.js`'s `main(event)`) and upgrades
  *     with it, behind the same stdin/stdout contract and the same test seams;
  *   - a tiny generated adapter (`~/.pi/agent/extensions/graft-hooks.ts`) that
@@ -17,8 +17,8 @@
  * them machine-wide, like the Codex hook targets. `piHookTargets()` is the pure
  * half (planning / retract); `installPiHooks()` does the writes.
  */
-import { rmSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { readdirSync, rmdirSync, rmSync, statSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { hooksShim } from '../claude/shim-template.js';
 import type { PlannedWrite } from './plan.js';
 import { writeOwned, type ConfigWrite } from './config-write.js';
@@ -28,9 +28,40 @@ function dirExists(p: string): boolean {
   try { return statSync(p).isDirectory(); } catch { return false; }
 }
 
-/** `~/.pi/hooks/graft/graft-hooks.cjs`, or trail's names in a trail repo. */
+/**
+ * `~/.pi/agent/graft/graft-hooks.cjs`, or trail's names in a trail repo.
+ *
+ * Under pi's agent dir, not `~/.pi/hooks/`: pi reads `<cwd>/.pi/` as the
+ * project's config dir, so a pi started in the home folder treats `~/.pi` as
+ * one, and a `hooks/` dir there stops startup with "Hooks have been renamed to
+ * extensions" (#871).
+ */
 export function piShimPathFor(home: string, name: Brand = 'graft'): string {
+  return join(home, '.pi', 'agent', name, `${name}-hooks.cjs`);
+}
+
+/** Where installs before #871 put the shim. Init and retract remove it. */
+export function legacyPiShimPathFor(home: string, name: Brand = 'graft'): string {
   return join(home, '.pi', 'hooks', name, `${name}-hooks.cjs`);
+}
+
+/** Remove `dir` if it is empty; anything else (missing, not empty) is left alone. */
+function removeIfEmpty(dir: string): void {
+  try {
+    if (readdirSync(dir).length === 0) rmdirSync(dir);
+  } catch { /* missing or not ours to remove */ }
+}
+
+/**
+ * Remove a shim left at the pre-#871 path, then its `hooks/<name>/` dir and
+ * `~/.pi/hooks/` when they are left empty, since that dir alone triggers pi's
+ * warning. A `~/.pi/hooks/` holding anything else stays.
+ */
+export function removeLegacyPiShim(home: string, name: Brand = 'graft'): void {
+  const shim = legacyPiShimPathFor(home, name);
+  rmSync(shim, { force: true });
+  removeIfEmpty(dirname(shim));
+  removeIfEmpty(join(home, '.pi', 'hooks'));
 }
 
 /** `~/.pi/agent/extensions/graft-hooks.ts` — pi's user-level extension dir. */
@@ -173,9 +204,12 @@ export function installPiHooks(home: string, name: Brand = 'graft'): ConfigWrite
   const targets = piHookTargets(home, name);
   if (targets.length === 0) return [];
   const shimWrite = writeOwned('pi-hook-shim', targets[0].path, hooksShim(), 0o755);
+  removeLegacyPiShim(home, name);
   if (name === 'trail') {
     rmSync(piExtensionPathFor(home, 'graft'), { force: true });
     rmSync(piShimPathFor(home, 'graft'), { force: true });
+    removeIfEmpty(dirname(piShimPathFor(home, 'graft')));
+    removeLegacyPiShim(home, 'graft');
   }
   const extWrite = writeOwned('pi-hooks', targets[1].path, piExtensionTemplate(targets[0].path, name));
   return [shimWrite, extWrite];
