@@ -30,7 +30,7 @@ import { asksForTrail, brand, cmd, graftNotice, PACKAGE_FOR, setBrand, strandedR
 import { branchDiff } from "./cloud/diff.js";
 import { openBrowser } from "./util/browser.js";
 import { committedAtBase, learningsAtBase, teammateEdits, withBaseLearnings } from "./check/learning-edits.js";
-import { CACHE_DIR, contextDirFor } from "./context/node-file.js";
+import { CACHE_DIR, contextDirFor, gitIgnoresDirectory } from "./context/node-file.js";
 import { loadGraphCached } from "./graph/load.js";
 import { ensureFreshChildren, ensureFreshGraph, refreshNote } from "./graph/refresh.js";
 import { isWorkspaceBuildRoot, readWorkspace } from "./graph/workspace.js";
@@ -823,8 +823,10 @@ grouped(program.command("build"), GROUP.setup)
     const rel = relative(process.cwd(), g.contextDir) || "graft";
     if (process.env.GRAFT_NO_GITIGNORE) {
       console.log(`  ${rel}/ is a local cache: add it to your gitignore if you want it untracked.`);
+    } else if (gitIgnoresDirectory(buildRoot, g.contextDir)) {
+      console.log(`  ${rel}/ is git-ignored. Teammates run \`${cmd("graft build")}\` to get their own cache.`);
     } else {
-      console.log(`  ${rel}/ is git-ignored (added automatically), a local cache; teammates run \`${cmd("graft build")}\` to get their own.`);
+      console.error(`  ${rel}/ is a local cache. Git did not confirm that it is ignored. Check before committing.`);
     }
 
     // #127: a --deep run whose LLM calls failed used to print the same success

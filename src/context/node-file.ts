@@ -183,7 +183,7 @@ export function ensureGitignored(root: string, contextDir: string, note = GRAPH_
   // a parent `.gitignore` or `core.excludesFile`. Then there is nothing to add, and appending
   // would dirty the checkout again on every build for a user who keeps tooling noise out of
   // the tracked `.gitignore` on purpose.
-  if (gitAlreadyIgnores(root, bare)) return;
+  if (gitIgnoresDirectory(root, contextDir)) return;
   const gap = current === "" ? "" : current.endsWith("\n") ? "\n" : "\n\n";
   const block = `${gap}# ${note}\n${entry}\n`;
   try { writeFileSync(path, current + block); } catch { /* best-effort — build already succeeded */ }
@@ -196,15 +196,16 @@ const GIT_REPO_ENV = [
   "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY", "GIT_NAMESPACE",
 ];
 
-/** True when `root` is a git work tree whose ignore rules (every source git reads: `.gitignore`
- *  files, `.git/info/exclude`, `core.excludesFile`) already cover the directory `rel/`. Any
- *  failure (git missing, not a repo, timeout) answers false, so the caller falls back to
- *  writing the entry. The trailing slash makes git treat the path as a directory, so dir-only
+/** True when Git confirms its ignore rules cover the directory inside `root`.
+ *  A missing Git, timeout or other failed check answers false. The trailing slash
+ *  makes git treat the path as a directory, so dir-only
  *  patterns like `graft/` match. A negation rule (an allowlist `.gitignore` that re-includes
  *  directories) can judge a not-yet-created path differently from an existing one, so callers
  *  create the dir first. `core.fsmonitor` is off because it would run a command named by the
  *  repo's own config. */
-function gitAlreadyIgnores(root: string, rel: string): boolean {
+export function gitIgnoresDirectory(root: string, directory: string): boolean {
+  const rel = relPosix(root, directory);
+  if (!rel || rel === ".." || rel.startsWith("../") || isAbsolute(rel)) return false;
   try {
     const env = { ...process.env };
     for (const k of GIT_REPO_ENV) delete env[k];
