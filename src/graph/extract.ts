@@ -2073,12 +2073,14 @@ function swiftSuperClassName(node: SyntaxNode): string | null {
 }
 
 /** The receiver's base type name for a Go method, unwrapping a pointer receiver
- * (`func (u *User) …` → `User`). Null if it can't be read. */
+ * (`func (u *User) …` → `User`) and a generic one (`func (s *Stack[T]) …` → `Stack`).
+ * Null if it can't be read. */
 function goReceiverType(node: SyntaxNode): string | null {
   const recv = node.childForFieldName("receiver"); // parameter_list
   const param = recv?.namedChildren.find((c) => c.type === "parameter_declaration");
   let type = param?.childForFieldName("type");
   if (type?.type === "pointer_type") type = type.namedChildren.at(-1) ?? null;
+  if (type?.type === "generic_type") type = type.childForFieldName("type");
   return type?.type === "type_identifier" ? type.text : null;
 }
 
