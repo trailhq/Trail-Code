@@ -341,6 +341,9 @@ export function resolveEdges(
         if (candidates.length === 1) add(e.source, candidates[0].id, "calls", "extracted");
         continue;
       }
+      // A Java receiver imported by name: a class that lives outside the repo has no in-repo
+      // method to point at, even when a class of the same simple name exists here.
+      if (e.specifier && e.file.endsWith(".java") && !byId.has(resolveJavaImport(e.specifier, javaFilesBySuffix))) continue;
       if (e.viaMember) {
         if (!e.recvType) continue;
         const hit = resolveTypedMember(e.recvType, e.name!, e.file, ownerMethod, classParents, classTraits, e.argCount);

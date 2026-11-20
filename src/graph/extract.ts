@@ -338,6 +338,8 @@ export interface WalkCtx {
   goReceiverVar: string | null; // Go receiver var, e.g. `w` in `func (w *Worker)`
   importedSymbols: ReadonlyMap<string, { name: string; specifier: string }>;
   goImports: ReadonlyMap<string, string>;
+  /** Java single-type imports: simple class name → fully qualified name. */
+  javaImports: ReadonlyMap<string, string>;
   goLocals: ReadonlyMap<string, number>;
   // R6 (Phase 2): which list we're inside while walking an `R6Class(...)` call's
   // arguments — set only for the direct span of a `public =`/`private =`/
@@ -389,6 +391,7 @@ function extractTree(rel: string, source: string, lang: Language, root: SyntaxNo
   const bindings = collectBindings(root, lang);
   const importedSymbols = collectImportedSymbols(root, lang);
   const goImports = lang === "go" ? collectGoImports(root) : new Map<string, string>();
+  const javaImports = lang === "java" ? collectJavaImports(root) : new Map<string, string>();
   const rGenerics = lang === "r" ? collectRGenerics(root) : EMPTY_SET;
 
   const nodes: NodeV1[] = [
@@ -423,6 +426,7 @@ function extractTree(rel: string, source: string, lang: Language, root: SyntaxNo
     goReceiverVar: null,
     importedSymbols,
     goImports,
+    javaImports,
     goLocals: new Map(),
     rR6Access: null,
     rGenerics,
@@ -793,7 +797,16 @@ function walk(node: SyntaxNode, ctx: WalkCtx, out: NodeV1[], edges: RawEdge[], m
           !recvType && callee.receiver && node.startIndex < (ctx.goLocals.get(callee.receiver) ?? Infinity)
             ? ctx.goImports.get(callee.receiver)
             : undefined;
-        edges.push(recvType ? { ...callEdge, recvType } : goPackage ? { ...callEdge, specifier: goPackage } : callEdge);
+        // A Java receiver that is a single-type import names where its class lives, so a
+        // class imported from outside the repo is not matched to an in-repo one of the same name.
+        const javaImport = ctx.lang === "java" && recvType === callee.receiver ? ctx.javaImports.get(recvType!) : undefined;
+        edges.push(
+          recvType
+            ? { ...callEdge, recvType, ...(javaImport ? { specifier: javaImport } : {}) }
+            : goPackage
+              ? { ...callEdge, specifier: goPackage }
+              : callEdge,
+        );
       }
     }
   } else if (ctx.lang === "php" && node.type === "use_declaration") {
@@ -918,6 +931,17 @@ function collectGoLocals(definition: SyntaxNode): Map<string, number> {
     node.namedChildren.forEach(visit);
   };
   visit(definition);
+  return out;
+}
+
+function collectJavaImports(root: SyntaxNode): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const node of root.namedChildren) {
+    if (node.type !== "import_declaration" || node.children.some((c) => c.type === "static" || c.type === "asterisk")) continue;
+    const fqn = importSpecifier(node, "java");
+    const simple = fqn?.split(".").at(-1);
+    if (fqn && simple) out.set(simple, fqn);
+  }
   return out;
 }
 

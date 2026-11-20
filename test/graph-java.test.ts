@@ -1526,3 +1526,73 @@ test("Java extraction: external @Service does not collapse onto a plain interfac
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("Java extraction: a static call through the class name resolves to that class's method", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "graft-java-static-call-"));
+  try {
+    mkdirSync(join(dir, PKG), { recursive: true });
+    writeFileSync(
+      join(dir, PKG, "Strings.java"),
+      "package com.acme;\n\npublic final class Strings {\n  public static String trim(String s) { return s.trim(); }\n  public static String pad(String s) { return trim(s); }\n}\n",
+    );
+    writeFileSync(
+      join(dir, PKG, "Codes.java"),
+      "package com.acme;\n\npublic final class Codes {\n  public static String trim(String s) { return s; }\n}\n",
+    );
+    writeFileSync(
+      join(dir, PKG, "Caller.java"),
+      "package com.acme;\n\npublic final class Caller {\n" +
+        "  private static final Logger LOG = null;\n" +
+        "  public String run(String s) { return Strings.trim(s); }\n" +
+        "  public String both(String s) { return Strings.pad(Codes.trim(s)); }\n" +
+        "  public int jdk(java.util.List<String> l) { LOG.info(); return Math.max(1, l.size()); }\n" +
+        "  public String shadow(Codes Strings) { return Strings.trim(\"x\"); }\n" +
+        "}\n",
+    );
+
+    await buildGraph(dir);
+    const graph = readGraph(wiringPath(join(dir, "graft")))!;
+    const calls = (source: string) =>
+      graph.edges.filter((e) => e.relation === "calls" && e.source === source).map((e) => e.target).sort();
+
+    assert.deepEqual(calls(`${PKG}/Caller.java#Caller.run`), [`${PKG}/Strings.java#Strings.trim`]);
+    assert.deepEqual(calls(`${PKG}/Caller.java#Caller.both`), [
+      `${PKG}/Codes.java#Codes.trim`,
+      `${PKG}/Strings.java#Strings.pad`,
+    ]);
+    assert.deepEqual(calls(`${PKG}/Caller.java#Caller.jdk`), [], "LOG and Math own no in-repo method");
+    assert.deepEqual(calls(`${PKG}/Caller.java#Caller.shadow`), [`${PKG}/Codes.java#Codes.trim`], "a typed parameter wins over the class name");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Java extraction: a static call through a class imported from outside the repo is not matched to an in-repo class of that name", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "graft-java-static-import-"));
+  try {
+    mkdirSync(join(dir, PKG), { recursive: true });
+    mkdirSync(join(dir, "com/acme/util"), { recursive: true });
+    writeFileSync(
+      join(dir, "com/acme/util/Strings.java"),
+      "package com.acme.util;\n\npublic final class Strings {\n  public static String trim(String s) { return s.trim(); }\n}\n",
+    );
+    writeFileSync(
+      join(dir, PKG, "Guava.java"),
+      "package com.acme;\n\nimport com.google.common.base.Strings;\n\npublic final class Guava {\n  public String run(String s) { return Strings.trim(s); }\n}\n",
+    );
+    writeFileSync(
+      join(dir, PKG, "Local.java"),
+      "package com.acme;\n\nimport com.acme.util.Strings;\n\npublic final class Local {\n  public String run(String s) { return Strings.trim(s); }\n}\n",
+    );
+
+    await buildGraph(dir);
+    const graph = readGraph(wiringPath(join(dir, "graft")))!;
+    const calls = (source: string) =>
+      graph.edges.filter((e) => e.relation === "calls" && e.source === source).map((e) => e.target);
+
+    assert.deepEqual(calls(`${PKG}/Guava.java#Guava.run`), []);
+    assert.deepEqual(calls(`${PKG}/Local.java#Local.run`), ["com/acme/util/Strings.java#Strings.trim"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

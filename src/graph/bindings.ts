@@ -220,6 +220,11 @@ export function resolveRecvType(
   return (
     (ctx.lang === "go" && receiver === ctx.goReceiverVar ? ctx.enclosingClass : undefined) ??
     ctx.bindings.lookup(ctx.scope, receiver) ??
+    // Java static call `Strings.trim(s)`: an uppercase receiver with no local binding is the
+    // class itself (types are UpperCamelCase, values lowerCamelCase — and a shadowing binding
+    // was already tried above). A constant such as `LOG.info()` or a JDK type (`List.of()`)
+    // owns no in-repo method of that name, so it still resolves to nothing.
+    (ctx.lang === "java" && /^[A-Z]/.test(receiver) ? receiver : undefined) ??
     // Swift type-member call `Animal.staticThing()`: an uppercase receiver with no
     // local binding is the type itself (Swift naming: types are UpperCamelCase,
     // values lowerCamelCase — and a shadowing binding was already tried above).
