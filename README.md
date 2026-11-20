@@ -592,7 +592,7 @@ Some agents also get **user-level** files, so the wiring follows you into worktr
 | Codex | `~/.codex/hooks.json` | the same five hook events, matching `apply_patch\|Write\|Edit\|MultiEdit` after edits |
 | Codex | `~/.codex/hooks/graft/graft-hooks.cjs` | the hooks shim |
 | Pi | `~/.pi/agent/extensions/graft-hooks.ts` | the same four hook events as an extension (`session_start`, `before_agent_start`, `tool_result`, `agent_end`) |
-| Pi | `~/.pi/hooks/graft/graft-hooks.cjs` | the hooks shim it spawns |
+| Pi | `~/.pi/agent/graft/graft-hooks.cjs` | the hooks shim it spawns |
 | Antigravity | `~/.gemini/config/mcp_config.json` | the `trail` MCP server |
 | Antigravity | `~/.gemini/skills/trail/SKILL.md` | its skill file |
 

@@ -31,7 +31,7 @@ import { ALL_MARKERS, type Markers } from './sections.js';
 import { mcpTargets, stripTomlSection } from './mcp-config.js';
 import { hookTargets } from './codex-hooks.js';
 import { cursorHookTargets } from './cursor-hooks.js';
-import { piHookTargets } from './pi-hooks.js';
+import { legacyPiShimPathFor, piHookTargets } from './pi-hooks.js';
 import { antigravitySkillTargets } from './antigravity.js';
 import { claudeGlobalTargets } from './claude-global.js';
 import { claudeTargetsFor, legacyClaudeTargets, TRAIL_HOOK, TRAIL_STATUSLINE, trailSkillPath } from '../claude/init.js';
@@ -396,7 +396,10 @@ function targets(repo: string, opts: RetractOpts): Target[] {
   }
   if (exclude.has('agents')) for (const t of hookTargets(home)) keptPaths.add(t.path);
   if (exclude.has('cursor')) for (const n of NAMES) for (const t of cursorHookTargets(repo, n)) keptPaths.add(t.path);
-  if (exclude.has('pi')) for (const n of NAMES) for (const t of piHookTargets(home, n)) keptPaths.add(t.path);
+  if (exclude.has('pi')) {
+    for (const n of NAMES) for (const t of piHookTargets(home, n)) keptPaths.add(t.path);
+    for (const n of NAMES) keptPaths.add(legacyPiShimPathFor(home, n));
+  }
   if (exclude.has('antigravity')) for (const n of NAMES) for (const t of antigravitySkillTargets(home, n)) keptPaths.add(t.path);
 
   /** Queue a target unless a kept host owns that path, or it's already queued. */
@@ -502,6 +505,9 @@ function targets(repo: string, opts: RetractOpts): Target[] {
         for (const t of piHookTargets(home, n)) {
           add({ hostId: t.hostId, path: t.path, what: t.what, scope: 'global', run: (a) => removeFile(t.path, a) });
         }
+        // The shim's pre-#871 home, still there on machines that never re-ran init.
+        const legacy = legacyPiShimPathFor(home, n);
+        add({ hostId: 'pi', path: legacy, what: 'post-edit hook shim (old location)', scope: 'global', run: (a) => removeFile(legacy, a) });
       }
     }
     if (!exclude.has('antigravity')) {

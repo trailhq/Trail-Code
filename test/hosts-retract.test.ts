@@ -329,6 +329,17 @@ test('global sweep strips graft hook entries from Codex hooks.json, keeping fore
   assert.equal(root.hooks.PostToolUse[0].hooks[0].command, 'their-hook.sh');
 });
 
+test('global sweep removes a pi shim left at the pre-#871 location', () => {
+  const d = fresh();
+  const home = fresh();
+  const legacy = write(home, join('.pi', 'hooks', 'trail', 'trail-hooks.cjs'), '// old shim\n');
+  write(home, join('.pi', 'agent', 'settings.json'), '{}\n');
+  runRetract(d, { apply: true, home, global: true });
+  assert.ok(!existsSync(legacy), 'old shim removed');
+  assert.ok(!existsSync(join(home, '.pi', 'hooks')), 'emptied ~/.pi/hooks pruned');
+  assert.ok(existsSync(join(home, '.pi', 'agent', 'settings.json')), "pi's own config kept");
+});
+
 test('emptied directories are pruned, not left hollow', () => {
   const d = fresh();
   write(d, join('.claude', 'skills', 'graft', 'SKILL.md'), 'skill\n');
