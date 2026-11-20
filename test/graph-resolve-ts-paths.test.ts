@@ -217,3 +217,36 @@ test("an alias whose targets are absent stays external and invents no call edge"
     assert.equal(callTarget(graph, "src/caller.ts#call"), undefined);
   });
 });
+
+test("only tsconfig.json, jsconfig.json and tsconfig.<name>.json are read as configs", async () => {
+  const paths = JSON.stringify({ compilerOptions: { paths: { "@lib/*": ["./lib/*"] } } });
+  const importer = 'import { foo } from "@lib/foo"; export function run(): number { return foo(); }\n';
+
+  // Look-alike names (a bare `tsconfig..json`, a prefix, a file inside a folder named `tsconfig.d`) are not configs.
+  await withGraph({
+    "lib/foo.ts": "export function foo(): number { return 1; }\n",
+    "mytsconfig.json": paths,
+    "tsconfig..json": paths,
+    "src/caller.ts": importer,
+    // `other.json` sits in a folder called `tsconfig.d`; it must not count as a config for the files beside it.
+    "tsconfig.d/other.json": paths,
+    "tsconfig.d/lib/foo.ts": "export function foo(): number { return 1; }\n",
+    "tsconfig.d/caller.ts": importer,
+  }, (graph) => {
+    for (const caller of ["src/caller.ts", "tsconfig.d/caller.ts"]) {
+      assert.ok(graph.edges.some((edge) => edge.relation === "imports" && edge.source === caller && edge.target === "@lib/foo"), caller);
+      assert.equal(callTarget(graph, `${caller}#run`), undefined, caller);
+    }
+  });
+
+  // Real names are read, including a dotted `tsconfig.<a>.<b>.json`.
+  for (const name of ["jsconfig.json", "tsconfig.build.prod.json"]) {
+    await withGraph({
+      "lib/foo.ts": "export function foo(): number { return 1; }\n",
+      [name]: paths,
+      "src/caller.ts": importer,
+    }, (graph) => {
+      assert.equal(callTarget(graph, "src/caller.ts#run"), "lib/foo.ts#foo", name);
+    });
+  }
+});

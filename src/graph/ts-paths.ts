@@ -37,6 +37,16 @@ interface EffectiveConfig {
   paths?: TsPathPattern[];
 }
 
+/** `tsconfig.json`, `jsconfig.json` or `tsconfig.<name>.json`, by file name only.
+ * String checks rather than one regex over the whole path: a path made of many
+ * `/tsconfig.` segments made the regex backtrack polynomially (CodeQL). */
+function isTsConfigFile(file: string): boolean {
+  const name = file.slice(file.lastIndexOf("/") + 1);
+  if (name === "tsconfig.json" || name === "jsconfig.json") return true;
+  // `tsconfig.` + at least one character + `.json`
+  return name.startsWith("tsconfig.") && name.endsWith(".json") && name.length > "tsconfig.".length + ".json".length;
+}
+
 /** Read and compile every visible TS config once for a build. `repoFiles` is the
  * same Git-ignore-aware walk used by graph extraction, so aliases never describe
  * a different repository view from the files that can become graph nodes. Config
@@ -48,7 +58,7 @@ export function readTsAliases(root: string, repoFiles: string[]): TsPathConfig[]
   const configs: TsPathConfig[] = [];
   const configFiles = repoFiles
     .map(toPosixPath)
-    .filter((file) => /(?:^|\/)(?:tsconfig(?:\..+)?|jsconfig)\.json$/.test(file))
+    .filter(isTsConfigFile)
     .sort(comparePath);
 
   for (const file of configFiles) {
