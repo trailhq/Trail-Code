@@ -53,6 +53,20 @@ test("genericLangOf routes .rs to the breadth tier (and not depth-tier extension
   assert.equal(genericLangOf("README.md"), null);
 });
 
+test("an MQL5 project contributes definitions and local include and call edges", async (t) => {
+  const repo = mkdtempSync(join(tmpdir(), "trail-mql5-"));
+  t.after(() => rmSync(repo, { recursive: true, force: true }));
+  writeFileSync(join(repo, "Example.mq5"), '#property strict\n#include "Checks.mqh"\ninput int Period = 14;\nint OnInit() { return checkReady(); }\n');
+  writeFileSync(join(repo, "Checks.mqh"), Buffer.from('\uFEFFenum Ready { No, Yes };\nint checkReady() { return Yes; }\n', "utf16le"));
+
+  const built = await buildGraph(repo);
+  const graph = readGraph(wiringPath(built.contextDir));
+  assert.ok(graph?.nodes.some((node) => node.id === "Example.mq5#OnInit"));
+  assert.ok(graph?.nodes.some((node) => node.id === "Checks.mqh#checkReady"));
+  assert.ok(graph?.edges.some((edge) => edge.source === "Example.mq5" && edge.relation === "imports" && edge.target === "Checks.mqh"));
+  assert.ok(graph?.edges.some((edge) => edge.source === "Example.mq5#OnInit" && edge.relation === "calls" && edge.target === "Checks.mqh#checkReady"));
+});
+
 test("extractGeneric emits nodes + bare-name call edges for Rust (no rust-specific code)", async () => {
   await warmGenericGrammars(["rust"]);
   assert.ok(isWarm("rust"), "rust grammar should warm");

@@ -492,6 +492,9 @@ compiler-grade layer, all `$0` and deterministic (no model, no key):
   Dart, Clojure, Nix, Lua, Gleam, Julia, PowerShell**, and **OCaml, Zig, GLSL** (symbols only for now, no call edges).
   **Bash** (`.sh`, `.bash`) also uses this tier for function symbols;
   Bash call edges and extensionless shell scripts are not yet supported.
+  **MQL5** files (`.mq5`, `.mqh`) use the C++ parser for definitions, local
+  includes and calls. UTF-8 and BOM-tagged UTF-16LE are supported. MQL5-specific
+  declarations such as `input` may be skipped by the parser.
 
 - **Single-file components**: **Vue** (`.vue`), **Svelte** (`.svelte`) and
   **Astro** (`.astro`). The wrapper grammar only locates the `<script>` block
