@@ -82,7 +82,7 @@ export interface PlanInitOptions {
  * The same predicates `runHostsInit()` applies when it writes, so `--dry-run`
  * describes the operation the flags actually select (#329):
  *  - `--no-mcp` drops the MCP registrations;
- *  - `--no-hooks` drops the Codex, Cursor and Pi hooks;
+ *  - `--no-hooks` drops standalone hook files and hook-only settings;
  *  - `--no-global` drops everything outside the repo: the `~/.claude` copy, the
  *    global MCP configs (Codex, Antigravity), the Codex and Pi hooks and the
  *    Antigravity skill. Cursor's hooks are repo-local and stay.
@@ -105,7 +105,9 @@ export function planInit(repo: string, opts: PlanInitOptions = {}): HostPlan[] {
       id: 'claude',
       name: 'Claude Code',
       detected: true,
-      writes: [...claudeTargets(repo, brand()), ...(withGlobal ? claudeGlobalTargets(home, brand()) : [])],
+      writes: [...claudeTargets(repo, brand(), home), ...claudeGlobalTargets(home, brand())]
+        .filter(inScope)
+        .filter((w) => (withMcp || w.kind !== 'mcp') && (withHooks || w.kind !== 'hook')),
     },
     ...HOSTS.map((host) => ({
       id: host.id,

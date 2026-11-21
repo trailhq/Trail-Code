@@ -1302,8 +1302,8 @@ grouped(program.command("init"), GROUP.setup)
   .option("--all-agents", "write instruction files for every known agent, detected or not")
   .option("--no-agents", "Claude Code wiring only; skip other agents")
   .option("--list-agents", "list known agent ids and exit")
-  .option("--no-mcp", "skip MCP server registration for other agents")
-  .option("--no-hooks", "skip hook installation for other agents")
+  .option("--no-mcp", "skip MCP server registration for selected agents")
+  .option("--no-hooks", "skip hook installation for selected agents")
   .option("--no-statusline", "skip writing Claude Code statusLine (keep a user-defined one)")
   .option("--dry-run", "print every file init would touch, then exit without writing")
   .option("--just-me", "trail just for you here: git sees none of it, your learnings stay in ~/.trail, and nothing asks you to commit or share")
@@ -2304,7 +2304,10 @@ function wireTarget(
       // writes under `~/.claude` now (hosts/claude-global.ts), so --no-global has to
       // reach it or the flag would silently mean "no out-of-repo writes, except three".
       const claudeGlobal = opts.global !== false && (!ctx.laptop || ctx.laptop.includes("claude"));
-      const res = runInit(repo, { build: opts.build, cliPath, statusline: wantStatusline, global: claudeGlobal, home, brand: brand() });
+      const res = runInit(repo, {
+        build: opts.build, cliPath, statusline: wantStatusline, global: claudeGlobal, home, brand: brand(),
+        hooks: opts.hooks, mcp: opts.mcp,
+      });
       say(`✓ wrote ${res.settingsPath}`);
       for (const s of res.shims) say(`✓ wrote ${s}`);
       if (res.skill) say(`✓ wrote ${res.skill}`);

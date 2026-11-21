@@ -162,7 +162,7 @@ function applyStatusline(
 
 export function mergeGraftSettings(
   existing: Json,
-  opts: { statusline?: boolean; name?: 'graft' | 'trail' } = {},
+  opts: { statusline?: boolean; hooks?: boolean; name?: 'graft' | 'trail' } = {},
 ): { merged: Json; warnings: string[] } {
   const merged: Json = { ...(existing ?? {}) };
   const name = opts.name ?? 'graft';
@@ -180,11 +180,13 @@ export function mergeGraftSettings(
     name,
   );
 
-  merged.hooks = { ...(merged.hooks ?? {}) };
-  for (const [event, blocks] of Object.entries(graftBlocks(undefined, name))) {
-    const prior = Array.isArray(merged.hooks[event]) ? merged.hooks[event] : [];
-    const foreign = prior.filter((e: Json) => !isGraftEntry(e)); // drop old Graft entries → idempotent
-    merged.hooks[event] = [...foreign, ...blocks];
+  if (opts.hooks !== false) {
+    merged.hooks = { ...(merged.hooks ?? {}) };
+    for (const [event, blocks] of Object.entries(graftBlocks(undefined, name))) {
+      const prior = Array.isArray(merged.hooks[event]) ? merged.hooks[event] : [];
+      const foreign = prior.filter((e: Json) => !isGraftEntry(e)); // drop old Graft entries → idempotent
+      merged.hooks[event] = [...foreign, ...blocks];
+    }
   }
 
   // Legacy graft footer entries were bare strings, which Claude Code rejects at
@@ -299,9 +301,10 @@ export function mergeTrailShared(existing: Json): Json {
  */
 export function mergeTrailLocal(
   existing: Json,
-  opts: { statusline?: boolean; hooks?: boolean; sessionStart?: boolean; theirs?: (Json | null)[] } = {},
+  opts: { statusline?: boolean; hooks?: boolean; preserveHooks?: boolean; sessionStart?: boolean; theirs?: (Json | null)[] } = {},
 ): { merged: Json; warnings: string[]; statusline: 'trail' | 'theirs' | 'off' } {
   const merged = withoutOurs(existing);
+  if (opts.preserveHooks && Object.hasOwn(existing, 'hooks')) merged.hooks = existing.hooks;
   const warnings: string[] = [];
   let statusline: 'trail' | 'theirs' | 'off' = 'off';
   if (statuslineWanted(opts)) {
