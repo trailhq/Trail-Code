@@ -115,10 +115,16 @@ function firstBuildWait(opts: RefreshOptions): number {
 function startFirstBuild(dir: string): boolean {
   const run = process.env.GRAFT_TEST_SYNC_RUN ?? fileURLToPath(new URL("../claude/sync-run.js", import.meta.url));
   if (!existsSync(run)) return false;
-  const child = spawn(process.execPath, [run, dir, String(FIRST_BUILD_TIMEOUT_MS)], { detached: true, stdio: "ignore", windowsHide: true });
-  child.on("error", () => { /* the lock ages out, and the next query starts it again */ });
-  child.unref();
-  return true;
+  try {
+    const child = spawn(process.execPath, [run, dir, String(FIRST_BUILD_TIMEOUT_MS)], { detached: true, stdio: "ignore", windowsHide: true });
+    // Launch failures emit an error later, but already have no pid. Returning
+    // false lets the caller release its lock before any query waits on it.
+    child.once("error", () => {});
+    child.unref();
+    return child.pid !== undefined;
+  } catch {
+    return false;
+  }
 }
 
 /**
