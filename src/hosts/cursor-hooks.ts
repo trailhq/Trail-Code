@@ -24,7 +24,7 @@
  *   - `sessionStart` → show the no-install learning offer once at session start.
  */
 import { rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { hooksShim } from '../claude/shim-template.js';
 import type { PlannedWrite } from './plan.js';
 import { writeOwned, isGraftEntry, readJsonObject, type ConfigWrite } from './config-write.js';
@@ -87,6 +87,11 @@ function desiredEntries(): DesiredEntry[] {
  */
 export function installCursorHooks(repo: string, name: Brand = 'graft'): ConfigWrite[] {
   const shimPath = shimPathFor(repo, name);
+  // Project hooks run from the project root, so the command names the shim by its
+  // repo-relative path (#648): an absolute path baked in here is committed to
+  // `.cursor/hooks.json` and breaks for every other checkout of the repo. Forward
+  // slashes keep the committed file identical on Windows.
+  const shimRel = cursorHookShimRelPath(name).split(sep).join('/');
   const shimWrite = writeOwned('cursor-hook-shim', shimPath, hooksShim(), 0o755);
   // A repo moving to trail's names: graft's shim goes, and its entries are
   // replaced below (`isGraftEntry` knows both names).
@@ -106,7 +111,7 @@ export function installCursorHooks(repo: string, name: Brand = 'graft'): ConfigW
     if (hooks[d.event] !== undefined && !Array.isArray(hooks[d.event])) return [shimWrite, skipped];
     const prior: unknown[] = Array.isArray(hooks[d.event]) ? hooks[d.event] : [];
     // D116 item 6: fails open, like every Trail hook command, so a missing shim never shows a hook error.
-    const command = failOpen(`node "${shimPath}" ${d.sub}`);
+    const command = failOpen(`node "${shimRel}" ${d.sub}`);
     const entry = d.matcher ? { matcher: d.matcher, command } : { command };
     hooks[d.event] = [...prior.filter((e) => !isGraftEntry(e)), entry];
   }
