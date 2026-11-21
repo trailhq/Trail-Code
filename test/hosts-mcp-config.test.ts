@@ -7,7 +7,7 @@ process.env.GRAFT_MCP_NPX = '1';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { registerMcpConfigs, serverEntry, stripTomlSection } from '../src/hosts/mcp-config.js';
+import { registerMcpConfigs, serverEntry, stripTomlSection, upsertCodexToml } from '../src/hosts/mcp-config.js';
 
 function fresh(): string { return mkdtempSync(join(tmpdir(), 'graft-mcpcfg-')); }
 
@@ -241,6 +241,23 @@ test('stripTomlSection removes orphan-only subtable without parent', () => {
   assert.equal(found, true);
   assert.ok(!rest.includes('mcp_servers.graft'), 'orphan gone');
   assert.ok(rest.includes('[mcp_servers.other]'), 'foreign preserved');
+});
+
+test('TOML registration replaces quoted owned headers without touching foreign keys', () => {
+  const path = join(fresh(), 'config.toml');
+  const foreign = '["mcp_servers.graft"]\r\nkeep = "one key, not two"\r\n'
+    + '[mcp_servers."graft.other"]\r\ncommand = "foreign"\r\n'
+    + '[[mcp_servers.other.items]]\r\nname = "keep"\r\n';
+  const owned = '  ["mcp_servers" . \'graft\']# comment\r\ncommand = "stale"\r\n'
+    + '[mcp_servers."gra\\u0066t"."env"]\r\nOLD = "remove"\r\n'
+    + '[[mcp_servers."graft".items]]\r\nname = "remove"\r\n';
+  writeFileSync(path, owned + foreign);
+  assert.deepEqual(stripTomlSection(owned + foreign), { rest: foreign, found: true });
+  assert.equal(upsertCodexToml('codex', path).action, 'updated');
+  const updated = readFileSync(path, 'utf8');
+  assert.ok(updated.startsWith(foreign));
+  assert.match(updated, /\[mcp_servers\.graft\]\ncommand = "npx"/);
+  assert.equal(upsertCodexToml('codex', path).action, 'unchanged');
 });
 
 for (const quote of ['"', "'"]) {

@@ -147,8 +147,41 @@ function nextTomlMultilineQuote(line: string, carried: TomlStringQuote | null): 
   return multiline ? quote : null;
 }
 
+/** Read the first two components of a TOML table header without changing its spelling. */
+function tomlTableOwner(line: string): [string, string] | null {
+  const array = line.startsWith('[[');
+  const key = /[ \t]*([A-Za-z0-9_-]+|'[^'\r\n]*'|"(?:[^"\\\r\n]|\\.)*")[ \t]*/y;
+  key.lastIndex = array ? 2 : 1;
+  const owner: string[] = [];
+  for (;;) {
+    const match = key.exec(line);
+    if (!match) return null;
+    if (owner.length < 2) {
+      const part = match[1]!;
+      if (part.startsWith('"')) {
+        // Only ASCII names can own an MCP table. Decode TOML's unicode escapes
+        // without treating other escapes as letters or accepting out-of-range values.
+        owner.push(part.slice(1, -1).replace(/\\(?:u([0-9a-fA-F]{4})|U([0-9a-fA-F]{8}))|\\./g,
+          (escape, short, long) => {
+            const point = Number.parseInt(short ?? long, 16);
+            return point <= 0x7f ? String.fromCharCode(point) : escape;
+          }));
+      } else {
+        owner.push(part.startsWith("'") ? part.slice(1, -1) : part);
+      }
+    }
+    if (line[key.lastIndex] !== '.') break;
+    key.lastIndex++;
+  }
+  const close = array ? ']]' : ']';
+  if (!line.startsWith(close, key.lastIndex)) return null;
+  const tail = line.slice(key.lastIndex + close.length).trimStart();
+  if (tail && !tail.startsWith('#')) return null;
+  return owner.length === 2 ? [owner[0]!, owner[1]!] : null;
+}
+
 /**
- * Remove every canonical table owned by `name` from a TOML config, returning the rest.
+ * Remove every table owned by `name` from a TOML config, returning the rest.
  *
  * Line-based on purpose: a real parse-and-reserialize would reformat the user's
  * whole file. An owned table is `[mcp_servers.<name>]` itself or any dotted
@@ -161,23 +194,15 @@ function nextTomlMultilineQuote(line: string, carried: TomlStringQuote | null): 
  */
 export function stripTomlSection(text: string, name: Brand = 'graft'): { rest: string; found: boolean } {
   const lines = text.split(/(?<=\n)/);
-  const ownedHeader = tomlHeader(name);
-  // The trailing dot keeps similarly-named tables (`[mcp_servers.graft2]`,
-  // `[other.graft]`) out of the family.
-  const familyPrefix = `${ownedHeader.slice(0, -1)}.`;
-  const isFamilyHeader = (line: string): boolean => {
-    const trimmed = line.trimStart();
-    if (!trimmed.startsWith('[')) return false;
-    const header = trimmed.split(/\s+/)[0];
-    return header === ownedHeader || header.startsWith(familyPrefix);
-  };
   let multiline: TomlStringQuote | null = null;
   let found = false;
   let inOwned = false;
   const kept: string[] = [];
   for (const line of lines) {
-    if (multiline === null && line.trimStart().startsWith('[')) {
-      inOwned = isFamilyHeader(line);
+    const trimmed = line.trimStart();
+    if (multiline === null && trimmed.startsWith('[')) {
+      const owner = tomlTableOwner(trimmed);
+      inOwned = owner?.[0] === 'mcp_servers' && owner[1] === name;
       found ||= inOwned;
     }
     if (!inOwned) kept.push(line);
