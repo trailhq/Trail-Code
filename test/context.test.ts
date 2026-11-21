@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 import { buildContext } from "../src/context/build.js";
 import { checkContext, indexFreshness, staleBanner } from "../src/context/check.js";
-import { contextDirFor, ensureGitignored, ensureSearchable } from "../src/context/node-file.js";
+import { contextDirFor, ensureGitignored, ensureSearchable, readNodes } from "../src/context/node-file.js";
 import { buildGraph } from "../src/graph/build.js";
 import { writeBuildConfig } from "../src/util/state.js";
 import { fakeProviders, PassthroughSummarizer } from "./helpers.js";
@@ -801,6 +801,54 @@ test("ensureSearchable: a Windows cross-drive --dir is not written into .ignore 
     const ign = readFileSync(join(dir, ".ignore"), "utf8");
     assert.ok(!/F:/i.test(ign), ign);
     assert.match(ign, /!graft\//);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("#543: distinguish synthesized names sharing a slug and keep existing card notes", async () => {
+  const dir = makeFixture();
+  const node = (name: string, source: string, to?: string) => ({
+    name, type: "concept", summary: name, sources: [source],
+    links: to ? [{ to, relation: "uses" }] : [],
+  });
+  const delivery = "Доставка сповіщень";
+  const isolation = "Ізоляція орендарів";
+  const first = node(delivery, "auth.ts");
+  try {
+    await buildContext(dir, {
+      ...buildOpts(), model: "old", synthesizer: { async synthesize() { return [first]; } },
+    });
+    const outDir = contextDirFor(dir);
+    const oldNote = join(outDir, "node.md");
+    writeFileSync(oldNote, readFileSync(oldNote, "utf8") + "\nKeep this delivery note.\n");
+
+    const opts = {
+      ...buildOpts(), synthModel: "new",
+      synthesizer: {
+        async synthesize() {
+          return [
+            node(isolation, "billing.ts", delivery), first,
+            node(delivery.toUpperCase(), "billing.ts"),
+            node("Канонічний URL та ключі", "auth.ts"),
+            node("URL", "billing.ts"),
+          ];
+        },
+      },
+    };
+    await buildContext(dir, opts);
+    const cards = readNodes(outDir);
+    assert.equal(cards.length, 4);
+    const oldCard = cards.find((card) => card.name === delivery)!;
+    const newCard = cards.find((card) => card.name === isolation)!;
+    assert.equal(oldCard.slug, "node");
+    assert.notEqual(newCard.slug, oldCard.slug);
+    assert.equal(newCard.links[0]?.to, oldCard.slug);
+    assert.deepEqual(oldCard.sources.map((src) => src.path), ["auth.ts", "billing.ts"]);
+    assert.match(readFileSync(oldNote, "utf8"), /Keep this delivery note/);
+
+    await buildContext(dir, opts);
+    assert.deepEqual(readNodes(outDir), cards);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

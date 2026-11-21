@@ -18,7 +18,7 @@ import { join, resolve } from "node:path";
 import { walkDir } from "../ingest/fs.js";
 import { filterByOnlyDirs } from "../graph/source-files.js";
 import { readFingerprint } from "../graph/fingerprint.js";
-import { contentHash } from "../util/id.js";
+import { contentHash, normalizeName } from "../util/id.js";
 import { relPosix } from "../util/paths.js";
 import { readSourceFile } from "../util/source.js";
 import { readFollowNestedRepos, readFollowSubmodules, readIncludeDirs } from "../util/state.js";
@@ -33,6 +33,7 @@ import {
   deleteNode,
   digestSources,
   existingNodeSlugs,
+  readManifest,
   slugify,
   writeManifest,
   writeNode,
@@ -402,11 +403,12 @@ export async function buildContext(dir: string, opts: BuildOptions): Promise<Bui
   retainSynthBudgets(cache.synth, budgetKey);
   saveCache(outDir, cache);
 
-  // Phase 3: merge synth nodes by slug, building a name→slug resolution table.
+  // Phase 3: merge repeated names across batches. Distinct names may produce
+  // the same ASCII slug, especially when names include non-Latin text.
   const drafts = new Map<string, NodeDraft>();
-  const nameToSlug = new Map<string, string>();
+  const nameToSlug = assignConceptSlugs(synthNodes, readManifest(outDir)?.nodes);
   for (const n of synthNodes) {
-    const slug = slugify(n.name);
+    const slug = nameToSlug.get(conceptNameKey(n.name))!;
     let draft = drafts.get(slug);
     if (!draft) {
       draft = { name: n.name, slug, type: n.type || "concept", summary: n.summary ?? "", sources: new Map(), links: new Map() };
@@ -418,15 +420,14 @@ export async function buildContext(dir: string, opts: BuildOptions): Promise<Bui
       const hash = hashByPath.get(src);
       if (hash) draft.sources.set(src, hash);
     }
-    registerName(nameToSlug, n.name, slug);
   }
 
   // Phase 4: resolve links to slugs (both endpoints must be defined nodes).
   for (const n of synthNodes) {
-    const from = drafts.get(slugify(n.name));
+    const from = drafts.get(nameToSlug.get(conceptNameKey(n.name))!);
     if (!from) continue;
     for (const link of n.links) {
-      const to = resolveSlug(nameToSlug, link.to);
+      const to = nameToSlug.get(conceptNameKey(link.to));
       if (!to || to === from.slug) continue;
       const key = `${to}|${link.relation}`;
       if (!from.links.has(key)) from.links.set(key, { to, relation: link.relation, description: link.description });
@@ -501,13 +502,45 @@ export async function buildContext(dir: string, opts: BuildOptions): Promise<Bui
   return result;
 }
 
-function registerName(table: Map<string, string>, name: string, slug: string): void {
-  const key = name.trim().toLowerCase();
-  if (key && !table.has(key)) table.set(key, slug);
+function conceptNameKey(name: string): string {
+  return normalizeName(name).normalize("NFC");
 }
 
-function resolveSlug(table: Map<string, string>, name: string): string | undefined {
-  return table.get(name.trim().toLowerCase());
+function assignConceptSlugs(nodes: SynthNode[], previous: Manifest["nodes"] | undefined): Map<string, string> {
+  const bases = new Map(nodes.map(({ name }) => {
+    const key = conceptNameKey(name);
+    return [key, slugify(key)];
+  }));
+  const reserved = new Set(bases.values());
+  const assigned = new Set<string>();
+  const nameToSlug = new Map<string, string>();
+
+  // Preserve an existing card's path and human notes when the same concept
+  // survives a rebuild, even if the order of synthesis results changes.
+  for (const entry of Array.isArray(previous) ? previous : []) {
+    if (!entry) continue;
+    const { name, slug } = entry;
+    if (typeof name !== "string" || typeof slug !== "string" || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) continue;
+    const key = conceptNameKey(name);
+    if (!bases.has(key) || nameToSlug.has(key) || assigned.has(slug)) continue;
+    nameToSlug.set(key, slug);
+    assigned.add(slug);
+  }
+
+  for (const [key, base] of bases) {
+    if (nameToSlug.has(key)) continue;
+    let slug = base;
+    if (assigned.has(base)) {
+      const suffix = `${base.slice(0, 220).replace(/-+$/, "")}-${contentHash(key).slice(0, 12)}`;
+      slug = suffix;
+      for (let collision = 2; assigned.has(slug) || reserved.has(slug); collision++) {
+        slug = `${suffix}-${collision}`;
+      }
+    }
+    nameToSlug.set(key, slug);
+    assigned.add(slug);
+  }
+  return nameToSlug;
 }
 
 function errMsg(err: unknown): string {
