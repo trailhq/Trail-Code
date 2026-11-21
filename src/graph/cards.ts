@@ -15,7 +15,7 @@
  * `signature`, so cards are useful even in a $0 structure-only build.
  */
 import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { relPosix } from "../util/paths.js";
 import { matter } from "../util/front-matter.js";
 import type { GraphV1, NodeV1 } from "./types.js";
@@ -68,6 +68,11 @@ function cardPathFor(outDir: string, sourcePath: string): string {
   if (sourcePath.includes("/")) return primary;
   if (isConceptNodeFile(primary)) return join(outDir, ROOT_CARD_DIR, md);
   return primary;
+}
+
+/** Reserve the same paths on case-sensitive and case-insensitive volumes. */
+function cardKey(path: string): string {
+  return path.normalize("NFC").toLowerCase();
 }
 
 /** Starting line of an "L43-L55" span, for stable ordering (0 if unparseable). */
@@ -186,11 +191,30 @@ export function writeCards(graph: GraphV1, outDir: string): CardStats {
   const concepts = conceptsByPath(outDir);
   const written = new Set<string>();
   const files: CardFileInfo[] = [];
+  // Keep legacy card names where possible. Reserve them before assigning any
+  // fallback so a.ts.md cannot take the ordinary card for a.ts.go.
+  const planned = [...byPath.keys()].sort().map((sourcePath) => ({
+    sourcePath,
+    cardPath: cardPathFor(outDir, sourcePath),
+  }));
+  const reserved = new Set(planned.map(({ cardPath }) => cardKey(cardPath)));
+  const used = new Set([cardKey(join(outDir, INDEX_FILE))]);
 
-  for (const [sourcePath, group] of byPath) {
+  for (let { sourcePath, cardPath } of planned) {
+    const group = byPath.get(sourcePath)!;
     const fileNode = group.find((n) => n.kind === "file");
     const symbols = group.filter((n) => n.kind !== "file");
-    const cardPath = cardPathFor(outDir, sourcePath);
+    if (used.has(cardKey(cardPath))) {
+      // Root fallbacks live with the concept-collision fallbacks so obsolete
+      // alternatives can be pruned without touching root concept files.
+      const dir = sourcePath.includes("/") ? dirname(cardPath) : join(outDir, ROOT_CARD_DIR);
+      const name = basename(sourcePath);
+      cardPath = join(dir, `${name}.md`);
+      for (let suffix = 2; reserved.has(cardKey(cardPath)) || used.has(cardKey(cardPath)); suffix++) {
+        cardPath = join(dir, `${name}.${suffix}.md`);
+      }
+    }
+    used.add(cardKey(cardPath));
     writeIfChanged(cardPath, renderCard(sourcePath, fileNode, symbols, concepts.get(sourcePath) ?? []));
     written.add(cardPath);
     files.push({ card: relPosix(outDir, cardPath), path: sourcePath, symbols: symbols.length });

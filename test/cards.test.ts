@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import matter from "gray-matter";
@@ -41,6 +41,35 @@ test("unchanged cards, index, and covers keep their modification times", () => {
     assert.equal(writeCovers(graph, out), 1);
     assert.equal(second.written, 1);
     for (const path of paths) assert.equal(statSync(path).mtimeMs, mtimes.get(path));
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
+});
+
+test("same-stem sources get their own cards without replacing INDEX.md", () => {
+  const out = mkdtempSync(join(tmpdir(), "graft-card-paths-"));
+  try {
+    const sources = ["src/api.ts", "src/api.js", "src/api.ts.go", "src/API.py", "INDEX.js", "index.ts"];
+    const graph: GraphV1 = {
+      meta: { version: 1, nodeCount: sources.length, edgeCount: 0, languages: [] },
+      nodes: sources.map((path, i) => node({ id: `${path}#symbol${i}`, path, name: `symbol${i}` })),
+      edges: [],
+    };
+
+    const cards = writeCards(graph, out);
+    writeIndex(out, cards.files);
+    assert.equal(cards.written, sources.length);
+    assert.equal(new Set(cards.files.map((f) => f.card.toLowerCase())).size, sources.length);
+    for (const { card, path } of cards.files) {
+      assert.notEqual(card.toLowerCase(), "index.md");
+      const body = readFileSync(join(out, card), "utf8");
+      assert.equal(body.split("\n")[0], `# ${path}`);
+      assert.ok(body.includes(`symbol${sources.indexOf(path)}`), `the card contains its own symbol for ${path}`);
+    }
+    assert.match(readFileSync(join(out, "INDEX.md"), "utf8"), /^# graft — repo map/);
+
+    const reversed = writeCards({ ...graph, nodes: [...graph.nodes].reverse() }, out);
+    assert.deepEqual(reversed.files, cards.files, "source iteration order does not change card assignment");
   } finally {
     rmSync(out, { recursive: true, force: true });
   }
