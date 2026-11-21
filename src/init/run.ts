@@ -47,10 +47,10 @@ import { lookBackOffThread } from './discover-worker.js';
 import { newRunId, readInitRecord, uncompiledOf, updateInitRecord, type InitRun } from './init-record.js';
 import { keepItems, prefLine, type KeepResult } from './keep.js';
 import { leadWords } from './keep-answer.js';
-import { lookBackDue, lookBackOff, markLookedBack, norm } from './look-back.js';
+import { initModelLabel, lookBackDue, lookBackOff, markLookedBack, norm } from './look-back.js';
 import type { LookBackResult } from './look-back-mine.js';
 import type { LookBack } from './types.js';
-import { NAME_MODEL, nameItems, type Named } from './name-call.js';
+import { nameItems, type Named } from './name-call.js';
 import { afterKeepLines, guardDoes, INIT_COPY, numbered, relayLines, repoNameOf, yesLine, type ScreenFacts } from './review-screen.js';
 import { runScreen } from './review-tty.js';
 import type { InitCandidate, InitItem } from './types.js';
@@ -351,7 +351,7 @@ export async function finishLookBack(repo: string, reads: LookBackReads,
     id: newRunId(), at: now.toISOString(), by: agent ? 'agent' : person.ok ? 'person' : 'script', screen: screen ? 'tty' : agent ? 'relay' : 'list',
     reads: { sessions: lb.sessions.length, days: lb.days, from: lb.from, to: lb.to, parent: lb.parent, read: lb.sessions.map((x) => x.sh), skipped: lb.skipped,
       ...(uncompiled.length ? { uncompiled } : {}) },
-    model: named.sentItems ? NAME_MODEL : 'none', modelWhy: named.why ?? modelWhy, calls: facts.calls, tokens: named.tokens, ms: lb.ms,
+    model: named.model, modelWhy: named.why ?? modelWhy, calls: facts.calls, tokens: named.tokens, ms: lb.ms,
     shown: (screen ? shown : items).filter((i) => i.kind !== 'claude' && i.kind !== 'claudeai').map((i) => i.id), kept: [], closed: [], deferred: [],
   };
   if (looked) {
@@ -364,7 +364,7 @@ export async function finishLookBack(repo: string, reads: LookBackReads,
     if (!looked) return;
     track('cold_start', {
       source: 'sessions', outcome, sessions_bucket: countBucket(lb.sessions.length), offered_bucket: countBucket(items.length),
-      picked_bucket: countBucket(picked), duration_bucket: durationBucket(Date.now() - reads.started), model: run.model, ...initKindCounts('offered', items),
+      picked_bucket: countBucket(picked), duration_bucket: durationBucket(Date.now() - reads.started), model: initModelLabel(run.model), ...initKindCounts('offered', items),
     }, { repo });
   };
   /** #662's keeps, each with its own answer: the review rows and the memory rows picked, none, or null (asked again). */

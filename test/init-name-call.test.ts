@@ -71,6 +71,19 @@ test("one call names the skills: only the job, steps, check and counts are sent,
   }
 });
 
+test("skill naming uses the configured init model and preserves the default for a blank setting", posixOnly, async () => {
+  const s = standIn({ findings: [] });
+  try {
+    for (const [value, model] of [["sonnet", "sonnet"], [" ", "claude-sonnet-5-5"]]) {
+      const r = await withPath(s.bin, (env) => nameItems([skillCandidate()], { ...env, TRAIL_INIT_MODEL: value }));
+      assert.equal(r.model, model);
+      assert.ok(s.sent().includes(`"--model","${model}"`));
+    }
+  } finally {
+    s.done();
+  }
+});
+
 test("no skill, no call: guardrails and preferences have their own titles", async () => {
   const s = standIn({ findings: [] });
   try {

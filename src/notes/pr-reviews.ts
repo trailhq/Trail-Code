@@ -26,7 +26,7 @@ import { track } from "../telemetry/track.js";
 import { readJson, writeJsonAtomic } from "../util/state.js";
 import { existsSync, readdirSync } from "node:fs";
 import { BAR, LEARNING_SCHEMA, learningBody, verifyLearnings } from "../learn/bar.js";
-import { callClaude, claudeBin, COLD_START_MODEL, norm, scrub, type ClaudeFailure, type QuoteSource } from "./cold-start.js";
+import { callClaude, claudeBin, claudeInitModel, initModelLabel, norm, scrub, type ClaudeFailure, type QuoteSource } from "./cold-start.js";
 import { readPlain } from "../init/plain-file.js";
 import { noteAuthor } from "./git-facts.js";
 import { ensureRepoHome } from "./home.js";
@@ -378,9 +378,9 @@ export function verifyReviews(raw: unknown[], prs: ReviewedPR[], docs: { id: str
  */
 export async function findReviewLearnings(
   repo: string,
-  opts: { model?: string; timeoutMs?: number; gh?: string; limit?: number; capMs?: number; since?: string; onLearning?: (f: ReviewFinding) => void } = {},
+  opts: { model?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number; gh?: string; limit?: number; capMs?: number; since?: string; onLearning?: (f: ReviewFinding) => void } = {},
 ): Promise<ReviewResult> {
-  const model = opts.model ?? COLD_START_MODEL;
+  const model = opts.model ?? claudeInitModel(opts.env ?? process.env);
   const started = Date.now();
   // `capMs`: the whole read, gh and the model call, ends by then (an agent's tool call has a time limit).
   const left = () => (opts.capMs === undefined ? Infinity : opts.capMs - (Date.now() - started));
@@ -447,7 +447,7 @@ export function beginReviewRead(repo: string, env: NodeJS.ProcessEnv = process.e
       track("cold_start", { source: "reviews", outcome: "no_gh" }, { repo });
       return null;
     }
-    const read: ReviewRead = { started: Date.now(), done: false, result: findReviewLearnings(repo, { gh, ...(capMs === undefined ? {} : { capMs }), ...(onLearning ? { onLearning } : {}) }) };
+    const read: ReviewRead = { started: Date.now(), done: false, result: findReviewLearnings(repo, { gh, env, ...(capMs === undefined ? {} : { capMs }), ...(onLearning ? { onLearning } : {}) }) };
     void read.result.then(() => (read.done = true));
     return read;
   } catch {
@@ -568,7 +568,7 @@ export async function finishReviewRead(
       filtered_bucket: countBucket(result.findings.length - findings.length),
       picked_bucket: countBucket(saved.length),
       duration_bucket: durationBucket(result.durationMs),
-      model: result.model,
+      model: initModelLabel(result.model),
     },
     { repo },
   );

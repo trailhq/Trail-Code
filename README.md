@@ -312,7 +312,7 @@ Coming soon: a Trail workspace, for your team's view across repos. A team page w
 - **Your code.** The graft map is built on your machine with tree-sitter. No model, no network. The optional `trail build --deep` summaries go to the model provider you choose, under your own key.
 - **Personal learnings.** Kept in `~/.trail`. Never committed, never uploaded.
 - **Repo learnings.** Files in your repo, shared through git like any other file.
-- **Your past sessions.** `trail init` reads your own messages from Claude Code's transcripts for the repo, on your machine. Your own Claude Code does the reading, with Claude Sonnet under your login, so your messages go only to Anthropic, and it counts toward your Claude usage. None of it goes to Trail.
+- **Your past sessions.** `trail init` looks for recurring instructions in your messages locally. When it also uses Claude Code to find what was decided, it sends a scrubbed digest of both sides of the conversation to Claude Code's configured provider, which counts the usage. By default Trail requests Claude Sonnet. None of the transcript goes to Trail.
 - **Your PR reviews.** When `gh` is installed and signed in, `trail init` reads the review comments on the repo's last 50 merged PRs with it, under your GitHub login. Anything that looks like a secret is taken out, and your own Claude Code reads them the same way. None of it goes to Trail.
 - **If you connect a Trail workspace.** No learning goes to Trail until you do, and the sign-in link tells Trail only the repo it was offered in. Once connected, the learnings committed in the repos you added go to Trail, including those on teammates' pushed branches. An edit you haven't committed, or a file git doesn't track, stays on your machine. Each search and check that used them sends which learnings were shown and whose they are, never what you typed or which files you were in. That is how the team page counts reuse.
 - **Anonymous usage stats.** Buckets and fixed labels only, never the title, text or paths of a learning. [`TELEMETRY.md`](TELEMETRY.md) lists every field. Turn it off with `trail telemetry disable` or `DO_NOT_TRACK=1`.
@@ -691,6 +691,7 @@ trail init --no-statusline           # skip Claude Code statusLine (same as GRAF
 trail init --no-build                # wire the files only; don't build the graph
 trail init --all-agents              # wire every known agent, detected or not
 trail init --list-agents             # list known agent ids and exit
+TRAIL_INIT_MODEL=sonnet trail init   # use a model or alias your Claude Code supports for session and PR review imports and skill naming
 
 trail build [dir]                    # build the graft map in graft/: wiring graph + per-file cards (no LLM, no key)
 trail build --deep                   # add the LLM layer: concept nodes + per-symbol summary/crux (cached)

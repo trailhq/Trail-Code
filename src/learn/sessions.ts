@@ -19,7 +19,7 @@
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { BAR, LEARNING_SCHEMA, learningBody, sameLearning, verifyLearnings, type Learning } from "./bar.js";
-import { callClaude, claudeBin, COLD_START_MODEL, norm, scrub, type ClaudeFailure, type QuoteSource } from "../notes/cold-start.js";
+import { callClaude, claudeBin, claudeInitModel, initModelLabel, norm, scrub, type ClaudeFailure, type QuoteSource } from "../notes/cold-start.js";
 import { type PastSession } from "../init/sessions.js";
 import { discoverOffThread } from "../init/discover-worker.js";
 import { eachLine } from "../init/transcript.js";
@@ -171,7 +171,7 @@ export async function findSessionLearnings(
   opts: { env?: NodeJS.ProcessEnv; capMs?: number; since?: string; model?: string; full?: boolean; onLearning?: (l: Learning) => void } = {},
 ): Promise<SessionResult> {
   const env = opts.env ?? process.env;
-  const model = opts.model ?? COLD_START_MODEL;
+  const model = opts.model ?? claudeInitModel(env);
   const started = Date.now();
   const left = () => (opts.capMs === undefined ? Infinity : opts.capMs - (Date.now() - started));
   const found = await pastSessions(repo, env);
@@ -301,7 +301,7 @@ export async function finishSessionRead(
       offered_bucket: countBucket(offered.length),
       picked_bucket: countBucket(saved.length),
       duration_bucket: durationBucket(result.durationMs),
-      model: result.model,
+      model: initModelLabel(result.model),
     },
     { repo },
   );
