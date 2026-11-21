@@ -7,7 +7,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { spawn } from "node:child_process";
+import childProcess, { spawn } from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { dirname, join } from "node:path";
 import { buildGraph } from "../src/graph/build.js";
 import { ensureFreshChildren, ensureFreshGraph, refreshNote } from "../src/graph/refresh.js";
@@ -629,6 +630,35 @@ test("a first build that ends without a map says so, rather than waiting on", as
     restore();
   }
 });
+
+for (const failure of ["async", "sync"] as const) {
+  test(`first-build launch failure (${failure}) releases the live owner's lock`, async (t) => {
+    const d = trailRepo();
+    const { restore } = firstBuildStub(d, "fail");
+    const realSpawn = childProcess.spawn;
+    let closed = Promise.resolve();
+    const spawnMock = t.mock.method(childProcess, "spawn", () => {
+      if (failure === "sync") throw new Error("failed to start a worker");
+      const child = realSpawn(process.execPath, [], { cwd: join(d, "missing"), stdio: "ignore" });
+      closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
+      return child;
+    });
+    syncBuiltinESMExports();
+    t.after(() => {
+      spawnMock.mock.restore();
+      syncBuiltinESMExports();
+      restore();
+      rmSync(d, { recursive: true, force: true });
+    });
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const r = await ensureFreshGraph(d, { firstBuildWaitMs: 0 });
+      await closed;
+      assert.match(r.note ?? "", /couldn't build this repo's code map/);
+      assert.equal(existsSync(join(trailOut(d), ".cache", ".sync.lock")), false);
+    }
+    assert.equal(spawnMock.mock.callCount(), 2, "the next query can retry");
+  });
+}
 
 test("outside a repo on trail, under --dir, or in the home folder, no map is built behind the user's back", async () => {
   const plain = repo();
