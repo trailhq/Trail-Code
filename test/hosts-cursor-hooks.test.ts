@@ -69,6 +69,16 @@ test('foreign hook entries and a pre-existing version are preserved; stale graft
   assert.ok(!JSON.stringify(entries).includes('/old/'), 'stale graft entry removed');
 });
 
+test('hook commands name the shim by a repo-relative path, so a committed hooks.json survives a move', () => {
+  const repo = fresh();
+  installCursorHooks(repo);
+  const cfg = readFileSync(cfgPath(repo), 'utf8');
+  assert.ok(!cfg.includes(repo), 'the checkout path is never baked into the committed config');
+  assert.ok(!/[A-Za-z]:[\\/]|\/(?:home|Users|tmp)\//.test(cfg), 'no absolute path at all');
+  for (const command of Object.values(JSON.parse(cfg).hooks).flat().map((e: any) => e.command))
+    assert.match(command, /node "\.cursor\/hooks\/graft-hooks\.cjs" cursor-/, 'project hooks run from the repo root');
+});
+
 test('unparseable hooks.json is never rewritten', () => {
   const repo = fresh();
   mkdirSync(join(repo, '.cursor'), { recursive: true });
