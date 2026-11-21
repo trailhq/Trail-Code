@@ -31,7 +31,16 @@ const REPO_HELPERS = '${CLAUDE_PROJECT_DIR:-.}/.claude/helpers';
  * global copy exists to cover, so it cannot reuse the repo form.
  */
 function hookCmd(arg: string, helpers: string = REPO_HELPERS, name: 'graft' | 'trail' = 'graft'): string {
-  return `node "${helpers}/${name}-hooks.cjs" ${arg}`;
+  return runHookShim(`${helpers}/${name}-hooks.cjs`, arg);
+}
+
+function runHookShim(shim: string, arg: string): string {
+  if (arg !== 'session-end') return `node "${shim}" ${arg}`;
+  // Claude can remove a worktree before SessionEnd runs. Check in the same Node
+  // process that loads the shim, so an absent file exits quietly and a present
+  // shim still receives the event as process.argv[2].
+  const load = "const file = process.argv[1]; if (require('node:fs').existsSync(file)) require(require('node:path').resolve(file));";
+  return `node --input-type=commonjs -e "${load}" -- "${shim}" ${arg}`;
 }
 
 /**
@@ -48,7 +57,7 @@ export function failOpen(command: string): string {
 }
 /** trail's committed hook, `.trail/hook.cjs`, run for one event. */
 export function trailHookCmd(arg: string): string {
-  return `node "\${CLAUDE_PROJECT_DIR:-.}/.trail/hook.cjs" ${arg}`;
+  return runHookShim('${CLAUDE_PROJECT_DIR:-.}/.trail/hook.cjs', arg);
 }
 function graftBlocks(helpers?: string, name: 'graft' | 'trail' = 'graft'): Record<string, Json[]> {
   return hookBlocks((arg) => hookCmd(arg, helpers, name));
