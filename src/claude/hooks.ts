@@ -563,6 +563,14 @@ export async function main(event: string): Promise<void> {
   if (event === 'codex-post-bash') { emitHook('PostToolUse', await codexPostBashPart(input, dir)); return; }
   adoptRepoBrand(dir, process.env, hostsWiredForTrail);
 
+  if (event === 'cursor-session-start') {
+    // Cursor reads context at the top level. Reuse the repo orientation without
+    // running Claude Code's session bookkeeping or wiring refresh.
+    const context = orientationAtStart(dir, learningsAtStart(dir));
+    if (context) process.stdout.write(JSON.stringify({ additional_context: context }));
+    return;
+  }
+
   if (event === 'session-start') {
     // The skills part first, so nothing below can skip it (a repo with no graft/INDEX.md included).
     const skills = await sessionStartPart(input, dir);
