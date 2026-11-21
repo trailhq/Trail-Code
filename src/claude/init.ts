@@ -55,10 +55,11 @@ export function wiringName(dir: string, initBrand?: Brand): Brand {
  */
 export function claudeTargetsFor(dir: string, name: Brand, home: string = homedir()): PlannedWrite[] {
   if (name !== 'trail') return legacyClaudeTargets(dir, name);
-  const t = (path: string, what: string): PlannedWrite => ({ hostId: 'claude', id: 'claude', path, scope: 'repo', kind: 'claude', what });
+  const t = (path: string, what: string, kind: PlannedWrite['kind'] = 'claude'): PlannedWrite =>
+    ({ hostId: 'claude', id: 'claude', path, scope: 'repo', kind, what });
   return [
-    t(join(dir, '.claude', 'settings.json'), 'trail SessionStart hook, shared'),
-    t(join(dir, TRAIL_HOOK), 'hooks shim, shared'),
+    t(join(dir, '.claude', 'settings.json'), 'trail SessionStart hook, shared', 'hook'),
+    t(join(dir, TRAIL_HOOK), 'hooks shim, shared', 'hook'),
     t(join(dir, '.claude', 'settings.local.json'), 'trail statusline + allowlist, yours'),
     t(join(dir, TRAIL_STATUSLINE), 'statusline shim, git-ignored'),
     { hostId: 'claude', id: 'claude', path: trailSkillPath(home), scope: 'global', kind: 'claude', what: 'trail skill' },
@@ -77,7 +78,7 @@ export function legacyClaudeTargets(dir: string, name: Brand): PlannedWrite[] {
   return [
     t(join(dir, '.claude', 'settings.json'), `${name} statusline + hook blocks`),
     t(join(dir, '.claude', 'helpers', `${name}-statusline.cjs`), 'statusline shim'),
-    t(join(dir, '.claude', 'helpers', `${name}-hooks.cjs`), 'hooks shim'),
+    t(join(dir, '.claude', 'helpers', `${name}-hooks.cjs`), 'hooks shim', 'hook'),
     t(join(dir, '.claude', 'skills', name, 'SKILL.md'), `${name} skill`),
     // Tagged 'mcp' so the picker doesn't label Claude Code as having no MCP.
     t(join(dir, '.mcp.json'), `mcpServers.${name}`, 'mcp'),
@@ -133,10 +134,18 @@ export interface InitResult {
   statusline?: 'trail' | 'theirs' | 'off';
 }
 
-export function runInit(
-  dir: string,
-  opts: { build?: boolean; cliPath?: string; statusline?: boolean; global?: boolean; home?: string; brand?: Brand } = {},
-): InitResult {
+interface ClaudeInitOptions {
+  build?: boolean;
+  cliPath?: string;
+  statusline?: boolean;
+  global?: boolean;
+  home?: string;
+  brand?: Brand;
+  hooks?: boolean;
+  mcp?: boolean;
+}
+
+export function runInit(dir: string, opts: ClaudeInitOptions = {}): InitResult {
   if (wiringName(dir, opts.brand) === 'trail') return runTrailInit(dir, opts);
   // Same list `--dry-run` and the picker report, so the two can't drift apart.
   const [settings, statusline, hooks, skill, mcpTarget] = legacyClaudeTargets(dir, 'graft').map((t) => t.path);
@@ -145,7 +154,7 @@ export function runInit(
 
   const settingsPath = settings;
   const existing = readSettings(settingsPath);
-  const { merged, warnings } = mergeGraftSettings(existing ?? {}, { statusline: opts.statusline, name: 'graft' });
+  const { merged, warnings } = mergeGraftSettings(existing ?? {}, { statusline: opts.statusline, hooks: opts.hooks, name: 'graft' });
   // A file that isn't plain JSON (a comment, a trailing comma) is the
   // person's, and rewriting it would drop what they put there, their own
   // hooks included. Upkeep replays this at session start, so it has to hold
@@ -158,7 +167,7 @@ export function runInit(
   // The shims are committed, so they name nothing about this machine; where the
   // package lives here goes to the trail home instead, for them to find first.
   writeFileSync(sl, statuslineShim()); chmodSync(sl, 0o755);
-  writeFileSync(hk, hooksShim()); chmodSync(hk, 0o755);
+  if (opts.hooks !== false) { writeFileSync(hk, hooksShim()); chmodSync(hk, 0o755); }
   rememberInstall(opts.home ?? homedir());
 
   // Install the graft skill — the piece that redirects the agent to graft/ before it
@@ -170,17 +179,17 @@ export function runInit(
   // Register the graft MCP server in the project's .mcp.json so Claude Code
   // exposes graft_find_code/graft_trace_calls/etc. as tools — the same keyed merge the
   // other hosts use (existing servers preserved; unparseable files skipped).
-  const mcp = mergeJsonKey('claude', mcpTarget, 'mcpServers', serverEntry({ brand: 'graft' }), 'graft');
+  const mcp = opts.mcp === false ? null : mergeJsonKey('claude', mcpTarget, 'mcpServers', serverEntry({ brand: 'graft' }), 'graft');
 
   // The same wiring again, one level up in `~/.claude`, because everything above
   // this line can be erased by a `.gitignore` and lost to `git worktree add`. See
   // hosts/claude-global.ts for the failure that motivates it. Gated on the same
   // flag `registerMcpConfigs` uses, so `--no-global` still means "nothing outside
   // this repo".
-  const global = opts.global === false ? [] : installClaudeGlobal(opts.home ?? homedir(), 'graft');
+  const global = opts.global === false ? [] : installClaudeGlobal(opts.home ?? homedir(), 'graft', opts);
 
   const built = buildGraphIfMissing(dir, opts);
-  return { settingsPath, shims: [sl, hk], skill: skillPath, mcp, global, warnings, built };
+  return { settingsPath, shims: opts.hooks === false ? [sl] : [sl, hk], skill: skillPath, mcp, global, warnings, built };
 }
 
 /** The warning for a settings file init left alone because it isn't plain JSON. */
@@ -194,16 +203,13 @@ function notPlainJson(file: string, what: string): string {
  * Run again over a repo set up the old way, it moves it: the old shims, the
  * repo skill and trail's `.mcp.json` server go.
  */
-function runTrailInit(
-  dir: string,
-  opts: { build?: boolean; cliPath?: string; statusline?: boolean; global?: boolean; home?: string },
-): InitResult {
+function runTrailInit(dir: string, opts: ClaudeInitOptions): InitResult {
   const home = opts.home ?? homedir();
   const global = opts.global !== false;
   const [settings, hook, local, statusline, skill] = claudeTargetsFor(dir, 'trail', home).map((t) => t.path);
 
   mkdirSync(dirname(hook), { recursive: true });
-  writeFileSync(hook, hooksShim()); chmodSync(hook, 0o755);
+  if (opts.hooks !== false) { writeFileSync(hook, hooksShim()); chmodSync(hook, 0o755); }
   writeFileSync(statusline, statuslineShim()); chmodSync(statusline, 0o755);
   ignoreInTrailDir(dir, 'statusline.cjs');
   // The map and its caches (`.trail/cache/`, context/map-dir.ts) are each machine's own. Said here as well as at
@@ -215,9 +221,9 @@ function runTrailInit(
   // (see runInit): rewriting it would drop their own hooks and settings.
   // Just for this person (notes/just-me.ts), the shared file gets nothing: `~/.claude` runs the hooks.
   const justMe = isJustMe(dir);
-  if (justMe) dropTrailShared(dir, settings);
+  if (justMe && opts.hooks !== false) dropTrailShared(dir, settings);
   const existingShared = justMe ? {} : readSettings(settings);
-  if (existingShared) {
+  if (existingShared && opts.hooks !== false) {
     mkdirSync(dirname(settings), { recursive: true });
     if (!justMe) writeFileSync(settings, `${JSON.stringify(mergeTrailShared(existingShared), null, 2)}\n`);
   }
@@ -230,10 +236,13 @@ function runTrailInit(
   // unless a settings.json git tracks already has trail's.
   const sharedNow = justMe ? readSettings(settings) : null;
   const sessionStart = justMe && !global && !(sharedNow && JSON.stringify(withoutOurs(sharedNow)) !== JSON.stringify(sharedNow));
-  const { merged, warnings, statusline: shown } = mergeTrailLocal(existingLocal ?? {}, { statusline: opts.statusline, hooks: !global, sessionStart, theirs });
+  const { merged, warnings, statusline: shown } = mergeTrailLocal(existingLocal ?? {}, {
+    statusline: opts.statusline, hooks: opts.hooks !== false && !global,
+    preserveHooks: opts.hooks === false, sessionStart, theirs,
+  });
   if (existingLocal) writeFileSync(local, `${JSON.stringify(merged, null, 2)}\n`);
   else warnings.push(notPlainJson('.claude/settings.local.json', "trail's status line and allowlist"));
-  if (!existingShared) warnings.unshift(notPlainJson('.claude/settings.json', "trail's session-start hook"));
+  if (!existingShared && opts.hooks !== false) warnings.unshift(notPlainJson('.claude/settings.json', "trail's session-start hook"));
   keepOutOfGit(dir, join('.claude', 'settings.local.json'));
 
   let skillPath = '';
@@ -244,15 +253,15 @@ function runTrailInit(
   }
 
   // An old settings.json left as it was still runs the old shims: they stay until it can be rewritten.
-  clearOldLayout(dir, { keepShims: !existingShared });
+  clearOldLayout(dir, { keepShims: opts.hooks === false || !existingShared, keepMcp: opts.mcp === false });
 
-  const globalWrites = global ? installClaudeGlobal(home, 'trail') : [];
+  const globalWrites = global ? installClaudeGlobal(home, 'trail', opts) : [];
   // A trail repo on a machine with graft's server installed for everything:
   // graft goes off in this folder, so its tools don't show here.
-  if (global) globalWrites.push(disableGraftServerIn(home, resolve(dir)));
+  if (global && opts.mcp !== false) globalWrites.push(disableGraftServerIn(home, resolve(dir)));
 
   const built = buildGraphIfMissing(dir, opts);
-  return { settingsPath: settings, shims: [statusline, hook], skill: skillPath, mcp: null, global: globalWrites, warnings, built, statusline: shown };
+  return { settingsPath: opts.hooks === false ? local : settings, shims: opts.hooks === false ? [statusline] : [statusline, hook], skill: skillPath, mcp: null, global: globalWrites, warnings, built, statusline: shown };
 }
 
 /**
@@ -260,7 +269,7 @@ function runTrailInit(
  * `.claude/helpers/`, the skill in `.claude/skills/`, and trail's server in
  * `.mcp.json`. Settings entries are already gone: the merges replace them.
  */
-function clearOldLayout(dir: string, opts: { keepShims?: boolean } = {}): void {
+function clearOldLayout(dir: string, opts: { keepShims?: boolean; keepMcp?: boolean } = {}): void {
   for (const n of ['graft', 'trail'] as const) {
     const [, oldSl, oldHk, oldSkill] = legacyClaudeTargets(dir, n).map((t) => t.path);
     if (!opts.keepShims) {
@@ -273,7 +282,7 @@ function clearOldLayout(dir: string, opts: { keepShims?: boolean } = {}): void {
   for (const d of [join(dir, '.claude', 'helpers'), join(dir, '.claude', 'skills')]) {
     try { rmdirSync(d); } catch { /* holds the user's files, or was never there */ }
   }
-  dropServer(join(dir, '.mcp.json'), ['trail', 'graft']);
+  if (!opts.keepMcp) dropServer(join(dir, '.mcp.json'), ['trail', 'graft']);
 }
 
 /**

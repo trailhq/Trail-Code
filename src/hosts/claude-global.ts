@@ -92,31 +92,34 @@ function upsertGlobalHooks(id: string, path: string, helpers: string): GlobalWri
  * Best-effort by contract, like every other writer here: a failure is reported as an
  * action, never raised, so a bad `~/.claude.json` can't fail a `graft init`.
  */
-export function installClaudeGlobal(home: string, brand: Brand = 'graft'): GlobalWrite[] {
+export function installClaudeGlobal(home: string, brand: Brand = 'graft', opts: { hooks?: boolean; mcp?: boolean } = {}): GlobalWrite[] {
   const [shim, settings] = claudeGlobalTargets(home, brand);
   const mcp = { id: 'claude-global-mcp', path: join(home, '.claude.json') };
   const out: GlobalWrite[] = [];
 
-  try {
-    out.push(writeOwned(shim.id, shim.path, hooksShim(), 0o755));
-  } catch {
-    out.push({ id: shim.id, path: shim.path, action: 'skipped-unparseable' });
-  }
-
-  // Only wire the hooks once the shim they call is actually on disk — a hook
-  // entry pointing at a missing file is an error in every session, which is a
-  // worse failure than not installing.
-  if (out[0].action !== 'skipped-unparseable') {
+  if (opts.hooks !== false) {
     try {
-      // Posix form in the command string: `join` gives backslashes on Windows and
-      // the template appends `/graft-hooks.cjs`, so the raw path produces a mixed
-      // `C:\Users\…\helpers/graft-hooks.cjs`. Node accepts forward slashes on
-      // Windows, so one separator throughout is both correct and readable.
-      out.push(upsertGlobalHooks(settings.id, settings.path, toPosixPath(globalHelpersDir(home))));
+      out.push(writeOwned(shim.id, shim.path, hooksShim(), 0o755));
     } catch {
-      out.push({ id: settings.id, path: settings.path, action: 'skipped-unparseable' });
+      out.push({ id: shim.id, path: shim.path, action: 'skipped-unparseable' });
+    }
+
+    // Only wire the hooks once the shim they call is actually on disk — a hook
+    // entry pointing at a missing file is an error in every session, which is a
+    // worse failure than not installing.
+    if (out[0].action !== 'skipped-unparseable') {
+      try {
+        // Posix form in the command string: `join` gives backslashes on Windows and
+        // the template appends `/graft-hooks.cjs`, so the raw path produces a mixed
+        // `C:\Users\…\helpers/graft-hooks.cjs`. Node accepts forward slashes on
+        // Windows, so one separator throughout is both correct and readable.
+        out.push(upsertGlobalHooks(settings.id, settings.path, toPosixPath(globalHelpersDir(home))));
+      } catch {
+        out.push({ id: settings.id, path: settings.path, action: 'skipped-unparseable' });
+      }
     }
   }
+  if (opts.mcp === false) return out;
 
   // trail: no server, and the `trail` one an older trail registered here goes.
   // graft's keeps serving every repo still wired as graft; a trail repo turns
