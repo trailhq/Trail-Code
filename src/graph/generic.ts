@@ -48,7 +48,7 @@ export const GENERIC_LANGS: readonly GenericLang[] = [
   { name: "rust", exts: [".rs"], wasm: "rust" },
   { name: "java", exts: [".java"], wasm: "java" },
   { name: "c", exts: [".c", ".h"], wasm: "c" },
-  { name: "cpp", exts: [".cpp", ".cc", ".cxx", ".hpp", ".hh"], wasm: "cpp" },
+  { name: "cpp", exts: [".cpp", ".cc", ".cxx", ".hpp", ".hh", ".mq5", ".mqh"], wasm: "cpp" },
   { name: "ruby", exts: [".rb"], wasm: "ruby" },
   { name: "c_sharp", exts: [".cs"], wasm: "c_sharp" },
   // These ship a tags.scm (calls + symbols); ocaml/zig have none and use the
