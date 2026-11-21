@@ -102,7 +102,7 @@ test('the stamp round-trips under graft/.cache/', () => {
 });
 
 test('wiringOpts defaults an older stamp to what plain `graft init` does', () => {
-  assert.deepEqual(wiringOpts(null), DEFAULT_WIRING_OPTS);
+  assert.deepEqual(wiringOpts(null), { ...DEFAULT_WIRING_OPTS, global: false });
   // A stamp written before flags were recorded: assume the full wiring.
   assert.deepEqual(wiringOpts({ version: '1.0.0', hosts: ['claude'], at: 'x' }), DEFAULT_WIRING_OPTS);
   // A partial record still fills the gaps.
@@ -180,7 +180,7 @@ test('reconcileWiring rewrites once on a version mismatch, then no-ops', () => {
 
   // No stamp (fresh clone, or wired by a pre-stamp graft) → refresh.
   const first = reconcileWiring(repo, '2.0.0', { wired, rewrite });
-  assert.deepEqual(first, { from: 'unwired', to: '2.0.0', hosts: ['claude', 'cursor'], global: true });
+  assert.deepEqual(first, { from: 'unwired', to: '2.0.0', hosts: ['claude', 'cursor'], global: false });
   assert.deepEqual(calls, [['claude', 'cursor']]);
 
   // Stamp now matches the running binary → nothing happens on every later session.
@@ -189,7 +189,7 @@ test('reconcileWiring rewrites once on a version mismatch, then no-ops', () => {
 
   // A newer binary → one more refresh, reported with the version it came from.
   const upgraded = reconcileWiring(repo, '2.1.0', { wired, rewrite });
-  assert.deepEqual(upgraded, { from: '2.0.0', to: '2.1.0', hosts: ['claude', 'cursor'], global: true });
+  assert.deepEqual(upgraded, { from: '2.0.0', to: '2.1.0', hosts: ['claude', 'cursor'], global: false });
   assert.equal(calls.length, 2);
   assert.equal(readStamp(repo)?.version, '2.1.0');
 });
