@@ -162,11 +162,11 @@ test('noSudoFix: a home-folder npm prefix, with the PATH line for the shell in u
 });
 
 test('formatUpgradeReport: a recognised failure shows the plain fix, not npm\'s error block', () => {
-  const out = formatUpgradeReport({ ran: true, ok: false, oldVersion: '0.4.4', fix: 'npm needs sudo to write to /x.', npmError: ENOTEMPTY });
+  const out = formatUpgradeReport({ ran: true, ok: false, oldVersion: '0.4.4', fix: 'npm needs sudo to write to /x.', installError: ENOTEMPTY });
   assert.equal(out, "✗ graft wasn't upgraded: npm needs sudo to write to /x.");
 });
 
 test('formatUpgradeReport: an unrecognised failure keeps npm\'s own error above the failed line', () => {
-  const out = formatUpgradeReport({ ran: true, ok: false, oldVersion: '0.4.4', npmError: 'npm error code E404\n' });
+  const out = formatUpgradeReport({ ran: true, ok: false, oldVersion: '0.4.4', installError: 'npm error code E404\n' });
   assert.equal(out, 'npm error code E404\n✗ npm install -g @nanonets/graft@latest failed');
 });

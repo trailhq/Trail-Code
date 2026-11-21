@@ -4,9 +4,9 @@
  * Split out of cli.ts so the formatting helpers can be unit-tested with
  * injected results instead of hitting the network from tests.
  */
-import { existsSync, readFileSync, readlinkSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, readlinkSync, realpathSync, rmSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { toPosixPath } from "./util/paths.js";
 import { brand, PACKAGE_FOR } from "./brand.js";
@@ -65,8 +65,12 @@ export interface NpmViewResult {
 /** `npm view <pkg> version`, offline-safe: any failure (no npm, no network,
  * timeout) resolves to `{ ok: false }` rather than throwing. */
 export function getNpmViewVersion(pkgName: string = PKG_NAME, timeoutMs = 2000): NpmViewResult {
+  return getRegistryVersion("npm", ["view", pkgName, "version"], timeoutMs);
+}
+
+function getRegistryVersion(command: string, args: string[], timeoutMs = 2000): NpmViewResult {
   try {
-    const res = spawnSync("npm", ["view", pkgName, "version"], {
+    const res = spawnSync(command, args, {
       encoding: "utf8",
       timeout: timeoutMs,
       windowsHide: true,
@@ -113,11 +117,12 @@ function globalRoot(): string | null {
  * registry (which just tells you what "latest" is, not what landed locally). */
 export function readGlobalInstalledVersion(pkgName: string = PKG_NAME): string | null {
   const root = globalRoot();
-  if (!root) return null;
-  const pkgJson = join(root, ...pkgName.split("/"), "package.json");
-  if (!existsSync(pkgJson)) return null;
+  return root ? readInstalledVersion(root, pkgName) : null;
+}
+
+function readInstalledVersion(root: string, pkgName: string): string | null {
   try {
-    const pkg = JSON.parse(readFileSync(pkgJson, "utf8")) as { version?: string };
+    const pkg = JSON.parse(readFileSync(join(root, pkgName, "package.json"), "utf8")) as { version?: string };
     return pkg.version ?? null;
   } catch {
     return null;
@@ -125,7 +130,7 @@ export function readGlobalInstalledVersion(pkgName: string = PKG_NAME): string |
 }
 
 export interface UpgradeResult {
-  /** True when `npm install -g` actually ran (false for the npx no-op path). */
+  /** True when the global install was attempted (false for the npx no-op path). */
   ran: boolean;
   ok: boolean;
   /** Present when ran=true and the install failed. */
@@ -134,10 +139,11 @@ export interface UpgradeResult {
   newVersion?: string;
   /** The `trail` package's version, when `graft upgrade` installed it alongside. */
   trailVersion?: string;
-  /** A plain fix for a failure we recognise, shown instead of npm's error block. */
+  /** A plain fix for a failure we recognise, shown instead of the installer error block. */
   fix?: string;
-  /** npm's own error output, for a failure we don't recognise. */
-  npmError?: string;
+  installCommand?: string;
+  /** The installer's error output, for a failure we don't recognise. */
+  installError?: string;
 }
 
 /** Pure formatter for a finished upgrade — no I/O, easy to unit-test. */
@@ -150,8 +156,10 @@ export function formatUpgradeReport(result: UpgradeResult): string {
   }
   if (!result.ok) {
     if (result.fix) return `✗ ${brand()} wasn't upgraded: ${result.fix}`;
-    const failed = `✗ npm install -g ${PKG_NAME}@latest failed${result.errorMessage ? `: ${result.errorMessage}` : ""}`;
-    return `${result.npmError?.trim() ? `${result.npmError.trim()}\n` : ""}${failed}`;
+    const command = result.installCommand ?? `npm install -g ${PKG_NAME}@latest`;
+    const failed = `✗ ${command} failed${result.errorMessage ? `: ${result.errorMessage}` : ""}`;
+    const error = result.installError?.trim();
+    return error ? `${error}\n${failed}` : failed;
   }
   const line = `${brand()} ${result.oldVersion ?? "?"} → ${result.newVersion ?? result.oldVersion ?? "?"}`;
   return result.trailVersion ? `${line}\n✓ trail ${result.trailVersion} installed too: graft keeps working, and trail is its new name` : line;
@@ -227,41 +235,84 @@ export function noSudoFix(path: string, pkgs: string[], shell: string = process.
   ].join("\n");
 }
 
-/** `npm <args>` with npm's stderr kept, to read its error code; stdout still shows. */
-function npmRun(args: string[]): { ok: boolean; stderr: string; error?: string } {
-  const res = spawnSync("npm", args, { stdio: ["inherit", "inherit", "pipe"], encoding: "utf8", windowsHide: true });
+/** Keep the installer's stderr for failure details while showing its stdout. */
+function runInstaller(command: string, args: string[]): { ok: boolean; stderr: string; error?: string } {
+  const res = spawnSync(command, args, { stdio: ["inherit", "inherit", "pipe"], encoding: "utf8", windowsHide: true });
   return { ok: !res.error && res.status === 0, stderr: res.stderr ?? "", error: res.error?.message };
 }
 
-/** Runs `npm install -g @nanonets/graft@latest`, clearing npm leftovers that
- * block it (`clearNpmLeftover`) and turning EACCES into the no-sudo fix, then
- * re-reads the freshly installed version. No-ops with guidance when running
- * via npx. */
+/** Bun can install globally to a custom directory. Require the manifest from
+ * that directory to match the running package before choosing Bun. */
+function getBunInstallRoot(moduleUrl: string, pkgName: string): string | null {
+  try {
+    const res = spawnSync("bun", ["pm", "ls", "-g"], {
+      encoding: "utf8",
+      timeout: 2000,
+      windowsHide: true,
+      env: { ...process.env, NO_COLOR: "1", FORCE_COLOR: "0" },
+    });
+    if (res.error || res.signal || res.status !== 0) return null;
+    // Bun 1.3 uses "(N)" in the header where current versions use "(N installed)".
+    const dir = res.stdout?.match(/^(.+) node_modules \(\d+(?: installed)?\)\r?$/m)?.[1];
+    if (!dir || !isAbsolute(dir)) return null;
+    const root = join(dir, "node_modules");
+    const bunManifest = realpathSync(join(root, pkgName, "package.json"));
+    return bunManifest === realpathSync(resolvePackageJsonPath(moduleUrl)) ? root : null;
+  } catch {
+    return null;
+  }
+}
+
+function runBunUpgrade(root: string, pkgName: string, oldVersion: string): UpgradeResult {
+  const alongside = pkgName === PACKAGE_FOR.graft
+    && getRegistryVersion("bun", ["info", `${PACKAGE_FOR.trail}@latest`, "version"]).ok;
+  const pkgs = alongside ? [pkgName, PACKAGE_FOR.trail] : [pkgName];
+  const args = ["add", "-g", ...pkgs.map((pkg) => `${pkg}@latest`)];
+  const installCommand = `bun ${args.join(" ")}`;
+  console.error(`· ${installCommand}`);
+  const res = runInstaller("bun", args);
+  if (!res.ok) {
+    return { ran: true, ok: false, oldVersion, installCommand, installError: res.stderr, errorMessage: res.error };
+  }
+  const newVersion = readInstalledVersion(root, pkgName);
+  if (!newVersion) {
+    return { ran: true, ok: false, oldVersion, installCommand, errorMessage: "could not read the installed version" };
+  }
+  const trailVersion = alongside ? (readInstalledVersion(root, PACKAGE_FOR.trail) ?? undefined) : undefined;
+  return { ran: true, ok: true, oldVersion, newVersion, trailVersion };
+}
+
+/** Upgrades the current global install and re-reads its installed version.
+ * No-ops with guidance when running via npx. */
 export function runUpgrade(moduleUrl: string): UpgradeResult {
   const oldVersion = readCurrentVersion(moduleUrl);
   if (isRunningViaNpx(moduleUrl)) {
     return { ran: false, ok: true, oldVersion };
   }
+  const pkgName = readPackageName(moduleUrl);
+  const bunRoot = getBunInstallRoot(moduleUrl, pkgName);
+  if (bunRoot) return runBunUpgrade(bunRoot, pkgName, oldVersion);
+
   // `graft upgrade` is the handover: it also installs the `trail` command, once
   // that package is published. One npm call, so the two land at one version.
   const alongside = PKG_NAME === PACKAGE_FOR.graft && getNpmViewVersion(PACKAGE_FOR.trail).ok ? [PACKAGE_FOR.trail] : [];
   const pkgs = [PKG_NAME, ...alongside];
   const args = ["install", "-g", ...pkgs.map((p) => `${p}@latest`)];
   console.error(`· npm ${args.join(" ")}`);
-  let res = npmRun(args);
+  let res = runInstaller("npm", args);
   // Two leftovers at most (graft upgrade installs two packages), then npm's own error stands.
   for (let retries = 0; !res.ok && retries < 2; retries++) {
     const cleared = clearNpmLeftover(parseNpmError(res.stderr));
     if (!cleared) break;
     console.error(`· ${cleared}; trying again`);
-    res = npmRun(args);
+    res = runInstaller("npm", args);
   }
   if (!res.ok) {
     const problem = parseNpmError(res.stderr);
     if (problem?.code === "EACCES" && process.platform !== "win32") {
       return { ran: true, ok: false, oldVersion, fix: noSudoFix(problem.path ?? "npm's global folder", pkgs) };
     }
-    return { ran: true, ok: false, oldVersion, npmError: res.stderr, errorMessage: res.error };
+    return { ran: true, ok: false, oldVersion, installError: res.stderr, errorMessage: res.error };
   }
   const newVersion = readGlobalInstalledVersion(PKG_NAME) ?? getNpmViewVersion(PKG_NAME).version ?? oldVersion;
   const trailVersion = alongside.length ? (readGlobalInstalledVersion(PACKAGE_FOR.trail) ?? undefined) : undefined;
