@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import childProcess from 'node:child_process';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { join } from 'node:path';
 import {
   DEFAULT_WIRING_OPTS,
@@ -81,6 +83,31 @@ test('an attempt stamp that cannot be saved starts no update check', () => {
   mkdirSync(updateCachePath(home), { recursive: true });
 
   assert.equal(maybeRefreshInBackground(home, 1_700_000_000_000, {}), false);
+});
+
+test('a detached registry spawn error does not crash the foreground command', async (t) => {
+  const home = tmpRepo('upkeep-spawn-error');
+  const realSpawn = childProcess.spawn;
+  let closed = Promise.resolve();
+  const spawn = t.mock.method(childProcess, 'spawn', () => {
+    const child = realSpawn(process.execPath, [], { cwd: join(home, 'missing'), stdio: 'ignore' });
+    closed = new Promise<void>((resolve) => child.once('close', () => resolve()));
+    return child;
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    spawn.mock.restore();
+    syncBuiltinESMExports();
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  const now = 1_700_000_000_000;
+  const started = maybeRefreshInBackground(home, now, {});
+  await closed;
+  assert.equal(started, false);
+  assert.equal(maybeRefreshInBackground(home, now + 1, {}), false);
+  assert.equal(spawn.mock.callCount(), 1);
+  assert.equal(JSON.parse(readFileSync(updateCachePath(home), 'utf8')).checkedAt, now);
 });
 
 test('runningVersion resolves this package, not the caller depth', () => {
