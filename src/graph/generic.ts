@@ -331,7 +331,26 @@ export function extractGeneric(rel: string, source: string, langName: string): E
   else if (langName === "php") extractPhpUses(tree.rootNode as TsNode, rel, rawEdges);
   else if (langName === "gleam") extractGleamModules(tree.rootNode as TsNode, rel, defs, rawEdges);
   else if (langName === "elixir") extractElixir(tree.rootNode as TsNode, rel, nodes, defs, rawEdges);
+  else if (langName === "dart") extractDartImports(tree.rootNode as TsNode, rel, rawEdges);
   return { nodes, rawEdges };
+}
+
+/** Dart file directives may name several relative URIs through conditional imports or exports. */
+function extractDartImports(root: TsNode, rel: string, rawEdges: RawEdge[]): void {
+  function visit(node: TsNode): void {
+    if (node.type === "uri") {
+      const match = /^r?(["'])([^\\$\r\n]+)\1$/.exec(node.text);
+      const path = match?.[2];
+      if (!path || /^(?:\/|[a-z][a-z0-9+.-]*:)/i.test(path)) return;
+      const specifier = path.startsWith("./") || path.startsWith("../") ? path : `./${path}`;
+      rawEdges.push({ source: rel, relation: "imports", specifier, file: rel });
+      return;
+    }
+    for (const child of node.namedChildren) visit(child);
+  }
+  for (const node of root.namedChildren) {
+    if (node.type === "import_or_export" || node.type === "part_directive") visit(node);
+  }
 }
 
 /** PHP `use App\Models\User;` → a file→class-file `imports` raw edge, one per imported
