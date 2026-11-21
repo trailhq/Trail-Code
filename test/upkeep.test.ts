@@ -21,6 +21,7 @@ import {
   writeStamp,
   type WiringOpts,
 } from '../src/upkeep.js';
+import { runUpkeep } from '../src/upkeep-run.js';
 import { tmpRepo } from './helpers.js';
 
 test('compareVersions orders releases numerically, not lexically', () => {
@@ -150,6 +151,25 @@ test('by default a refresh DOES reach ~/.codex — nothing else ever would', () 
   });
   assert.deepEqual(seen, DEFAULT_WIRING_OPTS);
   assert.equal(r?.global, true);
+});
+
+test('a stampless checkout with shared agent instructions does not gain an OpenCode config', () => {
+  const repo = tmpRepo('upkeep-opencode');
+  const home = tmpRepo('upkeep-opencode-home');
+  mkdirSync(join(home, '.config', 'opencode'), { recursive: true });
+  writeFileSync(join(repo, 'AGENTS.md'), '<!-- graft:start -->\nShared repo instructions\n<!-- graft:end -->\n');
+  assert.equal(readStamp(repo), null);
+  const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, GRAFT_MCP_NPX: process.env.GRAFT_MCP_NPX };
+  Object.assign(process.env, { HOME: home, USERPROFILE: home, GRAFT_MCP_NPX: '1' });
+  try {
+    runUpkeep(repo, '2.0.0', { background: false, home });
+    assert.equal(readStamp(repo)?.version, '2.0.0', 'the checkout was actually refreshed');
+    assert.equal(existsSync(join(repo, 'opencode.json')), false);
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
 });
 
 test('wiredHostIds reads what init actually wrote, not what the machine has', () => {

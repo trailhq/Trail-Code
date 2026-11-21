@@ -60,7 +60,7 @@ function rewriteWiring(repo: string, hosts: string[], opts: WiringOpts, toTrail 
   // fenced blocks are replaced by trail's (see hosts/init.ts).
   const others = hosts.filter((h) => h !== 'claude');
   if (others.length)
-    runHostsInit(repo, { agents: others, global: opts.global, laptop: opts.laptop, mcp: opts.mcp, hooks: opts.hooks, ...(toTrail ? { brand: 'trail' as const } : {}) });
+    runHostsInit(repo, { agents: others, global: opts.global, laptop: opts.laptop, mcp: opts.mcp, hooks: opts.hooks, refresh: true, ...(toTrail ? { brand: 'trail' as const } : {}) });
   // Past sessions are never read here: only `trail init`, where the person sees what was found and picks.
 }
 

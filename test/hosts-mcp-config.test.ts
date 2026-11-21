@@ -90,6 +90,29 @@ test('agents id: codex TOML + opencode JSON, gated on home dirs', () => {
   assert.deepEqual(again.map((x) => x.action).sort(), ['unchanged', 'unchanged']);
 });
 
+test('upkeep refresh does not opt a fresh checkout into OpenCode', () => {
+  const repo = fresh(); const home = fresh();
+  mkdirSync(join(home, '.config', 'opencode'), { recursive: true });
+  const path = join(repo, 'opencode.json');
+
+  assert.deepEqual(registerMcpConfigs(repo, ['agents'], { home, refresh: true }), []);
+  assert.ok(!existsSync(path));
+
+  const foreign = '{ "mcp": { "other": { "type": "local", "command": ["other"] } } }\n';
+  writeFileSync(path, foreign);
+  assert.deepEqual(registerMcpConfigs(repo, ['agents'], { home, refresh: true }), []);
+  assert.equal(readFileSync(path, 'utf8'), foreign);
+
+  // A person can still opt in with init. Afterwards upkeep maintains the
+  // registration and can migrate it to Trail without removing other servers.
+  assert.deepEqual(registerMcpConfigs(repo, ['agents'], { home }).map((w) => w.action), ['updated']);
+  assert.deepEqual(registerMcpConfigs(repo, ['agents'], { home, name: 'trail', refresh: true }).map((w) => w.action), ['updated']);
+  assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')).mcp, {
+    ...JSON.parse(foreign).mcp,
+    trail: { type: 'local', command: ['npx', '-y', '@trailhq/trail-code', 'mcp'], enabled: true },
+  });
+});
+
 test('codex TOML append preserves existing content', () => {
   const repo = fresh(); const home = fresh();
   mkdirSync(join(home, '.codex'), { recursive: true });

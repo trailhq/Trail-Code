@@ -65,6 +65,8 @@ export function runHostsInit(
     laptop?: string[];
     /** The name `init` runs under; trail's moves the repo to trail's names (see `hostWiringName`). */
     brand?: Brand;
+    /** Upkeep refreshes an existing OpenCode registration in this checkout. */
+    refresh?: boolean;
   } = {},
 ): HostsInitResult {
   const home = opts.home ?? homedir();
@@ -101,7 +103,7 @@ export function runHostsInit(
   const mcp =
     opts.mcp === false
       ? []
-      : registerMcpConfigs(repo, selected.map((h) => h.id), { home, global: opts.global, name, laptop: opts.laptop });
+      : registerMcpConfigs(repo, selected.map((h) => h.id), { home, global: opts.global, name, laptop: opts.laptop, refresh: opts.refresh });
   // The Codex hook targets are user-level (~/.codex), so --no-global suppresses them.
   const hooks =
     opts.hooks === false || !outside('agents') || !selected.some((h) => h.id === 'agents')
