@@ -21,10 +21,9 @@ import { secretReason } from '../notes/secrets.js';
 import { goodName } from '../skills/compile-words.js';
 import type { CompiledSkill } from '../skills/types.js';
 import { callClaude, claudeBin, type ClaudeFailure } from './claude-call.js';
+import { claudeInitModel } from './look-back.js';
 import type { InitCandidate } from './types.js';
 
-/** The model init's calls use (phase 0's look-back model). */
-export const NAME_MODEL = 'claude-sonnet-5-5';
 const NAME_MS = 60_000;
 const NAME_MAX = 40;
 const DESC_MAX = 120;
@@ -103,8 +102,9 @@ export async function nameItems(skills: InitCandidate[], env: NodeJS.ProcessEnv,
   if (!bin) return { ...none, why: 'not_installed' };
   const prompt = `Name these skills. Each has an id; give its name and description.\n\n${JSON.stringify({ skills: items }, null, 1)}`;
   const tokens = Math.ceil((prompt.length + SYSTEM.length) / 4);
-  const asked = await callClaude<{ id?: unknown; name?: unknown; description?: unknown }>(bin, prompt, NAME_MODEL, opts.timeoutMs ?? NAME_MS, { system: SYSTEM, schema: SCHEMA });
-  const base = { model: NAME_MODEL, sentItems: items.length, tokens };
+  const model = claudeInitModel(env);
+  const asked = await callClaude<{ id?: unknown; name?: unknown; description?: unknown }>(bin, prompt, model, opts.timeoutMs ?? NAME_MS, { system: SYSTEM, schema: SCHEMA });
+  const base = { model, sentItems: items.length, tokens };
   if (!asked.ok) return { ...base, names: {}, why: asked.why, ...(asked.said ? { said: asked.said } : {}) };
   const want = new Set(items.map((i) => i.id as string));
   // Another listed skill's plain name is taken too: two items would show, and save, under one name (b6 review).

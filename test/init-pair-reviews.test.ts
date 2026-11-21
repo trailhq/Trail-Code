@@ -34,7 +34,7 @@ function githubRepo(): string {
 }
 
 /** A signed-in `gh` that answers the GraphQL call, and a `claude` that names one finding from the reviews (and `sessions` from past sessions); both log. */
-function fakeTools(sessions: object[] | "fail" = []): { bin: string; log: string } {
+function fakeTools(sessions: object[] | "fail" = [], requiredModel?: string): { bin: string; log: string } {
   const bin = mkdtempSync(join(tmpdir(), "pair-tools-"));
   const log = join(bin, "log");
   mkdirSync(log);
@@ -64,6 +64,11 @@ process.stdin.on("end", () => {
   const past = input.startsWith("Past Claude Code sessions in this repository");
   fs.writeFileSync(${JSON.stringify(log)} + (review ? "/reviews.txt" : past ? "/sessions.txt" : "/other.txt"), input);
   if (past && ${JSON.stringify(sessions === "fail")}) { console.log(JSON.stringify({ is_error: true, result: "API Error: overloaded" })); process.exit(1); }
+  const requiredModel = ${JSON.stringify(requiredModel)};
+  if (requiredModel && process.argv[process.argv.indexOf("--model") + 1] !== requiredModel) {
+    console.log(JSON.stringify({ is_error: true, result: "Unavailable model" }));
+    process.exit(1);
+  }
   const answer = review ? ${JSON.stringify(reviews)} : past ? { findings: ${JSON.stringify(sessions === "fail" ? [] : sessions)} } : { findings: [] };
   if (process.argv.includes("stream-json")) {
     // As Claude Code streams it: the answer's JSON in pieces, then the result.
@@ -120,9 +125,11 @@ async function standInTrail(features: string[] = []): Promise<{ url: string; pro
 }
 
 /** `trail init` as Claude Code runs it: CLAUDECODE set, no TTY. */
-async function agentInit(repo: string, home: string, bin: string, args: string[]): Promise<{ code: number | null; err: string }> {
+async function agentInit(repo: string, home: string, bin: string, args: string[], model?: string): Promise<{ code: number | null; err: string }> {
   const env: NodeJS.ProcessEnv = {};
   for (const [k, v] of Object.entries(process.env)) if (!AGENT_VARS.test(k)) env[k] = v;
+  delete env.TRAIL_INIT_MODEL;
+  if (model !== undefined) env.TRAIL_INIT_MODEL = model;
   const child = spawn(process.execPath, ["--import", "tsx", "src/cli.ts", "init", repo, "--no-build", "--agents", "auto", ...args], {
     env: { ...env, HOME: home, USERPROFILE: home, TRAIL_HOME: join(home, ".trail"), TRAIL_INVOKED_AS: "trail", DO_NOT_TRACK: "1", GRAFT_MCP_NPX: "1", GIT_TERMINAL_PROMPT: "0", CLAUDECODE: "1", PATH: `${bin}${delimiter}${process.env.PATH}` },
     stdio: ["ignore", "pipe", "pipe"],
@@ -316,6 +323,23 @@ test("init --pair reads past sessions and the PRs together: both learnings saved
     const again = await agentInit(repo, home, bin, ["--pair", "X4GM5OQU4NIA65ZR", "--server", trail.url]);
     assert.equal(again.code, 0, again.err);
     assert.ok(!existsSync(join(log, "sessions.txt")) && !existsSync(join(log, "reviews.txt")), "nothing read twice");
+  } finally {
+    trail.close();
+  }
+});
+
+test("TRAIL_INIT_MODEL selects the Claude model for both day-one imports", { skip: process.platform === "win32" }, async () => {
+  const trail = await standInTrail();
+  try {
+    const home = tmpRepo("init-model-home");
+    const repo = githubRepo();
+    pastSession(repo, home);
+    const { bin } = fakeTools([fromSessions], "sonnet");
+    const r = await agentInit(repo, home, bin, ["--pair", "X4GM5OQU4NIA65ZR", "--server", trail.url], " sonnet ");
+    assert.equal(r.code, 0, r.err);
+    assert.match(r.err, /found "Orders are read fresh from the database, not cached"/);
+    assert.match(r.err, /found "API handlers report database failures instead of hiding them"/);
+    assert.equal(titlesIn(repo).length, 2);
   } finally {
     trail.close();
   }

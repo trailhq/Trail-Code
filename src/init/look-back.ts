@@ -32,8 +32,17 @@ export interface Finding {
   secret?: true;
 }
 
-/** The model phase 0's look-back used, and the naming call uses (name-call.ts). */
+/** The default model for init's Claude Code calls. */
 export const COLD_START_MODEL = "claude-sonnet-5-5";
+
+export function claudeInitModel(env: NodeJS.ProcessEnv): string {
+  return env.TRAIL_INIT_MODEL?.trim() || COLD_START_MODEL;
+}
+
+/** Telemetry carries fixed labels, even when a relay supplies its own model name. */
+export function initModelLabel(model: string): string {
+  return model === "none" || model === COLD_START_MODEL ? model : "custom";
+}
 
 interface RawFinding {
   title?: string;
