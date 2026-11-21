@@ -10,7 +10,7 @@ import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
-import { formatWiringRefresh, readStamp, reconcileWiring, runningVersion } from '../src/upkeep.js';
+import { formatWiringRefresh, readStamp, reconcileWiring, runningVersion, writeStamp } from '../src/upkeep.js';
 import { runUpkeep, shouldMoveToTrail } from '../src/upkeep-run.js';
 import { fitTrailServerToMachine } from '../src/hosts/claude-global.js';
 import { BRAND_ENV, repoWiredForTrail } from '../src/brand.js';
@@ -54,8 +54,8 @@ test('a graft repo moves to trail once the trail command is installed, and only 
     delete process.env[BRAND_ENV];
     runInit(repo, { build: false, global: false });
     assert.ok(existsSync(join(repo, '.claude', 'skills', 'graft', 'SKILL.md')), 'wired as graft');
-    // Stamp it at this version, so only the move can trigger a refresh.
-    runUpkeep(repo, runningVersion(), { background: false, home });
+    // Model a recorded init that included machine-wide wiring.
+    writeStamp(repo, runningVersion(), ['claude'], { global: true });
     assert.equal(shouldMoveToTrail(repo), false, 'no trail command yet');
     assert.equal(shouldMoveToTrail(repo, { ...process.env, PATH: binWith('trail'), GRAFT_NO_TRAIL_SWITCH: '1' }), false, 'a machine can opt out');
 

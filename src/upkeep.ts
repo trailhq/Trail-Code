@@ -188,9 +188,9 @@ export interface WiringOpts {
 
 export const DEFAULT_WIRING_OPTS: WiringOpts = { global: true, mcp: true, hooks: true, statusline: true };
 
-/** An older stamp has no `opts`; a plain `graft init` wired everything. */
+/** Older stamps replay plain init defaults. Without a stamp, refresh only the checkout. */
 export function wiringOpts(stamp: WiringStamp | null): WiringOpts {
-  return { ...DEFAULT_WIRING_OPTS, ...(stamp?.opts ?? {}) };
+  return { ...DEFAULT_WIRING_OPTS, ...(stamp ? stamp.opts : { global: false }) };
 }
 
 export interface WiringStamp {
