@@ -59,6 +59,8 @@ export interface WorkspaceV1 {
   version: 1;
   /** Immediate child dir names that are git repos, sorted. */
   children: string[];
+  /** Child names deliberately omitted by the last explicit selection. */
+  excluded?: string[];
 }
 
 const WORKSPACE_FILE = "workspace.json";
@@ -75,7 +77,8 @@ export function readWorkspace(root: string, override?: string): WorkspaceV1 | nu
   try {
     const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<WorkspaceV1>;
     if (parsed.version !== 1 || !Array.isArray(parsed.children)) return null;
-    return { version: 1, children: parsed.children.map(String) };
+    const excluded = Array.isArray(parsed.excluded) ? parsed.excluded.filter((name) => typeof name === "string") : [];
+    return { version: 1, children: parsed.children.map(String), ...(excluded.length ? { excluded } : {}) };
   } catch {
     return null;
   }
@@ -87,6 +90,7 @@ export function writeWorkspace(root: string, ws: WorkspaceV1, override?: string)
   mkdirSync(dir, { recursive: true });
   const path = join(dir, WORKSPACE_FILE);
   const sorted: WorkspaceV1 = { version: 1, children: [...ws.children].sort() };
+  if (ws.excluded?.length) sorted.excluded = [...new Set(ws.excluded)].sort();
   writeFileSync(path, JSON.stringify(sorted, null, 2) + "\n");
   return path;
 }
@@ -712,13 +716,16 @@ export async function splitWorkspace(
   override: string | undefined,
   buildChild: (childDir: string, childName: string) => Promise<void>,
   onStart?: (info: { children: string[]; migrated: boolean }) => void,
+  excludeChildren?: string[],
 ): Promise<{ children: string[]; migrated: boolean }> {
-  const children = discoverWorkspaceChildren(root).slice().sort();
+  const excluded = new Set(excludeChildren ?? readWorkspace(root, override)?.excluded ?? []);
+  const children = discoverWorkspaceChildren(root).filter((child) => !excluded.has(child)).sort();
+  if (excluded.size && children.length === 0) throw new Error("The workspace selection excludes every Git child");
   const migrated = hasMegaGraph(root, override);
   onStart?.({ children, migrated });
   for (const child of children) await buildChild(join(root, child), child);
   clearParentGraft(root, override); // drop the mega-graph/.cache/cards…
-  writeWorkspace(root, { version: 1, children }, override); // …leaving ONLY workspace.json
+  writeWorkspace(root, { version: 1, children, excluded: [...excluded] }, override); // …leaving ONLY workspace.json
   return { children, migrated };
 }
 

@@ -576,6 +576,9 @@ grouped(program.command("build"), GROUP.setup)
     (val: string, prev: string[]) => [...prev, val],
     [] as string[],
   )
+  .option("--exclude-child <name>", "omit an immediate Git child from workspace builds and queries; repeatable and saved",
+    (name: string, previous: string[] = []) => [...previous, name])
+  .option("--all-children", "clear the workspace's saved child exclusions")
   .option("--no-gitignore", "skip writing graft/ into .gitignore (same as GRAFT_NO_GITIGNORE=1)")
   .option("--no-ignore", "skip writing .ignore for ripgrep re-admit (same as GRAFT_NO_IGNORE=1)")
   .action(async (
@@ -594,6 +597,8 @@ grouped(program.command("build"), GROUP.setup)
       synthBatchChars?: string;
       includeDir?: string[];
       onlyDir?: string[];
+      excludeChild?: string[];
+      allChildren?: boolean;
       followSubmodules?: boolean;
       followNestedRepos?: boolean;
       gitignore?: boolean;
@@ -711,9 +716,17 @@ grouped(program.command("build"), GROUP.setup)
     // Workspace parent: build each child into its OWN graft/ + a workspace index.
     const buildRoot = resolve(dir);
     const buildGlobalDir = program.opts<GlobalOpts>().dir;
+    const workspaceBuild = isWorkspaceBuildRoot(buildRoot, buildGlobalDir);
+    if (opts.excludeChild || opts.allChildren) {
+      if (!workspaceBuild || (opts.excludeChild && opts.allChildren)
+          || opts.excludeChild?.some((name) => !name.trim() || name === "." || name === ".." || /[\/\\]/.test(name))) {
+        console.error("✗ Use --exclude-child with immediate directory names, or --all-children by itself, when building a workspace.");
+        process.exit(1);
+      }
+    }
     // Another build or sync of this map already running as this one starts.
     const overlap = lockHeldByOther(join(contextDirFor(buildRoot, buildGlobalDir), CACHE_DIR));
-    if (isWorkspaceBuildRoot(buildRoot, buildGlobalDir)) {
+    if (workspaceBuild) {
       await runWorkspaceBuild(buildRoot, {
         deep: !!deep,
         extensions: opts.extensions,
@@ -724,6 +737,7 @@ grouped(program.command("build"), GROUP.setup)
         strict: opts.strict,
         override: buildGlobalDir,
         includeDirs: opts.includeDir,
+        excludeChildren: opts.allChildren ? [] : opts.excludeChild,
         followSubmodules: followSubmodulesWasExplicit ? opts.followSubmodules : undefined,
         followNestedRepos: followNestedReposWasExplicit ? opts.followNestedRepos : undefined,
         packageName: readPackageName(import.meta.url),
