@@ -45,6 +45,8 @@ export interface WorkspaceBuildOptions {
    * independent repos with their own local settings and can later be rebuilt
    * directly without seeing the parent invocation's flags. */
   includeDirs?: string[];
+  /** Explicit child exclusions, or [] to clear the stored selection. */
+  excludeChildren?: string[];
   /** An explicit CLI submodule choice to persist into every child repo. */
   followSubmodules?: boolean;
   /** An explicit CLI nested-clone choice to persist into every child repo. */
@@ -115,6 +117,7 @@ export async function runWorkspaceBuild(root: string, opts: WorkspaceBuildOption
       if (migrated) console.error(migrationNote(children));
       console.error(`building ${children.length} workspace repos: ${children.join(", ")}`);
     },
+    opts.excludeChildren,
   );
   // Each child self-ignored during its own build; the parent's federation
   // index (graft/workspace.json) is written outside buildGraph, so ignore it here too.

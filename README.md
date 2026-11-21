@@ -794,8 +794,11 @@ The graft map supports these layouts:
 - **A folder of separate git repos** (no `.git` at the top): `trail build`
   auto-splits: each child gets its own (git-ignored) `graft/`, and the parent
   gets a `graft/workspace.json` index. Queries from the parent federate across
-  every child, always labeled `<child>/`. Run `trail build` inside a child to
-  work on just that repo.
+  the included children, always labeled `<child>/`. Use
+  `trail build --exclude-child vendor --exclude-child scratch` to set the
+  list of immediate child repos to skip. Later builds reuse that list.
+  Run `trail build --all-children` to clear it, or run `trail build` inside
+  a child to work on just that repo.
 
 In every layout, narrow to one sub-project with `trail ask "<task>" --in <scope>/`
 once you know where you're working.

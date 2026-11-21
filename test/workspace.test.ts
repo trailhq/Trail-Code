@@ -95,6 +95,31 @@ test("workspace.json lists both children; parent holds no mega-graph", async () 
   rmSync(p, { recursive: true, force: true });
 });
 
+test("excluded workspace children stay out of builds and queries until the selection is cleared", async (t) => {
+  const p = workspaceFx(REPOS);
+  t.after(() => rmSync(p, { recursive: true, force: true }));
+  const seen: string[] = [];
+  const build = async (dir: string, name: string) => {
+    seen.push(name);
+    await buildGraph(dir);
+  };
+  await splitWorkspace(p, undefined, build, undefined, ["repoB"]);
+  assert.deepEqual(seen, ["repoA"]);
+  assert.deepEqual(readWorkspace(p), { version: 1, children: ["repoA"], excluded: ["repoB"] });
+  assert.equal(existsSync(wiringPath(contextDirFor(join(p, "repoB")))), false);
+
+  await splitWorkspace(p, undefined, build);
+  assert.deepEqual(seen, ["repoA", "repoA"]);
+  assert.deepEqual(loadWorkspaceGraphs(p).loaded.map(({ child }) => child), ["repoA"]);
+  assert.deepEqual(loadWorkspaceGraphs(p).missing, []);
+
+  await assert.rejects(splitWorkspace(p, undefined, build, undefined, ["repoA", "repoB"]), /excludes every/);
+  assert.deepEqual(readWorkspace(p)?.children, ["repoA"]);
+  await splitWorkspace(p, undefined, build, undefined, []);
+  assert.deepEqual(seen, ["repoA", "repoA", "repoA", "repoB"]);
+  assert.deepEqual(readWorkspace(p), { version: 1, children: ["repoA", "repoB"] });
+});
+
 test("ask at the parent federates hits from both children, labeled <child>/", async () => {
   const p = workspaceFx(REPOS);
   await buildWorkspace(p);
