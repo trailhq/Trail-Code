@@ -80,6 +80,13 @@ function opencodeEntry(name: Brand = 'graft'): object {
   return { type: 'local', command: [command, ...args], enabled: true };
 }
 
+function hasOpenCodeRegistration(path: string, name: Brand): boolean {
+  const loaded = readJsonObject(path);
+  const servers = loaded === 'unparseable' ? undefined : loaded.root.mcp;
+  return typeof servers === 'object' && servers !== null && !Array.isArray(servers)
+    && (Object.hasOwn(servers, name) || (name === 'trail' && Object.hasOwn(servers, 'graft')));
+}
+
 function dirExists(p: string): boolean {
   try { return statSync(p).isDirectory(); } catch { return false; }
 }
@@ -250,7 +257,7 @@ function jsonTarget(
 export function mcpTargets(
   repo: string,
   ids: string[],
-  opts: { home?: string; name?: Brand } = {},
+  opts: { home?: string; name?: Brand; refresh?: boolean } = {},
 ): McpTarget[] {
   const home = opts.home ?? homedir();
   const name = opts.name ?? 'graft';
@@ -286,7 +293,7 @@ export function mcpTargets(
           scope: 'repo', kind: 'mcp', what: tomlHeader(name), format: 'toml', key: name,
         });
         break;
-      case 'agents':
+      case 'agents': {
         // Guarded on the CLI actually being installed, so a plan only ever
         // lists files a real run would touch.
         if (dirExists(join(home, '.codex'))) {
@@ -295,10 +302,14 @@ export function mcpTargets(
             scope: 'global', kind: 'mcp', what: tomlHeader(name), format: 'toml', key: name,
           });
         }
-        if (dirExists(join(home, '.config', 'opencode'))) {
-          out.push(json(id, 'opencode', join(repo, 'opencode.json'), 'mcp', opencodeEntry(name)));
+        const opencode = join(repo, 'opencode.json');
+        // AGENTS.md is shared by multiple hosts. On upkeep it identifies
+        // where to refresh instructions, not consent to install OpenCode.
+        if (dirExists(join(home, '.config', 'opencode')) && (!opts.refresh || hasOpenCodeRegistration(opencode, name))) {
+          out.push(json(id, 'opencode', opencode, 'mcp', opencodeEntry(name)));
         }
         break;
+      }
       default:
         break; // copilot / windsurf / adal: no MCP target in this phase
     }
@@ -327,7 +338,7 @@ function trailServerIn(t: McpTarget): boolean {
 export function registerMcpConfigs(
   repo: string,
   ids: string[],
-  opts: { home?: string; global?: boolean; name?: Brand; laptop?: string[] } = {},
+  opts: { home?: string; global?: boolean; name?: Brand; laptop?: string[]; refresh?: boolean } = {},
 ): McpWrite[] {
   const name = opts.name ?? 'graft';
   return mcpTargets(repo, ids, opts)
