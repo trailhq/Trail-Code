@@ -1,5 +1,3 @@
-import { isGraftEntry, isShareSyncEntry } from '../hosts/config-write.js';
-
 type Json = Record<string, any>;
 
 const slCmd = (name: 'graft' | 'trail' = 'graft') => `node "\${CLAUDE_PROJECT_DIR:-.}/.claude/helpers/${name}-statusline.cjs"`;
@@ -103,6 +101,25 @@ function hookBlocks(command: (arg: string) => string): Record<string, Json[]> {
     SessionEnd: [{ hooks: [{ type: 'command', command: hookCmd_('session-end'), timeout: 5 }] }],
   };
 }
+
+// Match the generated invocation, including old forms without a fail-open suffix.
+// A person's wrapper, another handler type, or a matcher mentioning a shim is not ours.
+const SHIM_COMMAND = /^\s*node\s+(?:"([^"\r\n]+)"|([^\s"']+))\s+([a-z][\w-]*)(?:\s+\|\|\s+exit\s+0)?\s*$/;
+const HOOK_SHIM = /(?:^|[/\\])(?:(?:graft|trail)-hooks\.cjs|\.trail[/\\]hook\.cjs)$/;
+
+function withoutOurHandlers(prior: Json[], keepShareSync = false): Json[] {
+  return prior.flatMap((entry) => {
+    if (!Array.isArray(entry?.hooks)) return [entry];
+    const hooks = entry.hooks.filter((hook: Json) => {
+      if (hook?.type !== 'command' || typeof hook.command !== 'string') return true;
+      const match = SHIM_COMMAND.exec(hook.command);
+      if (!match || !HOOK_SHIM.test((match[1] ?? match[2])!)) return true;
+      return keepShareSync && match[3] === 'share-sync';
+    });
+    if (hooks.length === entry.hooks.length) return [entry];
+    return hooks.length ? [{ ...entry, hooks }] : [];
+  });
+}
 /**
  * Is this allowlist entry one graft wrote?
  *
@@ -183,7 +200,7 @@ export function mergeGraftSettings(
   merged.hooks = { ...(merged.hooks ?? {}) };
   for (const [event, blocks] of Object.entries(graftBlocks(undefined, name))) {
     const prior = Array.isArray(merged.hooks[event]) ? merged.hooks[event] : [];
-    const foreign = prior.filter((e: Json) => !isGraftEntry(e)); // drop old Graft entries → idempotent
+    const foreign = withoutOurHandlers(prior);
     merged.hooks[event] = [...foreign, ...blocks];
   }
 
@@ -225,7 +242,7 @@ export function mergeGraftHooks(existing: Json, helpers: string): { merged: Json
   merged.hooks = { ...(merged.hooks ?? {}) };
   for (const [event, blocks] of Object.entries(graftBlocks(helpers))) {
     const prior = Array.isArray(merged.hooks[event]) ? merged.hooks[event] : [];
-    const foreign = prior.filter((e: Json) => !isGraftEntry(e) || isShareSyncEntry(e));
+    const foreign = withoutOurHandlers(prior, true);
     merged.hooks[event] = [...foreign, ...blocks];
   }
   dropGraftFooter(merged);
@@ -247,7 +264,7 @@ export function withoutOurs(existing: Json): Json {
   if (merged.hooks && typeof merged.hooks === 'object' && !Array.isArray(merged.hooks)) {
     const hooks: Json = {};
     for (const [event, prior] of Object.entries(merged.hooks)) {
-      const kept = Array.isArray(prior) ? prior.filter((e: Json) => !isGraftEntry(e)) : prior;
+      const kept = Array.isArray(prior) ? withoutOurHandlers(prior) : prior;
       if (!Array.isArray(kept) || kept.length) hooks[event] = kept;
     }
     if (Object.keys(hooks).length) merged.hooks = hooks;
