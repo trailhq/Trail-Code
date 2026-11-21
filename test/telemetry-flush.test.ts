@@ -44,7 +44,7 @@ function queuedHome(): string {
 }
 
 function interceptSpawn() {
-  const spawn = mock.method(childProcess, 'spawn', () => ({ unref() {} }) as ChildProcess);
+  const spawn = mock.method(childProcess, 'spawn', () => ({ pid: 123, once() {}, unref() {} }) as ChildProcess);
   syncBuiltinESMExports();
   return spawn;
 }
@@ -78,6 +78,28 @@ test('a saved timestamp permits one helper and suppresses another before expiry'
   assert.equal(maybeFlushInBackground(home, now + FLUSH_TTL_MS - 1), false);
   assert.equal(spawn.mock.callCount(), 1);
   assert.equal(spawn.mock.calls[0].arguments[1]?.[1], '_telemetry-flush');
+  assert.deepEqual(peek(home), [EVENT]);
+});
+
+test('a detached telemetry spawn error leaves the queue available without crashing the caller', async () => {
+  const home = queuedHome();
+  const realSpawn = childProcess.spawn;
+  let closed = Promise.resolve();
+  const spawn = mock.method(childProcess, 'spawn', () => {
+    // A missing working directory produces a real asynchronous ChildProcess error.
+    const child = realSpawn(process.execPath, [], { cwd: join(home, 'missing'), stdio: 'ignore' });
+    closed = new Promise<void>((resolve) => child.once('close', () => resolve()));
+    return child;
+  });
+  syncBuiltinESMExports();
+
+  const now = FLUSH_TTL_MS;
+  const started = maybeFlushInBackground(home, now);
+  await closed;
+  assert.equal(started, false);
+  assert.equal(readState(home)?.flushedAt, now);
+  assert.equal(maybeFlushInBackground(home, now + 1), false);
+  assert.equal(spawn.mock.callCount(), 1);
   assert.deepEqual(peek(home), [EVENT]);
 });
 

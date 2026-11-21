@@ -25,10 +25,10 @@
  *   • Cursor/Codex  — MCP server boot (src/mcp/server.ts), and any CLI command
  */
 import { existsSync, readFileSync } from 'node:fs';
-import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { readJson, writeJsonAtomic, cacheDir } from './util/state.js';
+import { startBackgroundWorker } from './util/background-worker.js';
 import { HOSTS, hostRelPath } from './hosts/registry.js';
 import { markersFor } from './hosts/sections.js';
 import { getNpmViewVersion, readCurrentVersion } from './cli-meta.js';
@@ -138,17 +138,7 @@ export function maybeRefreshInBackground(
   if (!needsRefresh(cache, now)) return false;
   writeUpdateCache({ latest: cache?.latest ?? null, checkedAt: now }, home);
   if (readUpdateCache(home)?.checkedAt !== now) return false;
-  try {
-    const child = spawn(process.execPath, [graftCliPath(), '_update-check'], {
-      detached: true,
-      stdio: 'ignore',
-      windowsHide: true,
-    });
-    child.unref();
-    return true;
-  } catch {
-    return false; // no spawn (sandbox, ENOMEM) — the nudge just uses the old cache
-  }
+  return startBackgroundWorker([graftCliPath(), '_update-check']);
 }
 
 /** One line, or nothing. Nothing is the common case — don't spend context on

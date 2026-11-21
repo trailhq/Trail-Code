@@ -11,9 +11,9 @@
  * are asking ("how many repos activated this week") do not get better answers
  * from lower latency.
  */
-import { spawn } from 'node:child_process';
 import { statSync } from 'node:fs';
 import { graftCliPath } from '../claude/paths.js';
+import { startBackgroundWorker } from '../util/background-worker.js';
 import { drain, queuePath, requeue } from './queue.js';
 import { patchState, readState } from './identity.js';
 import { sendBatch, type SendResult } from './send.js';
@@ -42,15 +42,9 @@ export function maybeFlushInBackground(home?: string, now = Date.now()): boolean
     patchState({ flushedAt: now }, home); // before the spawn, so a dying child costs one attempt
     // patchState tolerates write failures; only spawn if the daily limit was saved.
     if (readState(home)?.flushedAt !== now) return false;
-    const child = spawn(process.execPath, [graftCliPath(), '_telemetry-flush'], {
-      detached: true,
-      stdio: 'ignore',
-      windowsHide: true,
-    });
-    child.unref();
-    return true;
+    return startBackgroundWorker([graftCliPath(), '_telemetry-flush']);
   } catch {
-    return false; // no spawn available (sandbox, ENOMEM) — try again tomorrow
+    return false; // telemetry must stay optional even when the local state fails
   }
 }
 
