@@ -103,7 +103,7 @@ test("writeAskIndex + readAskIndex round-trip matches live tokenization exactly"
 
     const index = readAskIndex(outDir);
     assert.ok(index, "sidecar should exist after build");
-    assert.equal(index!.version, 2);
+    assert.equal(index!.version, 3);
     assert.equal(index!.docCount, graph!.nodes.length);
     assert.equal(index!.docs.length, graph!.nodes.length);
 
@@ -271,7 +271,7 @@ test("readAskIndex returns null when docCount doesn't match docs.length", () => 
     const idxPath = askIndexPath(outDir);
     mkdirSync(dirname(idxPath), { recursive: true });
     const corrupted = {
-      version: 2,
+      version: 3,
       avgBodyLen: 3,
       df: [["foo", 1]],
       docCount: 5, // deliberately mismatched with docs below
@@ -446,9 +446,40 @@ test("tokenize emits CJK bigrams so a shorter query phrase matches a longer one"
   // Japanese kana and Korean Hangul runs behave the same
   assert.ok(tokenize("テスト検索").includes("テス"));
   assert.ok(tokenize("한국어검색").includes("한국"));
-  // A single CJK character is still filtered by the length rule, its bigram partner is not
-  assert.deepEqual(tokenize("中"), []);
   assert.deepEqual(tokenize("中文"), ["中文"]);
+});
+
+test("tokenize keeps single CJK words", () => {
+  assert.deepEqual(tokenize("中 가 ア x Δ"), ["中", "가", "ア"]);
+  assert.deepEqual(tokenize("𠮷"), ["𠮷"]);
+});
+
+test("tokenize builds CJK bigrams from whole characters", () => {
+  assert.deepEqual(tokenize("𠮷野家"), ["𠮷野家", "𠮷野", "野家"]);
+  assert.deepEqual(tokenize("𠮷野"), ["𠮷野"]);
+});
+
+test("ask finds a one-character CJK name through the sidecar and live fallback", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "graft-single-cjk-"));
+  try {
+    writeFileSync(join(dir, "locale.ts"), "export function 野(): number { return 1; }\n");
+    writeFileSync(join(dir, "other.ts"), "export function unrelated(): number { return 2; }\n");
+    const result = await buildGraph(dir);
+    assert.deepEqual(result.errors, []);
+    const outDir = contextDirFor(dir);
+    const indexed = ask(dir, "野", { source: false });
+    assert.match(indexed.hits[0]?.pointer ?? "", /locale\.ts/);
+
+    // A v2 sidecar cannot supply the missing singleton or corrected bigrams.
+    const path = askIndexPath(outDir);
+    const stale = JSON.parse(readFileSync(path, "utf8"));
+    stale.version = 2;
+    writeFileSync(path, JSON.stringify(stale));
+    assert.equal(readAskIndex(outDir), null);
+    assert.deepEqual(ask(dir, "野", { source: false }), indexed);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("tokenize splits camelCase for cased scripts that are not Latin", () => {
@@ -492,7 +523,7 @@ test("sidecar parity holds for non-ASCII cards: index bags equal live tokenizati
 
     const index = readAskIndex(outDir);
     assert.ok(index, "sidecar should exist after build");
-    assert.equal(index!.version, 2, "the Unicode-aware tokenizer ships as format v2");
+    assert.equal(index!.version, 3, "the code-point-aware CJK tokenizer ships as format v3");
 
     const doc = index!.docs.find((d) => d.name.some(([t]) => t.includes("检索")))!;
     assert.ok(doc, "the CJK-named symbol must be indexed, not dropped");

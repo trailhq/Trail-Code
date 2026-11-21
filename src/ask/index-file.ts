@@ -24,7 +24,7 @@ import { dirname, join } from "node:path";
 import type { GraphV1 } from "../graph/types.js";
 import { CACHE_DIR } from "../context/node-file.js";
 
-/** Words too common/short to carry query intent — dropped before scoring. */
+/** Words too common to carry query intent — dropped before scoring. */
 const STOP = new Set([
   "the", "a", "an", "of", "to", "in", "is", "are", "how", "does", "do", "what",
   "where", "which", "that", "this", "it", "for", "on", "and", "or", "with",
@@ -53,13 +53,16 @@ const STOP = new Set([
  * phrase would never match it. Bigram overlap makes "中文检索" find a card
  * that says "中文检索系统". */
 const WORD_SEPARATOR = /[^\p{L}\p{N}\p{M}]+/u;
-const CJK_RUN = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]{2,}/gu;
+const CJK_CHARACTER = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+const CJK_RUN = new RegExp(`${CJK_CHARACTER.source}{2,}`, "gu");
 
 const cjkBigrams = (word: string): string[] => {
   const bigrams: string[] = [];
   for (const match of word.matchAll(CJK_RUN)) {
-    const run = match[0];
-    for (let i = 0; i + 1 < run.length; i += 1) bigrams.push(run.slice(i, i + 2));
+    const characters = Array.from(match[0]);
+    for (let i = 0; i + 1 < characters.length; i += 1) {
+      bigrams.push(characters[i]! + characters[i + 1]!);
+    }
   }
   return bigrams;
 };
@@ -75,7 +78,8 @@ export function tokenize(text: string): string[] {
   const words = withCamelBreaks
     .toLowerCase()
     .split(WORD_SEPARATOR)
-    .filter((t) => t.length > 1 && !STOP.has(t));
+    // A single CJK character can be a word or an entire identifier.
+    .filter((t) => (t.length > 1 || CJK_CHARACTER.test(t)) && !STOP.has(t));
   const tokens: string[] = [];
   for (const word of words) {
     tokens.push(word);
@@ -106,10 +110,9 @@ export interface AskIndexDoc {
 /** The build-time sidecar. `df`/`docCount` cover symbol+file nodes only (no
  * concepts — see module docstring); `avgBodyLen` is the BM25 corpus average. */
 export interface AskIndex {
-  /** Tokenizer shape generation: 2 = Unicode-aware tokens + CJK bigrams (#432).
-   * Bumped from 1 so pre-#432 sidecars read as unknown and fall back to live
-   * tokenization instead of serving ASCII-only bags forever. */
-  version: 2;
+  /** Tokenizer shape generation: 3 keeps single CJK words and whole-character bigrams.
+   * Older sidecars fall back to live tokenization. */
+  version: typeof ASK_INDEX_VERSION;
   avgBodyLen: number;
   df: [string, number][];
   docCount: number;
@@ -117,6 +120,7 @@ export interface AskIndex {
 }
 
 export const ASK_INDEX_FILE = "ask-index.json";
+const ASK_INDEX_VERSION = 3;
 
 /** Absolute path to the ask sidecar for a context dir: `<dir>/.cache/ask-index.json`.
  * `.cache/` is the established uncommitted-cache location — this sidecar is a
@@ -169,7 +173,7 @@ export function writeAskIndex(outDir: string, graph: GraphV1): string {
   }
 
   const avgBodyLen = docs.length ? bodyTotal / docs.length : 0;
-  const head: Omit<AskIndex, "docs"> = { version: 2, avgBodyLen, df: pairs(df), docCount: nodes.length };
+  const head: Omit<AskIndex, "docs"> = { version: ASK_INDEX_VERSION, avgBodyLen, df: pairs(df), docCount: nodes.length };
 
   const outPath = askIndexPath(outDir);
   mkdirSync(dirname(outPath), { recursive: true });
@@ -206,7 +210,7 @@ export function readAskIndex(outDir: string): AskIndex | null {
     if (
       !raw ||
       typeof raw !== "object" ||
-      raw.version !== 2 ||
+      raw.version !== ASK_INDEX_VERSION ||
       typeof raw.docCount !== "number" ||
       typeof raw.avgBodyLen !== "number" ||
       !Array.isArray(raw.df) ||
