@@ -85,7 +85,7 @@ test('the Stop hook writes nothing, whatever it is given', async () => {
   }
 });
 
-test('handleStopEvent still bills the turn and starts the background sync', async () => {
+test('handleStopEvent still bills the turn and starts the background sync with the save prompt off', async () => {
   const { dir } = trailRepo();
   const t = join(dir, 'billed.jsonl');
   writeFileSync(t, jsonl([
@@ -96,11 +96,15 @@ test('handleStopEvent still bills the turn and starts the background sync', asyn
   const syncRun = join(dir, 'sync-run-stub.js');
   writeFileSync(syncRun, '// test stub: spawned as a detached no-op child\n');
   process.env.GRAFT_TEST_SYNC_RUN = syncRun;
+  const previous = process.env.TRAIL_NO_STOP_NOTE;
+  process.env.TRAIL_NO_STOP_NOTE = '1';
   try {
     const out = await captured(() => handleStopEvent({ session_id: 's1', transcript_path: t }, dir));
     assert.equal(out, '');
   } finally {
     delete process.env.GRAFT_TEST_SYNC_RUN;
+    if (previous === undefined) delete process.env.TRAIL_NO_STOP_NOTE;
+    else process.env.TRAIL_NO_STOP_NOTE = previous;
   }
   const s = readSession(dir, 's1');
   assert.equal(s.inputTokensBilled, 100, 'the turn was billed');
@@ -138,6 +142,26 @@ test('Claude Code 2.1.163 and later get the ask as Stop additionalContext, so it
   }
   // The stop that follows either form has stop_hook_active (Claude Code 2.1.317), and asks nothing.
   assert.equal(await stop(JSON.stringify({ session_id: 'v4', transcript_path: fixedAt(dir, '2.1.317'), stop_hook_active: true })), '');
+});
+
+test('TRAIL_NO_STOP_NOTE suppresses both forms of the automatic learning ask', async () => {
+  const { dir } = trailRepo();
+  const previous = process.env.TRAIL_NO_STOP_NOTE;
+  try {
+    process.env.TRAIL_NO_STOP_NOTE = '1';
+    for (const [version, id] of [['2.1.162', 'quiet-old'], ['2.1.317', 'quiet-new']] as const) {
+      const transcript = fixedAt(dir, version);
+      assert.equal(await stop(JSON.stringify({ session_id: id, transcript_path: transcript })), '');
+      assert.deepEqual(readSession(dir, id).noteAsks ?? [], []);
+    }
+
+    process.env.TRAIL_NO_STOP_NOTE = '0';
+    const resumed = await stop(JSON.stringify({ session_id: 'quiet-new', transcript_path: fixedAt(dir, '2.1.317') }));
+    assert.match(JSON.parse(resumed).hookSpecificOutput.additionalContext, /^\[trail\] go test failed once/);
+  } finally {
+    if (previous === undefined) delete process.env.TRAIL_NO_STOP_NOTE;
+    else process.env.TRAIL_NO_STOP_NOTE = previous;
+  }
 });
 
 test('only Claude Code\'s main agent, by its transcript\'s version, takes the Stop as additionalContext; anything else keeps the block', () => {
