@@ -6,7 +6,7 @@
 import { execFileSync } from "node:child_process";
 import { userInfo } from "node:os";
 
-/** git's stdout, trimmed unless `raw` (porcelain status starts lines with a meaningful space). */
+/** Git's stdout, trimmed unless the caller needs exact bytes for paths or status fields. */
 function git(repo: string, args: string[], raw = false): string | null {
   try {
     const out = execFileSync("git", args, { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
@@ -62,19 +62,20 @@ export function trailOwnPath(p: string): boolean {
 export function changedFiles(repo: string, since?: number, limit = 10, uncommitted = true): string[] {
   const out: string[] = [];
   const add = (p: string) => {
-    const f = p.trim();
-    if (f && !ownPath(f) && !out.includes(f)) out.push(f);
+    if (p && !ownPath(p) && !out.includes(p)) out.push(p);
   };
-  const status = uncommitted ? git(repo, ["status", "--porcelain", "--untracked-files=all"], true) : null;
-  for (const line of (status ?? "").split("\n")) {
-    if (!line.trim()) continue;
-    // `XY path` or `XY old -> new`: the path now.
-    const path = line.slice(3).split(" -> ").pop() ?? "";
-    add(path.replace(/^"|"$/g, ""));
+  const status = uncommitted ? git(repo, ["status", "--porcelain=v1", "-z", "--untracked-files=all"], true) : null;
+  const records = status?.split("\0") ?? [];
+  for (let i = 0; i < records.length; i++) {
+    const entry = records[i]!;
+    add(entry.slice(3));
+    // With -z, a rename or copy lists its destination first, then its source as a second field.
+    const kind = entry.slice(0, 2);
+    if (kind.includes("R") || kind.includes("C")) i++;
   }
   if (since !== undefined) {
-    const log = git(repo, ["log", `--since=@${Math.floor(since / 1000)}`, "--name-only", "--pretty=format:"]);
-    for (const p of (log ?? "").split("\n")) add(p);
+    const log = git(repo, ["log", `--since=@${Math.floor(since / 1000)}`, "--name-only", "--pretty=format:", "-z"], true);
+    for (const p of (log ?? "").split("\0")) add(p);
   }
   return out.slice(0, limit);
 }
