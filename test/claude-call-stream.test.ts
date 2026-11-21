@@ -62,6 +62,45 @@ test("a streamed read that fails says why the same way: not signed in, an error"
   assert.deepEqual(await callClaude(broken, "x", "m", 10_000, { ...ASK, onFinding: () => {} }), { ok: false, why: "failed", said: "segfault" });
 });
 
+const splitUtf8 = `
+  async function splitUtf8(stream, text) {
+    const bytes = Buffer.from(text);
+    const at = bytes.indexOf(Buffer.from("冬")) + 1;
+    stream.write(bytes.subarray(0, at));
+    await new Promise((r) => setTimeout(r, 80));
+    stream.write(bytes.subarray(at));
+  }
+`;
+
+test("a UTF-8 character split across pipe chunks survives both streamed and final findings", posixOnly, async () => {
+  const findings = [{ headline: "冬の設定" }];
+  const bin = standIn(`
+    ${splitUtf8}
+    const findings = ${JSON.stringify(findings)};
+    const event = {
+      type: "stream_event",
+      event: { type: "content_block_delta", delta: { type: "input_json_delta", partial_json: JSON.stringify({ findings }) } },
+    };
+    await splitUtf8(process.stdout, JSON.stringify(event) + "\\n");
+    await splitUtf8(process.stdout, JSON.stringify({ type: "result", structured_output: { findings } }) + "\\n");
+  `);
+  const seen: unknown[] = [];
+  const answer = await callClaude(bin, "x", "m", 10_000, { ...ASK, onFinding: (f) => seen.push(f) });
+  assert.deepEqual(seen, findings);
+  assert.deepEqual(answer, { ok: true, findings });
+});
+
+test("a UTF-8 character split across stderr chunks survives in the failure reason", posixOnly, async () => {
+  const bin = standIn(`
+    ${splitUtf8}
+    await splitUtf8(process.stderr, "Error: could not read 冬の設定\\n");
+    process.exitCode = 1;
+  `);
+  assert.deepEqual(await callClaude(bin, "x", "m", 10_000, ASK), {
+    ok: false, why: "failed", said: "Error: could not read 冬の設定",
+  });
+});
+
 test("a listener that throws never breaks the read", posixOnly, async () => {
   const json = JSON.stringify({ findings: [{ headline: "one" }] });
   const bin = standIn(`

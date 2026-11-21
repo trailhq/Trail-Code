@@ -235,8 +235,10 @@ export function callClaude<T>(
         }
       }
     };
-    child.stdout.on("data", (b: Buffer) => {
-      const text = b.toString("utf8");
+    // Decode each pipe as a stream so a split UTF-8 character survives.
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (text: string) => {
       out += text;
       if (!streaming) return;
       pending += text;
@@ -245,8 +247,8 @@ export function callClaude<T>(
       for (const line of lines) streamed(line);
     });
     // Only a little of stderr: enough for the CLI's own reason, never a whole log.
-    child.stderr.on("data", (b: Buffer) => {
-      if (err.length < 4096) err += b.toString("utf8");
+    child.stderr.on("data", (text: string) => {
+      if (err.length < 4096) err += text;
     });
     child.on("error", (e: NodeJS.ErrnoException) => finish({ ok: false, why: e?.code === "ENOENT" || e?.code === "EACCES" ? "not_installed" : "failed" }));
     child.on("close", () => {
