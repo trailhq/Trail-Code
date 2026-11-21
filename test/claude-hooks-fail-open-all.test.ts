@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
-import { mergeGraftHooks, mergeGraftSettings } from '../src/claude/settings-merge.js';
+import { mergeGraftHooks, mergeGraftSettings, mergeTrailLocal } from '../src/claude/settings-merge.js';
 import { installCodexHooks } from '../src/hosts/codex-hooks.js';
 import { installCursorHooks } from '../src/hosts/cursor-hooks.js';
 import { toPosixPath } from '../src/util/paths.js';
@@ -68,7 +68,10 @@ function run(command: string, cwd: string, input: string, env: NodeJS.ProcessEnv
 test('every hook command Trail writes, on every event, ends in a shell-level fail-open', () => {
   const cmds = installs(tmpRepo('fail-open-all-home'), tmpRepo('fail-open-all-project'));
   assert.ok(cmds.some((c) => c.event === 'Stop') && cmds.some((c) => c.event === 'UserPromptSubmit') && cmds.some((c) => c.event === 'SessionStart'));
-  for (const c of cmds) assert.match(c.command, /^node "[^"]+-hooks\.cjs" [\w-]+ \|\| exit 0$/, `${c.where} ${c.event}`);
+  for (const c of cmds) {
+    assert.match(c.command, /^node .+ \|\| exit 0$/, `${c.where} ${c.event}`);
+    if (c.event !== 'SessionEnd') assert.match(c.command, /^node "[^"]+-hooks\.cjs" [\w-]+ \|\| exit 0$/);
+  }
 });
 
 test('the lab case: settings.json kept, the helper stashed away; Stop, prompt and session-start exit 0 and print nothing', { skip: NO_SHELL }, () => {
@@ -82,6 +85,7 @@ test('the lab case: settings.json kept, the helper stashed away; Stop, prompt an
     const r = run(c.command, project, payload(c.event, project), hostEnv(home, project));
     assert.equal(r.status, 0, `${c.event}: ${c.command}\n${r.stderr}`);
     assert.equal(r.stdout, '', c.event);
+    if (c.event === 'SessionEnd') assert.equal(r.stderr, '', 'a deleted worktree is normal at teardown');
   }
 });
 
@@ -102,6 +106,25 @@ test('with the helper there, each command still runs it with its event and print
     assert.deepEqual(JSON.parse(r.stdout), { event: sub }, `${c.event}: exactly one JSON object`);
   }
   assert.equal(readFileSync(ran, 'utf8').trim().split('\n').length, cmds.length);
+});
+
+test('the shared Trail SessionEnd command skips a removed shim and still runs a present one', { skip: NO_SHELL }, () => {
+  const home = tmpRepo('session-end-home');
+  const project = tmpRepo('session-end-project');
+  const { merged } = mergeTrailLocal({}, { hooks: true });
+  const [command] = allCommands('repo', { SessionEnd: merged.hooks.SessionEnd });
+  const runEnd = () => run(command!.command, project, payload('SessionEnd', project), hostEnv(home, project));
+
+  const missing = runEnd();
+  assert.equal(missing.status, 0);
+  assert.equal(missing.stderr, '');
+
+  mkdirSync(join(project, '.trail'), { recursive: true });
+  writeFileSync(join(project, '.trail', 'hook.cjs'), 'process.stdout.write(process.argv[2]);\n');
+  const present = runEnd();
+  assert.equal(present.status, 0);
+  assert.equal(present.stderr, '');
+  assert.equal(present.stdout, 'session-end');
 });
 
 test('the next trail init repairs older wiring: plain Stop, prompt and session-start commands become fail-open, once', () => {
