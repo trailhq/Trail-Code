@@ -274,10 +274,11 @@ your-repo/
 
 ### Your agent does the saving
 
-Your agent uses learnings on its own, and saves one when you ask, at these moments:
+Your agent uses learnings on its own and can save them at these moments:
 
 - **On day one, what you told Claude before.** `trail init` reads your own messages in the repo's past Claude Code sessions, leaving out tool output, pasted text and headless runs. It keeps only what you said in two or more sessions, and scrubs secrets.
-- **When you ask, a learning.** Say "save this as a learning" after a decision, something you ruled out, or a correction to how something is done here, and your agent saves it: what was decided, what was ruled out, what to watch out for. A summary, never a transcript, and nothing secret. It never saves one on its own, and doesn't offer to.
+- **When you ask, a learning.** Say "save this as a learning" after a decision, something you ruled out, or a correction to how something is done here. Your agent summarizes what was decided, what was ruled out, and what to watch out for. It omits transcripts and secrets.
+- **At the end of a turn, a save prompt.** Trail may ask the agent to save a learning when it detects a correction or a check that passed after a fix. Set `TRAIL_NO_STOP_NOTE=1` in the environment where Claude Code starts to skip that automatic prompt. Manual `trail note`, learning retrieval, and graph sync stay available.
 - **Before each task, the learnings on it.** Each session starts with the learnings that apply to all work in the repo. Each prompt brings in the ones earlier sessions left on that code, above the code itself. A teammate's learning says whose it is.
 - **Before a PR, the check.** Your agent is told to run `trail check` before it commits, pushes or opens a pull request.
 - **Never rewrites history.** Your agent never edits an existing learning. When it goes against one, it says why in the commit, and saves a new one only when you say so.
@@ -626,7 +627,7 @@ When Claude Code is selected (it is by default), it gets more than the skill fil
 - **a live statusline**: the folder you're in, the graft map's size, how many learnings the repo has, and a `⚠ N stale` warning when the code has moved ahead of the map
 - **auto-sync**: every query brings the graph up to date first, so an answer always describes the code as it is right now, uncommitted edits included. A query refreshes only what it reads; the markdown under `graft/` is refreshed by the background rebuild at the end of a turn that touched code. Both are structural and `$0`; auto-sync never calls the LLM on its own
 - **context on tap**: each prompt pulls in the matching nodes and the learnings left on that code; editing a file surfaces what depends on it ("blast radius"); new sessions start with the repo map and how many learnings there are
-- **learnings when you ask**: say "save this as a learning" and Claude saves one; it never asks to on its own
+- **learning saves**: say "save this as a learning" to have Claude save it. Set `TRAIL_NO_STOP_NOTE=1` to skip automatic end-of-turn save prompts.
 - **overlap with teammates**: at session start, and every few minutes, it reads what teammates' open branches change, skipping any already merged or closed; when Claude edits a function or constant one of them also changes, it reads their change and tells you whether the two clash
 
 <p align="center">

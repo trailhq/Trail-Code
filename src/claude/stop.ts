@@ -211,6 +211,7 @@ function turnEnd(input: StopInput, dir: string): string | null {
  * Stop's one answer, so a sign is marked asked only when it was. Never throws.
  */
 export function askForNote(input: { stop_hook_active?: unknown }, dir: string, id: string, transcript: string | null): HookOut {
+  if (process.env.TRAIL_NO_STOP_NOTE === '1') return {};
   try {
     if (!transcript || brand() !== 'trail' || !keepsNotes(dir)) return {};
     const s = readSession(dir, id);
