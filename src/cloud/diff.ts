@@ -50,10 +50,41 @@ export const WIRING = [
 
 const NOT_WIRING = ["--", ".", ...WIRING.map((p) => `:(exclude)${p}`)];
 
-/** Whether the branch's commits add a learning to `.trail/learnings/`, so what it pushes carries one. */
+/** The empty tree: what a root commit is diffed against, since it has no parent. */
+const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+/**
+ * Whether the branch's commits add a learning to `.trail/learnings/`, so what it pushes carries one.
+ * A learning counts when it is added or changed on the branch: one already tracked at the base
+ * and only edited here is still a learning the branch ships.
+ *
+ * When the branch left its base nowhere — the merge-base is `HEAD` itself, which is what
+ * happens working directly on the default branch with no remote-tracking base
+ * (`defaultBase` resolves to the branch checked out), or when HEAD is behind its base —
+ * the range is empty and the diff can never name a file. Then the commit being shipped
+ * is HEAD itself, so diff it against its first parent (the empty tree for a root
+ * commit). A plain `git show` would not do: on a merge commit it prints a combined
+ * diff, which omits a learning the merged side branch brings in.
+ */
 export function branchAddsLearning(repo: string, base = defaultBase(repo)): boolean {
   const from = git(repo, ["merge-base", "HEAD", base])?.trim() || base;
-  return !!git(repo, ["diff", "--name-only", "--diff-filter=A", from, "HEAD", "--", ".trail/learnings"])?.trim();
+  if (from === git(repo, ["rev-parse", "HEAD"])?.trim()) {
+    const parent = git(repo, ["rev-parse", "HEAD^1"])?.trim();
+    if (parent) {
+      return !!git(repo, ["diff", "--name-only", "--diff-filter=AMR", parent, "HEAD", "--", ".trail/learnings"])?.trim();
+    }
+    // No parent object: a root commit, or a shallow boundary whose parent was never
+    // fetched. Only a root commit may be diffed against the empty tree — a shallow
+    // tip would otherwise inherit every learning already in the tree. The commit
+    // object still records its parent, even when the object itself is absent, so
+    // the header says which case this is; when it cannot be read, fail safe.
+    const raw = git(repo, ["cat-file", "-p", "HEAD"]);
+    if (raw === null) return false;
+    const header = raw.split("\n\n")[0] ?? "";
+    if (header.includes("\nparent ")) return false;
+    return !!git(repo, ["diff", "--name-only", "--diff-filter=AMR", EMPTY_TREE, "HEAD", "--", ".trail/learnings"])?.trim();
+  }
+  return !!git(repo, ["diff", "--name-only", "--diff-filter=AMR", from, "HEAD", "--", ".trail/learnings"])?.trim();
 }
 
 /** The branch's diff against its base's merge base, working tree included, without trail's own wiring. Null outside a git repo. */

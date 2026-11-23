@@ -6,13 +6,16 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { appendFileSync, mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BRAND_ENV } from '../src/brand.js';
 import { main } from '../src/claude/hooks.js';
 import { askAnswer, fileWordRe, noteAsk, noteSignals } from '../src/claude/note-signals.js';
+import { branchAddsLearning } from '../src/cloud/diff.js';
 import { ensureRepoHome } from '../src/notes/home.js';
+import { tmpRepo } from './helpers.js';
 
 let n = 0;
 const uid = () => `u${++n}`;
@@ -142,6 +145,35 @@ test('committing, pushing or opening a PR for code with no learning is a sign', 
   assert.deepEqual(kinds(jsonl(prompt('x'), edit('.trail/learnings/x.md'), bash('git commit -m learning'))), [], 'committing a learning');
   const learned = noteSignals(jsonl(prompt('x'), edit('a.go'), bash('git push')), REPO, () => true);
   assert.deepEqual(learned.map((s) => s.kind), [], "the branch's commits already add a learning");
+});
+
+test('a commit that ships a learning is not a sign, even on the default branch with no remote (#899)', () => {
+  const repo = tmpRepo('note-ask-shipped-learning');
+  const g = (args: string[]) => spawnSync('git', ['-c', 'commit.gpgsign=false', '-c', 'user.name=T', '-c', 'user.email=t@x', ...args], { cwd: repo });
+  writeFileSync(join(repo, 'a.go'), 'package a\n');
+  g(['init', '-q', '-b', 'main']);
+  g(['add', '-A']);
+  g(['commit', '-qm', 'init']);
+  mkdirSync(join(repo, '.trail', 'learnings'), { recursive: true });
+  writeFileSync(join(repo, '.trail', 'learnings', 'retry.md'), '# Decided\nUse a channel.\n');
+  writeFileSync(join(repo, 'a.go'), 'package a\n// fix\n');
+  g(['add', '-A']);
+  g(['commit', '-qm', 'fix retry, add learning']);
+  const shipped = jsonl(prompt('fix retry'), bash('trail note --title "Use a channel for retries" <<EOF', '✓ saved'), edit('a.go', repo), bash('git add -A && git commit -m "fix retry"', 'ok'));
+  assert.deepEqual(
+    noteSignals(shipped, repo, () => branchAddsLearning(repo)).map((s) => s.kind),
+    [],
+    'the commit carries the learning',
+  );
+  // Control: a later commit on the same branch that carries no learning still asks.
+  writeFileSync(join(repo, 'a.go'), 'package a\n// fix\n// review fix\n');
+  g(['add', '-A']);
+  g(['commit', '-qm', 'review fix']);
+  const bare = jsonl(prompt('fix retry'), edit('a.go', repo), bash('git add -A && git commit -m "fix retry"', 'ok'));
+  assert.deepEqual(
+    noteSignals(bare, repo, () => branchAddsLearning(repo)).map((s) => s.kind),
+    ['shipped'],
+  );
 });
 
 test('writes outside the repo are no code edit: Claude memory after a cd, a PR body in a scratch file', () => {
