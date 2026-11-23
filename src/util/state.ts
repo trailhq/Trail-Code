@@ -122,6 +122,9 @@ export interface BuildConfig {
    * checkout someone parked in the tree. Absent/false keeps the historical
    * boundary. */
   followNestedRepos?: boolean;
+  /** Explicit repo-relative repository mounts to follow even when the parent
+   * ignores them. Child ignore rules still apply; requires followNestedRepos. */
+  includeIgnoredRepos?: string[];
 }
 
 /** Local, Git-ignored repository configuration. Kept outside generated
@@ -179,6 +182,11 @@ export function readFollowSubmodules(d: string): boolean {
 /** Missing and explicit false both retain the backwards-compatible default. */
 export function readFollowNestedRepos(d: string): boolean {
   return readBuildConfig(d)?.followNestedRepos === true;
+}
+
+export function readIncludeIgnoredRepos(d: string): Set<string> | undefined {
+  const repos = readBuildConfig(d)?.includeIgnoredRepos;
+  return repos?.length ? new Set(repos) : undefined;
 }
 // Best-effort read-modify-write; not atomic across concurrent processes, but acceptable
 // for episodic hook writes (worst case is a lost update, not corruption).

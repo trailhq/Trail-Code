@@ -21,7 +21,7 @@ import { readFingerprint } from "../graph/fingerprint.js";
 import { contentHash } from "../util/id.js";
 import { relPosix } from "../util/paths.js";
 import { readSourceFile } from "../util/source.js";
-import { readFollowNestedRepos, readFollowSubmodules, readIncludeDirs } from "../util/state.js";
+import { readFollowNestedRepos, readFollowSubmodules, readIncludeDirs, readIncludeIgnoredRepos } from "../util/state.js";
 import type { Summarizer } from "../ai/summarize.js";
 import { LlmFailureGate } from "../ai/failure.js";
 import type { FileSummary, SynthNode, Synthesizer } from "../ai/synthesize.js";
@@ -122,7 +122,7 @@ export interface BuildResult {
  * fingerprint — the same source `checkGraph` / `probeDrift` use, so a later
  * `--deep` without the flag still skips files the wiring pass excluded. */
 function resolveOnlyDirs(outDir: string, explicit?: readonly string[]): Set<string> | undefined {
-  const list = explicit && explicit.length > 0 ? explicit : (readFingerprint(outDir)?.onlyDirs ?? []);
+  const list = explicit ?? readFingerprint(outDir)?.onlyDirs ?? [];
   return list.length > 0 ? new Set(list) : undefined;
 }
 
@@ -141,6 +141,7 @@ export function listContextFiles(
   const walked = walkDir(root, readIncludeDirs(root), {
     followSubmodules: readFollowSubmodules(root),
     followNestedRepos: readFollowNestedRepos(root),
+    includeIgnoredRepos: readIncludeIgnoredRepos(root),
   })
     .filter((f) => exts.some((e) => f.toLowerCase().endsWith(e)))
     .filter((f) => !f.startsWith(outDir));
