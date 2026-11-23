@@ -13,6 +13,7 @@ import { registerMcpConfigs, type McpWrite } from './mcp-config.js';
 import { installCodexHooks } from './codex-hooks.js';
 import { installCursorHooks } from './cursor-hooks.js';
 import { installPiHooks } from './pi-hooks.js';
+import { installAntigravityHooks } from './antigravity-hooks.js';
 import type { ConfigWrite } from './config-write.js';
 import { installAntigravitySkill } from './antigravity.js';
 import { rememberInstall } from '../claude/shim-template.js';
@@ -119,12 +120,18 @@ export function runHostsInit(
     opts.hooks === false || opts.global === false || !selected.some((h) => h.id === 'pi')
       ? []
       : installPiHooks(home, name);
-  // All three write the hooks shim, which finds this install through the trail home.
-  if (hooks.length > 0 || cursorHooks.length > 0 || piHooks.length > 0) rememberInstall(home);
+  // Antigravity's hook layer is user-level (~/.gemini/config/hooks.json + shim + adapter),
+  // so --no-global and --no-hooks suppress it like the Codex hooks.
+  const antigravityHooks =
+    opts.hooks === false || !outside('antigravity') || !selected.some((h) => h.id === 'antigravity')
+      ? []
+      : installAntigravityHooks(home, name);
+  // All four write the hooks shim, which finds this install through the trail home.
+  if (hooks.length > 0 || cursorHooks.length > 0 || piHooks.length > 0 || antigravityHooks.length > 0) rememberInstall(home);
   // Antigravity's skill is a global write too, so --no-global suppresses it as well.
   const antigravitySkill =
     !outside('antigravity') || !selected.some((h) => h.id === 'antigravity')
       ? []
       : installAntigravitySkill(home, name);
-  return { written, skipped, unknown, mcp, hooks: [...hooks, ...cursorHooks, ...piHooks, ...antigravitySkill] };
+  return { written, skipped, unknown, mcp, hooks: [...hooks, ...cursorHooks, ...piHooks, ...antigravityHooks, ...antigravitySkill] };
 }

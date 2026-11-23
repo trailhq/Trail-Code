@@ -13,7 +13,7 @@ function fresh(): string { return tmpRepo('plan'); }
 /** A home with every CLI graft can detect installed. */
 function fullHome(): string {
   const home = fresh();
-  for (const d of ['.codex', '.cursor', '.gemini', '.kiro', '.adal', join('.codeium', 'windsurf'), join('.config', 'opencode')]) {
+  for (const d of ['.codex', '.cursor', '.gemini', join('.gemini', 'config'), '.kiro', '.adal', join('.codeium', 'windsurf'), join('.config', 'opencode')]) {
     mkdirSync(join(home, d), { recursive: true });
   }
   return home;
@@ -133,6 +133,7 @@ test('planInit honors --no-mcp / --no-hooks / --no-global like runHostsInit does
   const noHooks = planInit(repo, { home, hooks: false });
   assert.ok(!byId(noHooks, 'agents').some((w) => /hooks/.test(w.path)), '--no-hooks drops the Codex hooks');
   assert.ok(!byId(noHooks, 'cursor').some((w) => w.path.endsWith('hooks.json')), '--no-hooks drops the Cursor hooks');
+  assert.ok(!byId(noHooks, 'antigravity').some((w) => /hooks/.test(w.path)), '--no-hooks drops the Antigravity hooks');
 
   const noGlobal = planInit(repo, { home, global: false });
   for (const p of noGlobal) for (const w of p.writes) {
