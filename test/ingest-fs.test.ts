@@ -571,3 +571,75 @@ test("walkDir on an ordinary directory is unchanged when siblings are symlink fi
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("followNestedRepos follows visible directory links to repos, honoring child ignores and parent skips", () => {
+  const parent = fixture("linked-parent");
+  const child = fixture("linked-child");
+  const plain = mkdtempSync(join(tmpdir(), "graft-linked-plain-"));
+  try {
+    write(parent, "src/root.ts");
+    write(parent, ".gitignore", "repos/ignored\n");
+    write(child, ".gitignore", "*.generated.ts\n");
+    write(child, "src/tracked.ts");
+    write(child, "src/forced.generated.ts");
+    write(child, "build/handwritten.ts");
+    commitAll(child, "linked child", ["src/forced.generated.ts"]);
+    write(child, "src/untracked.ts");
+    write(child, "src/ignored.generated.ts");
+    write(plain, "src/escape.ts");
+    mkdirSync(join(parent, "repos"));
+    symlinkDirectory(child, join(parent, "repos", "tracked"));
+    runGit(parent, ["add", "repos/tracked"]);
+    symlinkDirectory(child, join(parent, "repos", "untracked"));
+    symlinkDirectory(child, join(parent, "repos", "ignored"));
+    symlinkDirectory(child, join(parent, "vendor"));
+    symlinkDirectory(child, join(parent, ".hidden"));
+    symlinkDirectory(plain, join(parent, "plain-link"));
+
+    assert.deepEqual(walked(parent), ["src/root.ts"]);
+    assert.deepEqual(walked(parent, undefined, true), ["src/root.ts"], "following submodules alone does not follow linked repos");
+    const follow = (includes?: ReadonlySet<string>) =>
+      walkDir(parent, includes, { followNestedRepos: true })
+        .map((p) => relative(parent, p).replace(/\\/g, "/")).sort();
+    assert.deepEqual(follow(), [
+      "repos/tracked/src/forced.generated.ts",
+      "repos/tracked/src/tracked.ts",
+      "repos/tracked/src/untracked.ts",
+      "repos/untracked/src/forced.generated.ts",
+      "repos/untracked/src/tracked.ts",
+      "repos/untracked/src/untracked.ts",
+      "src/root.ts",
+    ]);
+    assert.ok(follow(new Set(["vendor", "build"])).includes("vendor/build/handwritten.ts"));
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+    rmSync(child, { recursive: true, force: true });
+    rmSync(plain, { recursive: true, force: true });
+  }
+});
+
+test("followNestedRepos stops symlink cycles between repos and skips broken and file links", { timeout: 5_000 }, (t) => {
+  const parent = fixture("linked-cycle-parent");
+  const child = fixture("linked-cycle-child");
+  try {
+    write(parent, "src/root.ts");
+    write(child, "src/child.ts");
+    symlinkDirectory(child, join(parent, "child"));
+    symlinkDirectory(parent, join(child, "back"));
+    symlinkDirectory(parent, join(parent, "self"));
+    try {
+      symlinkDirectory(join(parent, "missing"), join(parent, "broken"));
+      symlinkSync(join(child, "src", "child.ts"), join(parent, "file.ts"));
+    } catch (err) {
+      t.diagnostic(`cannot create dangling/file links: ${err instanceof Error ? err.message : err}`);
+    }
+    assert.deepEqual(
+      walkDir(parent, undefined, { followNestedRepos: true })
+        .map((p) => relative(parent, p).replace(/\\/g, "/")).sort(),
+      ["child/src/child.ts", "src/root.ts"],
+    );
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+    rmSync(child, { recursive: true, force: true });
+  }
+});

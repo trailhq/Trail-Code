@@ -68,6 +68,22 @@ function manifestPaths(dir: string): string[] {
   return manifest.files.map((f) => f.path).sort();
 }
 
+test("an explicit empty selection restores the full concept scope after a restricted build", async () => {
+  const dir = repoWithOutOfScope();
+  const rec = recording();
+  try {
+    await buildGraph(dir, { onlyDirs: ["src"] });
+    await buildContext(dir, {
+      model: "fake", summarizer: rec.summarizer, synthesizer: rec.synthesizer,
+      onlyDirs: [],
+    });
+    assert.deepEqual([...rec.summarized].sort(), ["docs/c.ts", "src/a.ts", "tools/b.ts"]);
+    assert.deepEqual(manifestPaths(dir), ["docs/c.ts", "src/a.ts", "tools/b.ts"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("#252: buildContext --only-dir src does not summarize or synthesize out-of-scope files", async () => {
   const dir = repoWithOutOfScope();
   const rec = recording();

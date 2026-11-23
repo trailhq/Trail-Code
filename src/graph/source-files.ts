@@ -10,7 +10,7 @@ import { statSync } from "node:fs";
 import { extname, resolve } from "node:path";
 import { walkDir } from "../ingest/fs.js";
 import { relPosix } from "../util/paths.js";
-import { readFollowNestedRepos, readFollowSubmodules, readIncludeDirs } from "../util/state.js";
+import { readFollowNestedRepos, readFollowSubmodules, readIncludeDirs, readIncludeIgnoredRepos } from "../util/state.js";
 import { languageOf, depthExtensions } from "./extract.js";
 import { genericLangOf, genericExtensions } from "./generic.js";
 import { containerLangOf, containerExtensions } from "./container.js";
@@ -72,6 +72,7 @@ export function listSourceFiles(
   repoFiles: string[] = walkDir(root, readIncludeDirs(resolve(root)), {
     followSubmodules: readFollowSubmodules(resolve(root)),
     followNestedRepos: readFollowNestedRepos(resolve(root)),
+    includeIgnoredRepos: readIncludeIgnoredRepos(resolve(root)),
   }),
   onlyDirs?: ReadonlySet<string>,
   extensions?: readonly string[],
