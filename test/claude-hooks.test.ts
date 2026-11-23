@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { underGraft, main, lastFileScopeHint, promptAskTimeout } from '../src/claude/hooks.js';
+import { underGraft, main, lastFileScopeHint, promptAskTimeout, graftStatuslineWired } from '../src/claude/hooks.js';
 import { readStats, readSession } from '../src/claude/state.js';
 import { runSync } from '../src/claude/sync-run.js';
 import { buildGraph } from '../src/graph/build.js';
@@ -208,6 +208,9 @@ test('runSync clears dirty after a workspace sync writes workspace.json', () => 
 
 // ── post-edit's stale count, off the edit's critical path (#483) ──────────────
 
+const GRAFT_STATUSLINE = { type: 'command', command: 'node "${CLAUDE_PROJECT_DIR:-.}/.claude/helpers/graft-statusline.cjs"' };
+const TRAIL_STATUSLINE = { type: 'command', command: 'node "${CLAUDE_PROJECT_DIR:-.}/.trail/statusline.cjs"' };
+
 /** Wait for a file a detached child writes; the spawn is fire-and-forget by design. */
 async function waitForFile(p: string, ms = 5000): Promise<boolean> {
   for (const end = Date.now() + ms; Date.now() < end; await new Promise((r) => setTimeout(r, 25))) {
@@ -216,30 +219,149 @@ async function waitForFile(p: string, ms = 5000): Promise<boolean> {
   return false;
 }
 
-test('post-edit hands the stale count to a detached child and does not wait for it', async () => {
-  const d = mkdtempSync(join(tmpdir(), 'graft-hooks-'));
-  writeStats(d, { ...emptyStats(), staleCount: 7 });
-  const argsFile = join(d, 'runner-args.json');
-  const runner = join(d, 'runner-stub.cjs');
-  // Records its argv, then lingers: if post-edit waited on it, the hook would take >2s.
-  writeFileSync(runner,
-    `require('fs').writeFileSync(${JSON.stringify(argsFile)}, JSON.stringify(process.argv.slice(2)));\n` +
-    `setTimeout(() => {}, 2000);\n`);
-  process.env.CLAUDE_PROJECT_DIR = d;
-  process.env.GRAFT_TEST_STALE_COUNT_RUN = runner;
-  try {
-    const t0 = Date.now();
-    await runWithStdin(JSON.stringify({ tool_input: { file_path: join(d, 'src', 'auth.ts') } }), () => main('post-edit'));
-    assert.ok(Date.now() - t0 < 1500, 'the hook returned without waiting on the count');
-    const s = readStats(d)!;
-    assert.equal(s.dirty, true);
-    assert.equal(s.staleCount, 7, 'post-edit leaves the last count alone; the child replaces it');
-    assert.ok(await waitForFile(argsFile), 'the runner was spawned');
-    assert.deepEqual(JSON.parse(readFileSync(argsFile, 'utf8')), [d]);
-  } finally {
-    delete process.env.GRAFT_TEST_STALE_COUNT_RUN;
-    delete process.env.CLAUDE_PROJECT_DIR;
+/** Run `fn` with `CLAUDE_CONFIG_DIR` pointing at a temporary directory so the
+ * developer's real `~/.claude/settings.json` cannot leak into tests. */
+async function withIsolatedConfigDir<T>(user: object | string | null, fn: (home: string) => Promise<T> | T): Promise<T> {
+  const home = mkdtempSync(join(tmpdir(), 'graft-hooks-home-'));
+  if (typeof user === 'string') writeFileSync(join(home, 'settings.json'), user);
+  else if (user) writeFileSync(join(home, 'settings.json'), JSON.stringify(user));
+  const previous = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = home;
+  try { return await fn(home); } finally {
+    if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = previous;
   }
+}
+
+/** Run `post-edit` in a scratch repo with optional graph, repo/local/user
+ * settings, and a stale-count runner stub that records its argv and whether
+ * `dirty` was already true on disk when the child started. */
+async function postEditStaleRun(opts: {
+  withGraph?: boolean;
+  project?: object | null;
+  local?: object | null;
+  user?: object | null;
+  lingerMs?: number;
+}) {
+  const d = mkdtempSync(join(tmpdir(), 'graft-hooks-'));
+  if (opts.withGraph !== false) {
+    mkdirSync(join(d, 'graft', '.graph'), { recursive: true });
+    writeFileSync(join(d, 'graft', '.graph', 'wiring.json'),
+      JSON.stringify({ meta: { nodeCount: 0, edgeCount: 0, languages: [] }, nodes: [], edges: [] }));
+  }
+  if (opts.project) {
+    mkdirSync(join(d, '.claude'), { recursive: true });
+    writeFileSync(join(d, '.claude', 'settings.json'), JSON.stringify(opts.project));
+  }
+  if (opts.local) {
+    mkdirSync(join(d, '.claude'), { recursive: true });
+    writeFileSync(join(d, '.claude', 'settings.local.json'), JSON.stringify(opts.local));
+  }
+  writeStats(d, { ...emptyStats(), staleCount: 7 });
+  const seenFile = join(d, 'runner-seen.json');
+  const statsFile = join(d, 'graft', '.cache', 'stats.json');
+  const runner = join(d, 'runner-stub.cjs');
+  writeFileSync(
+    runner,
+    `const fs = require('fs');\n` +
+      `let dirty = null;\n` +
+      `try { dirty = JSON.parse(fs.readFileSync(${JSON.stringify(statsFile)}, 'utf8')).dirty; } catch {}\n` +
+      `fs.writeFileSync(${JSON.stringify(seenFile)}, JSON.stringify({ args: process.argv.slice(2), dirty }));\n` +
+      (opts.lingerMs ? `setTimeout(() => {}, ${opts.lingerMs});\n` : ''),
+  );
+  return withIsolatedConfigDir(opts.user ?? null, async () => {
+    const previousDir = process.env.CLAUDE_PROJECT_DIR;
+    process.env.CLAUDE_PROJECT_DIR = d;
+    process.env.GRAFT_TEST_STALE_COUNT_RUN = runner;
+    try {
+      const t0 = Date.now();
+      await runWithStdin(JSON.stringify({ tool_input: { file_path: join(d, 'src', 'auth.ts') } }), () => main('post-edit'));
+      const elapsedMs = Date.now() - t0;
+      const spawned = await waitForFile(seenFile, opts.lingerMs ? 5000 : 250);
+      const seen = spawned ? JSON.parse(readFileSync(seenFile, 'utf8')) as { args: string[]; dirty: boolean | null } : null;
+      return { d, elapsedMs, seen, stats: readStats(d)! };
+    } finally {
+      delete process.env.GRAFT_TEST_STALE_COUNT_RUN;
+      if (previousDir === undefined) delete process.env.CLAUDE_PROJECT_DIR;
+      else process.env.CLAUDE_PROJECT_DIR = previousDir;
+    }
+  });
+}
+
+test('post-edit hands the stale count to a detached child and does not wait for it', async () => {
+  const { d, elapsedMs, seen, stats } = await postEditStaleRun({
+    withGraph: true,
+    project: { statusLine: GRAFT_STATUSLINE },
+    lingerMs: 2000,
+  });
+  assert.ok(elapsedMs < 1500, 'the hook returned without waiting on the count');
+  assert.equal(stats.dirty, true);
+  assert.equal(stats.staleCount, 7, 'post-edit leaves the last count alone; the child replaces it');
+  assert.ok(seen, 'the runner was spawned');
+  assert.deepEqual(seen.args, [d]);
+});
+
+test('graftStatuslineWired checks project, local, and user settings for graft/trail statuslines', async () => {
+  const mkRepo = (project?: object | string, local?: object | string) => {
+    const d = mkdtempSync(join(tmpdir(), 'graft-sl-'));
+    if (project !== undefined) {
+      mkdirSync(join(d, '.claude'), { recursive: true });
+      writeFileSync(join(d, '.claude', 'settings.json'), typeof project === 'string' ? project : JSON.stringify(project));
+    }
+    if (local !== undefined) {
+      mkdirSync(join(d, '.claude'), { recursive: true });
+      writeFileSync(join(d, '.claude', 'settings.local.json'), typeof local === 'string' ? local : JSON.stringify(local));
+    }
+    return d;
+  };
+
+  await withIsolatedConfigDir(null, () => {
+    assert.equal(graftStatuslineWired(mkRepo()), false, 'no settings files');
+    assert.equal(graftStatuslineWired(mkRepo('{not-json')), false, 'corrupt JSON');
+    assert.equal(graftStatuslineWired(mkRepo({ statusLine: { type: 'command', command: 'bash ~/my-statusline.sh' } })), false, 'foreign statusLine');
+    assert.equal(graftStatuslineWired(mkRepo({ statusLine: GRAFT_STATUSLINE })), true, 'project statusLine');
+    assert.equal(graftStatuslineWired(mkRepo(undefined, { statusLine: TRAIL_STATUSLINE })), true, 'local trail statusLine');
+  });
+
+  await withIsolatedConfigDir({ subagentStatusLine: GRAFT_STATUSLINE }, () => {
+    assert.equal(graftStatuslineWired(mkRepo()), true, 'user subagentStatusLine');
+  });
+});
+
+test('post-edit skips stale-count child when no graft statusline is wired', async () => {
+  const { seen, stats } = await postEditStaleRun({
+    withGraph: true,
+    project: { statusLine: { type: 'command', command: 'bash ~/my-statusline.sh' } },
+  });
+  assert.equal(seen, null, 'stale-count runner never spawned — nothing reads staleCount');
+  assert.equal(stats.dirty, true);
+  assert.equal(stats.lastFile, 'auth.ts');
+});
+
+test('post-edit skips stale-count child when no graph exists even with graft statusline wired', async () => {
+  const { seen, stats } = await postEditStaleRun({
+    withGraph: false,
+    project: { statusLine: GRAFT_STATUSLINE },
+  });
+  assert.equal(seen, null, 'stale-count runner never spawned — no graph exists');
+  assert.equal(stats.dirty, true);
+  assert.equal(stats.lastFile, 'auth.ts');
+});
+
+test('post-edit spawns stale-count child with dirty already on disk for user or local trail statusline', async () => {
+  const fromUser = await postEditStaleRun({
+    withGraph: true,
+    user: { statusLine: GRAFT_STATUSLINE },
+  });
+  assert.ok(fromUser.seen, 'user-level statusline spawns stale-count child');
+  assert.equal(fromUser.seen.dirty, true, 'dirty was already on disk when child started');
+
+  const fromLocal = await postEditStaleRun({
+    withGraph: true,
+    local: { statusLine: TRAIL_STATUSLINE },
+  });
+  assert.ok(fromLocal.seen, 'local .trail/statusline.cjs spawns stale-count child');
+  assert.equal(fromLocal.seen.dirty, true, 'dirty was already on disk when child started');
 });
 
 test('runStaleCount writes the count, recovering JSON from a non-zero exit, and releases its lock', () => {

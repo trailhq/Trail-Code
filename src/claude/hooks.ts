@@ -14,7 +14,8 @@ import { emit, emitHook, payloadSessionId } from './hook-io.js';
 import { maybeShareSyncInBackground } from '../cloud/share-sync-state.js';
 import { claudeScriptPath } from './paths.js';
 import { codexPostBashPart, postBashPart, sessionStartPart } from './skills-wiring.js';
-import { handlePrompt } from './prompt-hook.js';
+import { handlePrompt, hookSettingsFiles } from './prompt-hook.js';
+import { isGraftStatusline } from './settings-merge.js';
 import { runUpkeep } from '../upkeep-run.js';
 import { runningVersion, wiredHostIds } from '../upkeep.js';
 import { hostsWiredForTrail } from '../hosts/registry.js';
@@ -81,6 +82,27 @@ function staleCountInBackground(dir: string): void {
     spawn(process.execPath, [runner, dir], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
   } catch { /* a missed count costs a statusline number, never the edit */ }
 }
+
+/**
+ * Is graft's/trail's statusline wired for this repo — the one reader of `staleCount`?
+ *
+ * `staleCountInBackground` spawns `graft check`, which re-extracts every source
+ * file without the build cache (up to 30s of CPU per edit burst). When no
+ * graft/trail statusline is installed (`--no-statusline`, `GRAFT_NO_STATUSLINE`,
+ * a global-only hook firing in an unwired repo, or a statusLine of the user's own),
+ * nothing reads `staleCount`, so post-edit skips spawning the runner altogether.
+ * Read from the settings files rather than the wiring stamp, which lives under
+ * the gitignored context dir and is absent in a fresh worktree.
+ */
+export function graftStatuslineWired(dir: string): boolean {
+  for (const file of hookSettingsFiles(dir)) {
+    try {
+      const settings = JSON.parse(readFileSync(file, 'utf8')) as any;
+      if (isGraftStatusline(settings?.statusLine) || isGraftStatusline(settings?.subagentStatusLine)) return true;
+    } catch { /* missing or unparseable — look at the next file */ }
+  }
+  return false;
+}
 /**
  * The absolute path of the file a PostToolUse edit touched, across host edit-tool
  * shapes:
@@ -108,9 +130,9 @@ async function handlePostEdit(input: any, dir: string): Promise<void> {
   const file = editedFilePath(input, dir);
   if (!file || underGraft(dir, file)) return;
   patchStats(dir, { dirty: true, lastFile: basename(file) });
-  staleCountInBackground(dir);
-  const out: string[] = [];
   const w = readWiring(dir);
+  if (w && graftStatuslineWired(dir)) staleCountInBackground(dir);
+  const out: string[] = [];
   if (w) { const br = formatBlastRadius(w, file); if (br) out.push(br); }
   const overlap = await editOverlap(input, dir, file);
   if (overlap) out.push(overlap);

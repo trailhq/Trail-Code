@@ -84,7 +84,7 @@ export function promptAskTimeout(dir: string): number {
  * installed: declaring them once at the user level wires every repo on the
  * machine at once, and such a repo has no `.claude/settings.json` at all.
  */
-function hookSettingsFiles(dir: string): string[] {
+export function hookSettingsFiles(dir: string): string[] {
   const user = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude');
   return [
     join(dir, '.claude', 'settings.json'),
