@@ -52,16 +52,24 @@ test("Antigravity skill lands in ~/.gemini/skills/graft/SKILL.md, idempotently",
   assert.equal(second[0].action, 'unchanged', 're-run is a no-op');
 });
 
-test("runHostsInit --agents antigravity writes AGENTS.md + MCP + skill", () => {
+test("runHostsInit --agents antigravity writes AGENTS.md + MCP + hooks + skill", () => {
   const home = fresh(), repo = fresh();
   mkdirSync(join(home, '.gemini', 'config'), { recursive: true });
   const r = runHostsInit(repo, { agents: ['antigravity'], home });
   assert.deepEqual(r.written.map((w) => w.id), ['antigravity']);
   assert.ok(readFileSync(join(repo, 'AGENTS.md'), 'utf8').includes('graft ask'), 'AGENTS.md written');
   assert.ok(r.mcp.some((w) => w.path.endsWith(join('.gemini', 'config', 'mcp_config.json'))), 'MCP registered');
+  assert.ok(r.hooks.some((w) => w.path.endsWith(join('.gemini', 'config', 'hooks.json'))), 'hooks registered');
   assert.ok(r.hooks.some((w) => w.path.endsWith(join('skills', 'graft', 'SKILL.md'))), 'skill placed');
-  // --no-global suppresses the two global writes (MCP + skill), keeps AGENTS.md
+  // --no-hooks skips the hook layer while keeping MCP + skill
+  const noHooksHome = fresh();
+  mkdirSync(join(noHooksHome, '.gemini', 'config'), { recursive: true });
+  const noHooks = runHostsInit(fresh(), { agents: ['antigravity'], home: noHooksHome, hooks: false });
+  assert.ok(noHooks.mcp.length > 0, 'MCP survives --no-hooks');
+  assert.ok(!noHooks.hooks.some((w) => w.path.endsWith('hooks.json')), 'hooks skipped under --no-hooks');
+  assert.ok(noHooks.hooks.some((w) => w.path.endsWith(join('skills', 'graft', 'SKILL.md'))), 'skill survives --no-hooks');
+  // --no-global suppresses all global writes (MCP + hooks + skill), keeps AGENTS.md
   const noGlobal = runHostsInit(fresh(), { agents: ['antigravity'], home: fresh(), global: false });
   assert.equal(noGlobal.mcp.length, 0, 'no MCP write under --no-global');
-  assert.equal(noGlobal.hooks.length, 0, 'no skill write under --no-global');
+  assert.equal(noGlobal.hooks.length, 0, 'no skill or hook write under --no-global');
 });

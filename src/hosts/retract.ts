@@ -32,6 +32,7 @@ import { mcpTargets, stripTomlSection } from './mcp-config.js';
 import { hookTargets } from './codex-hooks.js';
 import { cursorHookTargets } from './cursor-hooks.js';
 import { piHookTargets } from './pi-hooks.js';
+import { antigravityHookTargets, antigravityStateDirFor, isAntigravityHookBlock } from './antigravity-hooks.js';
 import { antigravitySkillTargets } from './antigravity.js';
 import { claudeGlobalTargets } from './claude-global.js';
 import { claudeTargetsFor, legacyClaudeTargets, TRAIL_HOOK, TRAIL_STATUSLINE, trailSkillPath } from '../claude/init.js';
@@ -310,6 +311,28 @@ function stripHookEntries(path: string, apply: boolean, ours: string[] = []): Re
 }
 
 /**
+ * Remove graft/trail's top-level named hook block from Antigravity's
+ * `~/.gemini/config/hooks.json`, preserving every foreign named hook.
+ */
+function stripAntigravityHooks(path: string, apply: boolean): RetractAction {
+  if (!existsSync(path)) return 'absent';
+  let root: Record<string, unknown>;
+  try {
+    root = JSON.parse(readFileSync(path, 'utf8'));
+  } catch {
+    return 'skipped-unparseable';
+  }
+  if (typeof root !== 'object' || root === null || Array.isArray(root)) return 'skipped-unparseable';
+  const ours = ['graft', 'trail'].filter((k) => k in root && isAntigravityHookBlock(root[k]));
+  if (ours.length === 0) return 'absent';
+  if (!apply) return Object.keys(root).length === ours.length ? 'deleted' : 'removed';
+  for (const k of ours) delete root[k];
+  if (Object.keys(root).length === 0) return removeFile(path, true);
+  writeFileSync(path, `${JSON.stringify(root, null, 2)}\n`);
+  return 'removed';
+}
+
+/**
  * Drop graft's block from `.gitignore` / `.ignore`.
  *
  * Both are written as a comment line plus entries; the comment is graft's own
@@ -397,7 +420,12 @@ function targets(repo: string, opts: RetractOpts): Target[] {
   if (exclude.has('agents')) for (const t of hookTargets(home)) keptPaths.add(t.path);
   if (exclude.has('cursor')) for (const n of NAMES) for (const t of cursorHookTargets(repo, n)) keptPaths.add(t.path);
   if (exclude.has('pi')) for (const n of NAMES) for (const t of piHookTargets(home, n)) keptPaths.add(t.path);
-  if (exclude.has('antigravity')) for (const n of NAMES) for (const t of antigravitySkillTargets(home, n)) keptPaths.add(t.path);
+  if (exclude.has('antigravity')) {
+    for (const n of NAMES) {
+      for (const t of [...antigravitySkillTargets(home, n), ...antigravityHookTargets(home, n)]) keptPaths.add(t.path);
+      keptPaths.add(antigravityStateDirFor(home, n));
+    }
+  }
 
   /** Queue a target unless a kept host owns that path, or it's already queued. */
   const seen = new Set<string>();
@@ -507,6 +535,16 @@ function targets(repo: string, opts: RetractOpts): Target[] {
     if (!exclude.has('antigravity')) {
       for (const t of NAMES.flatMap((n) => antigravitySkillTargets(home, n))) {
         add({ hostId: t.hostId, path: t.path, what: t.what, scope: 'global', run: (a) => removeFile(t.path, a) });
+      }
+      for (const n of NAMES) {
+        const stateDir = antigravityStateDirFor(home, n);
+        add({ hostId: 'antigravity', path: stateDir, what: 'Antigravity hook state', scope: 'global', run: (a) => removeDir(stateDir, a) });
+        for (const t of antigravityHookTargets(home, n)) {
+          add({
+            hostId: t.hostId, path: t.path, what: t.what, scope: 'global',
+            run: (a) => (t.path.endsWith('.json') ? stripAntigravityHooks(t.path, a) : removeFile(t.path, a)),
+          });
+        }
       }
     }
   }
