@@ -47,11 +47,19 @@ import { homeFolderRefusal } from "../init-guard.js";
 import { acquireLockIn, lockHeldIn, releaseLockIn } from "../util/state.js";
 import { CACHE_DIR } from "../context/node-file.js";
 import { buildGraph } from "./build.js";
-import { driftCount, isClean, probeDrift, readFingerprint, type Drift } from "./fingerprint.js";
+import {
+  driftCount,
+  graphRootGuardNote,
+  isClean,
+  probeDrift,
+  readFingerprint,
+  restampFingerprintRoot,
+  type Drift,
+} from "./fingerprint.js";
 import { invalidateGraphCaches, loadGraphCached } from "./load.js";
 import type { RefreshRunArgs } from "./refresh-run.js";
 import { seedGraph, type SeedResult } from "./seed.js";
-import { wiringPath } from "./write.js";
+import { readGraph, wiringPath } from "./write.js";
 import { cmd, tag } from "../brand.js";
 
 /** How long to wait for another process's in-flight rebuild before giving up and
@@ -292,6 +300,25 @@ export async function ensureFreshGraph(root: string, opts: RefreshOptions = {}):
       }
     }
     const seedNote = seededFrom ? `copied the graph from the main checkout (${seededFrom})` : builtNote;
+    if (seededFrom) {
+      // The seed copied the parent checkout's fingerprint verbatim — its prints
+      // are the diff base this worktree's refresh wants — so only the recorded
+      // home needs re-homing, or every worktree query would look foreign.
+      restampFingerprintRoot(outDir, dir);
+    }
+
+    // Root guard (#438): never rebuild this graph from a different root's file
+    // set. An `ask` that lost its repo-root positional anchors on the cwd, when
+    // that root is unrelated to the graph's home, makes the drift probe read
+    // "every file changed" and the rebuild writes an empty graph over a valid
+    // one — with the per-file cards surviving to mask the damage. The graph
+    // stays untouched and the note names the root that would make the refresh
+    // honest.
+    const recordedRoot = readFingerprint(outDir)?.root;
+    const rootGuard = graphRootGuardNote(recordedRoot, dir);
+    if (rootGuard) {
+      return { refreshed: false, note: rootGuard };
+    }
 
     // null = no fingerprint at all: a graph built before this mechanism existed,
     // or by a different extractor build. Rebuild once — that lays the fingerprint
@@ -333,8 +360,25 @@ export async function ensureFreshGraph(root: string, opts: RefreshOptions = {}):
       // so a missing or obsolete extractor fingerprint cannot widen the build.
       const onlyDirs = readFingerprint(outDir)?.onlyDirs;
       const extensions = loadGraphCached(outDir)?.meta?.extensions;
+      const nodesBefore = readGraph(wiringPath(outDir))?.meta.nodeCount ?? 0;
       await rebuild({ dir, contextDir: opts.contextDir, onlyDirs, extensions });
       invalidateGraphCaches(outDir);
+      // Safety net behind the root guard (#438): a legitimate-looking refresh can
+      // still empty a graph (every source deleted, or an `--only-dir` whitelist
+      // that no longer matches). The rebuild succeeded, so this is not an error —
+      // but "silently emptied" is the worst failure mode there is, because the
+      // per-file cards survive and the graph looks intact until a query misses.
+      const nodesAfter = readGraph(wiringPath(outDir))?.meta.nodeCount ?? 0;
+      if (nodesBefore > 0 && nodesAfter === 0) {
+        return {
+          refreshed: true,
+          drift: drift ?? undefined,
+          note:
+            `rebuilt the graph to 0 nodes (was ${nodesBefore}) — the sources this root ` +
+            `now contains do not match the graph; restore them or run 'graft build' from ` +
+            `the root the graph was built for`,
+        };
+      }
       return { refreshed: true, drift: drift ?? undefined, note: seedNote };
     } finally {
       unhook();
