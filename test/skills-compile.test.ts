@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BUILT_IN_NAMES, NAME_RE, compileRun, draftText, proposeName, refusalWords, type CompileOpts, type CompileResult } from "../src/skills/compile.js";
+import { AGENT_COMMAND_NAMES, BUILT_IN_NAMES, NAME_RE, compileRun, draftText, proposeName, refusalWords, type CompileOpts, type CompileResult } from "../src/skills/compile.js";
 import { renderSkillMd } from "../src/skills/skillmd.js";
 import { skillProblems } from "../src/skills/validate.js";
 import { callKind } from "../src/trace/checks.js";
@@ -373,6 +373,14 @@ test("names per job, a taken name gets -<repo> then -2, and an agent's name is u
   assert.equal(named("trail"), "run-tests");
   assert.equal(named("Bad_Name"), "run-tests");
   assert.equal(named("ends-"), "run-tests");
+  assert.equal(named("ship"), "run-tests", "Claude Code's own /ship");
+});
+
+test("a skill never takes Claude Code's own command names: a ship run with no branch is ship-<repo>, not ship", () => {
+  for (const n of ["ship", "steward", "loop", "schedule", "simplify", "code-review", "security-review", "plan"]) assert.ok(AGENT_COMMAND_NAMES.has(n), n);
+  assert.equal(proposeName(sheet([], { job: "ship" }), [], () => false), "ship-storefront");
+  const taken = new Set(["ship-storefront"]);
+  assert.equal(proposeName(sheet([], { job: "ship" }), [], (n) => taken.has(n)), "ship-2");
 });
 
 test("NAME_RE needs a letter, so the digits of trail skills keep 1 3 can never be a name", () => {
