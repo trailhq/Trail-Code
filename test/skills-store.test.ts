@@ -232,6 +232,8 @@ test("nameTaken: every place a skill or its name can live, and free names", () =
   const ctx = ctxOf(b);
   assert.equal(nameTaken("release-npm", ctx), null);
   assert.equal(nameTaken("skills", ctx), "built-in");
+  assert.equal(nameTaken("ship", ctx), "host", "Claude Code's own /ship");
+  assert.equal(nameTaken("steward", ctx), "host");
   save(b);
   assert.equal(nameTaken("release-npm", ctx), "personal");
   mkdirSync(join(b.trail, "skills", ".retired", "deploy-shop-2026-10-20"), { recursive: true });

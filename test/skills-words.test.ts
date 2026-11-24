@@ -22,6 +22,8 @@ const EM_DASH = /—/;
 /** Strings that are data, never shown, each with why. */
 const EXEMPT: Array<{ file: string; starts: string; why: string }> = [
   { file: "src/skills/compile-words.ts", starts: "first again too as well", why: "askPhrases' stop words: matched against the person's typed words, never shown" },
+  ...["memory", "release-notes", "workflow-authoring"].map((name) => (
+    { file: "src/skills/compile-words.ts", starts: name, why: "AGENT_COMMAND_NAMES: Claude Code's command names, matched against a skill's name, never shown" })),
 ];
 
 function scope(): string[] {

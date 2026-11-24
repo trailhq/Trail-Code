@@ -28,6 +28,21 @@ export const BUILT_IN_NAMES: ReadonlySet<string> = new Set([
   'trail', 'graft', 'verify', 'run', 'init', 'review', 'skills', 'keep', 'forget', 'restore', 'add', 'show', 'draft', 'offers', 'help', 'on', 'off', 'promote', 'team', 'manual',
 ]);
 
+/**
+ * Claude Code's own slash commands and bundled skills. A kept skill is typed as `/<name>`, so it never takes one of
+ * these: Claude Code refuses to load a custom `ship` or `steward` at all ("Not loaded: a custom /ship. Rename it,
+ * then restart."), and a skill named like any of the others can't be told apart from the built-in when typed.
+ * `run`, `init`, `review`, `skills` and `help` are already Trail's own words (BUILT_IN_NAMES).
+ */
+export const AGENT_COMMAND_NAMES: ReadonlySet<string> = new Set([
+  'add-dir', 'agents', 'btw', 'bug', 'claude-api', 'clear', 'code-review', 'compact', 'config', 'context', 'cost', 'doctor',
+  'effort', 'exit', 'export', 'fast', 'feedback', 'fewer-permission-prompts', 'hooks', 'ide', 'install-github-app',
+  'keybindings-help', 'login', 'logout', 'loop', 'mcp', 'memory', 'model', 'output-style', 'permissions', 'plan', 'plugin',
+  'plugin-authoring', 'pr-comments', 'privacy-settings', 'release-notes', 'resume', 'rewind', 'sandbox', 'schedule',
+  'security-review', 'ship', 'simplify', 'status', 'statusline', 'steward', 'tasks', 'terminal-setup', 'theme', 'todos',
+  'update-config', 'upgrade', 'usage', 'vim', 'workflow-authoring',
+]);
+
 /** Lesson and learning id shapes (`ls-` + 6 hex, `l-` + hex): `trail forget` reads them as ids first, so no skill takes one (D114 (2)). */
 export const RESERVED_ID = /^(?:ls-[0-9a-f]{6}|l-[0-9a-f]{6,16})$/;
 
@@ -229,13 +244,13 @@ export function jobWords(sheet: RunSheet, steps: SkillStep[], extra: { calls?: R
   return { base: slug(prog) || 'steps', title: `Run ${prog} in ${repo}`, lead: `Runs ${prog} in ${repo}`, asks: extra.asked ?? [], statusAsks: [], dontUse: other };
 }
 
-/** The base name, then -<repo>, then -2, -3 ...: the first that is a good name and free. */
+/** The base name, then -<repo>, then -2, -3 ...: the first that is a good name, not an agent's command, and free. */
 export function freeName(base: string, repoKey: string, taken: (n: string) => boolean): string {
   const fit = (n: string) => n.slice(0, 48).replace(/-+$/, '');
   const b = goodName(fit(base)) ? fit(base) : fit(`run-${base}`);
   const tries = [b, fit(`${b}-${slug(repoName(repoKey))}`)];
   for (let n = 2; n < 100; n++) tries.push(`${b.slice(0, 44).replace(/-+$/, '')}-${n}`);
-  return tries.find((n) => goodName(n) && !taken(n)) ?? `${b.slice(0, 40)}-${repoKey.length}`;
+  return tries.find((n) => goodName(n) && !AGENT_COMMAND_NAMES.has(n) && !taken(n)) ?? `${b.slice(0, 40)}-${repoKey.length}`;
 }
 
 export function proposeName(sheet: RunSheet, steps: SkillStep[], taken: (n: string) => boolean): string {

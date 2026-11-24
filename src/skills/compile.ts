@@ -33,14 +33,14 @@ import { literalPassword, neverSave } from './never-save.js';
 import { STABLE_BRANCHES, findParams, paramsToMeta } from './params.js';
 import { renderSkillMd } from './skillmd.js';
 import { skillProblems } from './validate.js';
-import { type CompileRefusal, askPhrases, askedJob, carriedSteps, describe, elsewhereLines, freeName, goodName, jobWords, toolCheckWords } from './compile-words.js';
+import { AGENT_COMMAND_NAMES, type CompileRefusal, askPhrases, askedJob, carriedSteps, describe, elsewhereLines, freeName, goodName, jobWords, toolCheckWords } from './compile-words.js';
 import { type LoopWait, WIN_TEMP, splitSheet, stripScratchLog } from './compile-split.js';
 import { answersPrompt, loginFeed } from './answers-prompt.js';
 import { checkShowsFor, shownVersion, versionShaped, versionTie } from './compile-version.js';
 import { findWaits } from './compile-waits.js';
 import { followAtSave, type StepLearning } from './follow-learnings.js';
 
-export { BUILT_IN_NAMES, NAME_RE, askPhrases, draftText, proposeName, refusalWords, type CompileRefusal } from './compile-words.js';
+export { AGENT_COMMAND_NAMES, BUILT_IN_NAMES, NAME_RE, askPhrases, draftText, proposeName, refusalWords, type CompileRefusal } from './compile-words.js';
 
 export type CompileResult =
   | { ok: true; skill: CompiledSkill }
@@ -358,7 +358,7 @@ function build(sheet: RunSheet, opts: CompileOpts): CompiledSkill {
   const job = sheet.job ?? (opts.moment === 'asked' ? askedJob(opts.askedWith, steps, sourceCalls, k.checkFam) : null);
   const asked = job === null && opts.moment === 'asked' ? { asked: askPhrases(opts.askedWith) } : {};
   const words = jobWords({ ...sheet, job }, steps, { calls: sourceCalls, helperText: k.helpers.map((h) => h.content).join('\n'), ...main, ...asked });
-  const name = opts.name && goodName(opts.name) && !opts.taken(opts.name) ? opts.name : freeName(words.base, sheet.repoKey, opts.taken);
+  const name = opts.name && goodName(opts.name) && !AGENT_COMMAND_NAMES.has(opts.name) && !opts.taken(opts.name) ? opts.name : freeName(words.base, sheet.repoKey, opts.taken);
   const named = (t: string) => t.split(SKILL_DIR).join(name);
   steps = steps.map((s) => ({ ...s, cmd: named(s.cmd) }));
   const tool = k.checkCall?.tool;

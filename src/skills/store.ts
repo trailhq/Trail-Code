@@ -18,7 +18,7 @@ import type { JobClass } from '../trace/types.js';
 import type { CompiledSkill, ParsedSkill, SkillFrom, SkillRef, SkillStatus } from './types.js';
 import { trailPath } from '../util/private-fs.js';
 import { parseSkillMd, renderSkillMd, skillHash } from './skillmd.js';
-import { BUILT_IN_NAMES } from './compile-words.js';
+import { AGENT_COMMAND_NAMES, BUILT_IN_NAMES } from './compile-words.js';
 import { readSettings, localDate } from './settings.js';
 import { appendLedger } from './ledger.js';
 import { getSkillState, handEdited, readSkillsState, updateSkillState } from './state.js';
@@ -136,12 +136,14 @@ const trailMarked = (dir: string) => {
 
 /**
  * Where the name is taken: 'personal' | 'retired' | 'held' | 'repo' | 'team' | 'host' (~/.claude/skills, ~/.agents/skills,
- * <checkout>/.claude/skills, <checkout>/.agents/skills) | 'built-in'; null when free. 'invalid' for a name that is not
- * one folder name. In the checkout, a Trail skill (`metadata.trail`) is 'repo', anything else 'host'.
+ * <checkout>/.claude/skills, <checkout>/.agents/skills, or one of Claude Code's own commands) | 'built-in'; null when
+ * free. 'invalid' for a name that is not one folder name. In the checkout, a Trail skill (`metadata.trail`) is 'repo',
+ * anything else 'host'.
  */
 export function nameTaken(name: string, ctx: ScopeCtx): string | null {
   if (!safeName(name)) return 'invalid';
   if (BUILT_IN_NAMES.has(name)) return 'built-in';
+  if (AGENT_COMMAND_NAMES.has(name)) return 'host';
   const env = ctx.env;
   if (lstatOrNull(join(skillsDir(env), name))) return 'personal';
   if (retiredCopies(name, env).length) return 'retired';
