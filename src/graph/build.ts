@@ -257,6 +257,25 @@ export async function buildGraph(
   let parsed = 0;
   let reused = 0;
 
+  // Breadth tier: WASM grammars load asynchronously, so warm the ones this repo
+  // needs ONCE here (buildGraph is async) before the synchronous parse loop below
+  // can call extractGeneric. Depth-tier (native) grammars need no warmup.
+  await warmGenericGrammars(
+    // Tier precedence, same as the parse loop below: the breadth tier is reached
+    // only for files no depth grammar claims, so a fallback row (`.java`, `.kt`)
+    // must not warm a WASM grammar this build will never call.
+    new Set(
+      files
+        .filter((f) => !languageOf(f.abs))
+        .map((f) => genericLangOf(f.abs)?.name)
+        .filter((n): n is string => !!n),
+    ),
+  );
+  // Container tier (.vue and friends) loads its wrapper grammars the same way,
+  // for the same reason: extractContainer runs inside the sync loop below.
+  await warmContainerGrammars(
+    new Set(files.map((f) => containerLangOf(f.abs)?.name).filter((n): n is string => !!n)),
+  );
   // Every tier's grammars are WASM and load asynchronously, so warm the ones this
   // repo needs ONCE here (buildGraph is async) before the synchronous parse loop
   // below can call extractFile/extractGeneric/extractContainer. A depth grammar
