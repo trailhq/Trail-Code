@@ -12,7 +12,7 @@
  * as null without a look.
  */
 import { flatLine } from '../notes/flatten.js';
-import { secretReason } from '../notes/secrets.js';
+import { DER_PRIVATE_KEY, keyBodyEnd, keyBodyStart, PRIVATE_KEY_END, secretReason } from '../notes/secrets.js';
 
 const placeholder = (name: string) => `\${${name}:?set ${name}}`;
 /** A value: quoted (anything but its quote), or a bare word (up to a space, a quote or a shell operator). */
@@ -55,6 +55,16 @@ export const REDACTED = '[redacted]';
 
 /** A private key from its BEGIN line to its END line, or to the end of the text when it was cut. */
 const PRIVATE_KEY_BLOCK = /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?(?:-----END (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----|$)/g;
+/** A Google service account's key file, or a piece of one. */
+const SERVICE_ACCOUNT = /service_account|gserviceaccount\.com|["']private_key(?:_id)?\\*["']/;
+/**
+ * The fields of a service account's key file that hold the key or say which
+ * key and account it is (the account's email is in `client_x509_cert_url`
+ * too, as `%40`), in JSON as it is or escaped (`\"client_id\": \"…\"`). A
+ * quote's backslashes are read from the first one, so a long run of them is
+ * read once.
+ */
+const SA_FIELD = /(?<!\\)(\\*)(["'])(private_key_id|private_key|client_email|client_id|client_x509_cert_url)\1\2(\s*:\s*)\1\2([^"'\n]*?)\1\2/g;
 /** A word, for finding where on a line the secret is: a run between spaces, quotes and brackets. `=`, `:` and `/` stay in it. */
 const WORD = /[^\s'"`,;{}()[\]<>]+/g;
 /**
@@ -78,19 +88,32 @@ export interface Redaction {
  * `text` with every secret `secretReason` finds taken out, for a text sent
  * whole rather than refused (a Claude Code session a person chose to send).
  * The rule stays secretReason's; this only finds where on the line the secret
- * is: a private key block, then each word secretReason flags on its own (a
- * name keeps its `NAME=`, a link its host), then a word that is a secret only
+ * is: a private key block, then a key's body before an END line whose BEGIN
+ * line was cut off, then each word secretReason flags on its own (a name
+ * keeps its `NAME=`, a link its host), then a word that is a secret only
  * after the word or two before it (`Bearer …`, `--token …`, `"password": …`).
  * A line still flagged after that goes whole. Lines with nothing flagged are
- * never touched.
+ * never touched. One thing goes that secretReason doesn't flag: a service
+ * account key file's ids and email, which say whose key it is.
  */
 export function redactText(text: string): { text: string; found: Redaction[] } {
   const found: Redaction[] = [];
-  if (typeof text !== 'string' || secretReason(text) === null) return { text, found };
+  if (typeof text !== 'string') return { text, found };
+  const serviceAccount = SERVICE_ACCOUNT.test(text);
+  if (!serviceAccount && secretReason(text) === null) return { text, found };
   let out = text.replace(PRIVATE_KEY_BLOCK, (what) => {
     found.push({ kind: 'a private key', what });
     return `${REDACTED} private key`;
   });
+  out = cutHeadlessKeys(out, found);
+  if (serviceAccount) {
+    out = out.replace(SA_FIELD, (whole, slashes: string, quote: string, name: string, sep: string, value: string) => {
+      if (!value || value.startsWith(REDACTED)) return whole;
+      found.push({ kind: name === 'private_key' ? 'a private key' : "a service account's id or email", what: `${name}: ${value}` });
+      const q = slashes + quote;
+      return `${q}${name}${q}${sep}${q}${REDACTED}${q}`;
+    });
+  }
   if (secretReason(out) === null) return { text: out, found };
   out = out
     .split('\n')
@@ -100,6 +123,32 @@ export function redactText(text: string): { text: string; found: Redaction[] } {
     })
     .join('\n');
   return { text: out, found };
+}
+
+const DER_KEYS = new RegExp(DER_PRIVATE_KEY.source, 'g');
+
+/**
+ * `text` with each private key whose BEGIN line is gone taken out: back from
+ * an END line to the body's first line, then forward from a body's first
+ * line (`MII…`) when its END line is gone too.
+ */
+function cutHeadlessKeys(text: string, found: Redaction[]): string {
+  // A span is worked out only past the last one cut, so a body is walked once however many matches are in it.
+  const cut = (from: string, re: RegExp, span: (m: RegExpExecArray) => [number, number]) => {
+    let out = '';
+    let at = 0;
+    for (const m of from.matchAll(re)) {
+      if (m.index! < at) continue;
+      const [start, end] = span(m);
+      if (start < at) continue;
+      found.push({ kind: 'a private key', what: from.slice(start, end) });
+      out += `${from.slice(at, start)}${REDACTED} private key`;
+      at = end;
+    }
+    return at ? out + from.slice(at) : from;
+  };
+  const ended = cut(text, PRIVATE_KEY_END, (m) => [keyBodyStart(text, m.index!), m.index! + m[0].length]);
+  return cut(ended, DER_KEYS, (m) => [m.index!, keyBodyEnd(ended, m.index!)]);
 }
 
 function redactLine(line: string, why: string, found: Redaction[]): string {

@@ -25,6 +25,95 @@
  */
 
 const PRIVATE_KEY = /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----/;
+/** A private key's END line. For matchAll only (it is global). */
+export const PRIVATE_KEY_END = /-----END (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----/g;
+/**
+ * An RSA private key's body without its BEGIN line: base64 of a DER sequence
+ * of 256 bytes or more (`MII`) whose first field is version 0 (`…IBA`), as
+ * PKCS#1 and PKCS#8 keys start. That first line is mostly a fixed header, so
+ * it doesn't look random and the long-string check below misses it. A
+ * certificate starts `MII…CCA`, so it isn't one.
+ */
+export const DER_PRIVATE_KEY = /MII[A-Za-z0-9+/]{2}[AQgw]IBA[A-Za-z0-9+/]{20}/;
+const BASE64_CHAR = /[A-Za-z0-9+/]/;
+/** What can stand between a key's lines: whitespace, and the quotes, commas and backslashes of a key written as strings. */
+const BETWEEN_LINES = /[\s"'`,\\]/;
+
+/**
+ * Where the base64 before a private key's END line (at `end`) starts, or -1
+ * when there is too little of it to be a key: the key with its BEGIN line cut
+ * off (`cut -d= -f1 .env`, `tail`). Read back one line at a time. Lines are
+ * split by whitespace (newlines, or the spaces `tr '\n' ' '` left), by a `\n`
+ * escape once or twice over (a key in JSON), or by the quotes and commas of
+ * one string per line (`"MII…\n"` then `"…\n"` in code). The line next to END
+ * can be short, as a key's last line is; the others need 16 characters, so a
+ * word before the key isn't read as a line of it. Each character is read
+ * once, and a walk stops at the dashes of the END line before it.
+ */
+export function keyBodyStart(text: string, end: number): number {
+  let start = -1;
+  let total = 0;
+  for (let p = end, first = true; ; first = false) {
+    let q = p;
+    for (;;) {
+      const c = text[q - 1];
+      if (c !== undefined && BETWEEN_LINES.test(c)) q--;
+      else if ((c === "n" || c === "r") && text[q - 2] === "\\") q -= 2;
+      else break;
+    }
+    if (q === p && !first) break;
+    let k = q;
+    while (text[k - 1] === "=") k--;
+    while (k > 0 && BASE64_CHAR.test(text[k - 1]!)) k--;
+    // The `n` of a `\n` escape right before the line isn't the line's.
+    if (text[k - 1] === "\\" && (text[k] === "n" || text[k] === "r")) k++;
+    // The end of a longer word (`ACCOUNT_JSON`), not a line of its own.
+    else if (k > 0 && /[\w.-]/.test(text[k - 1]!)) break;
+    if (q - k < (first ? 1 : 16)) break;
+    total += q - k;
+    start = k;
+    p = k;
+  }
+  return total >= 40 ? start : -1;
+}
+
+/**
+ * Where a key's base64 body that starts at `start` (a DER_PRIVATE_KEY match)
+ * ends: the lines after it, split as keyBodyStart reads them, while each is
+ * 16 characters or more or ends in `=` padding.
+ */
+export function keyBodyEnd(text: string, start: number): number {
+  let end = start;
+  for (let p = start, first = true; ; first = false) {
+    if (!first) {
+      const from = p;
+      for (;;) {
+        const c = text[p];
+        if (c === "\\") {
+          let j = p;
+          while (text[j] === "\\") j++;
+          p = text[j] === "n" || text[j] === "r" ? j + 1 : j;
+        } else if (c !== undefined && BETWEEN_LINES.test(c)) p++;
+        else break;
+      }
+      if (p === from) break;
+    }
+    let k = p;
+    while (k < text.length && BASE64_CHAR.test(text[k]!)) k++;
+    while (text[k] === "=") k++;
+    if (!first && ((k - p < 16 && text[k - 1] !== "=") || /[\w.-]/.test(text[k] ?? ""))) break;
+    end = k;
+    p = k;
+  }
+  return end;
+}
+
+/** A private key by its BEGIN line, its base64 body, or its body before an END line. */
+function privateKey(text: string): boolean {
+  if (PRIVATE_KEY.test(text) || DER_PRIVATE_KEY.test(text)) return true;
+  for (const m of text.matchAll(PRIVATE_KEY_END)) if (keyBodyStart(text, m.index!) >= 0) return true;
+  return false;
+}
 
 /** Keys whose provider prefix says what they are. */
 const PROVIDER_KEYS = [
@@ -291,7 +380,7 @@ function vendorKey(text: string): boolean {
 /** Why `text` can't be saved as it is, or null when it holds no secret. */
 export function secretReason(text: string): string | null {
   if (typeof text !== "string" || !text) return null;
-  if (PRIVATE_KEY.test(text)) return "a private key";
+  if (privateKey(text)) return "a private key";
   if (digitKey(text) || PROVIDER_KEYS.some((re) => re.test(text))) return "an API key";
   if (jwt(text)) return "a signed token (JWT)";
   // Ids are ids: a UUID is judged only where it is assigned to a secret's name, below.
