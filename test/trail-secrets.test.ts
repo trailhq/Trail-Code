@@ -43,6 +43,9 @@ const secrets: [string, string, string][] = [
   ["an EC private key", k("-----BEGIN EC ", "PRIVATE KEY-----"), "a private key"],
   ["a PKCS8 private key", k("-----BEGIN ", "PRIVATE KEY-----"), "a private key"],
   ["a PGP private key", k("-----BEGIN PGP ", "PRIVATE KEY BLOCK-----"), "a private key"],
+  ["a private key's lines before its END line, BEGIN cut off", k("GOOGLE_KEY_JSON ", "Zq8+Xv3/Lp9nRt2Wm5Kd7Fh1Bs4Gj6Hc0Ny8Ue3Ao ", "Hc0Ny8Ue3AoZq8+Xv3/Lp9nRt2Wm5Kd7 ", "-----END ", "PRIVATE KEY-----"), "a private key"],
+  ["a private key's lines in JSON before its END line", k('{"k": "', "Zq8+Xv3/Lp9nRt2Wm5Kd7Fh1Bs4Gj6Hc0Ny8Ue3Ao\\n", "Ue3A==\\n-----END ", 'PRIVATE KEY-----\\n"}'), "a private key"],
+  ["an RSA private key's body with no BEGIN line", k("MII", "EvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQ"), "a private key"],
   ["a JWT", k("ey", "JhbGciOiJIUzI1NiJ9", ".", "eyJzdWIiOiIxMjM0NTY3ODkwIn0", ".", "dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"), "a signed token (JWT)"],
   ["a password in a database URL", "psql postgres://admin:Hx7rT2pq@db.example.test:5432/app", "a password in a URL"],
   ["a login in curl -u", "curl -u deploy:Tr4ck3r99 https://ci.example.test/api", "a password in a command"],
@@ -63,6 +66,8 @@ const secrets: [string, string, string][] = [
 
 const clean: [string, string][] = [
   ["a git sha", "git checkout 3f2a9c1e5b7d4f6a8c0e2b4d6f8a0c2e4b6d8f0a"],
+  ["a private key's END line named in prose", "the file ends with -----END PRIVATE KEY----- on its own line"],
+  ["a certificate's first bytes", "MIIDdzCCAl+gAwIBAgIUQ5h7cX2K9mP4rT8w"],
   ["a short sha range", "git log a1b2c3d..e4f5a6b"],
   ["an image digest", `docker pull registry.example.test/shop@sha256:${HEX64}`],
   ["an uppercase hex checksum", "echo 9F86D081884C7D659A2FEAA0C55AD015A3BF4F1B2B0B822CD15D6C15B0F00A08"],
