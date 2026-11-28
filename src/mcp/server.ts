@@ -15,7 +15,7 @@ import { canonicalToolName, GRAFT_MCP_TOOL_NAMES } from './tool-names.js';
 import { WorkspaceConnector, type RemotePrompt, type RemoteTool } from './connector.js';
 import { teamLine, teamWorkspace } from '../cloud/team-file.js';
 import { KeptListing, within } from './kept-listing.js';
-import { handleMcpStdoutError } from './stdio.js';
+import { endMcpSession, handleMcpStdoutError, installMcpParentWatchdog } from './stdio.js';
 
 /**
  * MCP tool name → the command enum the telemetry contract knows. A tool absent
@@ -100,6 +100,7 @@ function advertised(root: string, dirOverride?: string): typeof TOOLS {
  */
 export function startMcpServer(root: string, dirOverride?: string, version = '0', opts: { brainsOnly?: boolean } = {}): void {
   process.stdout.on('error', handleMcpStdoutError);
+  installMcpParentWatchdog();
   // `trail mcp --brains`: the one entry Claude Code gets once paired with a
   // workspace. It serves the workspace's tools and prompts and nothing of the
   // repo's, so it does none of the repo upkeep either: it starts in every
@@ -252,5 +253,5 @@ export function startMcpServer(root: string, dirOverride?: string, version = '0'
         if (!isNotification) replyError(id, -32601, `method not found: ${method}`);
     }
   });
-  process.stdin.on('end', () => process.exit(0));
+  process.stdin.on('end', endMcpSession);
 }
