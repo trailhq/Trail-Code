@@ -489,7 +489,8 @@ compiler-grade layer, all `$0` and deterministic (no model, no key):
 - **Broad**: symbols (functions, classes, methods, types, …) plus name-resolved
   call edges via a generic tree-sitter extractor, one grammar per language:
   **Rust, C, C++, C#, Ruby, Scala, Elixir, Solidity,
-  Dart, Clojure, Nix, Lua, Gleam, Julia, PowerShell**, and **OCaml, Zig, GLSL** (symbols only for now, no call edges).
+  Dart, Clojure, Nix, Lua, Gleam, Julia, PowerShell, GDScript, Godot Shading Language**,
+  and **OCaml, Zig, GLSL** (symbols only for now, no call edges).
   **Bash** (`.sh`, `.bash`) also uses this tier for function symbols;
   Bash call edges and extensionless shell scripts are not yet supported.
 
@@ -507,8 +508,9 @@ compiler-grade layer, all `$0` and deterministic (no model, no key):
   own files. It's best-effort: a missing or failed server leaves those languages
   on the AST graph while the other servers still run.
 
-Twenty-eight languages, plus Vue, Svelte and Astro single-file components. A file whose language isn't listed is skipped, not
-indexed. Adding a broad-tier language is a small contribution; see
+Thirty languages, plus Vue, Svelte and Astro single-file components and
+symbol indexing for Godot text formats. Trail skips unsupported files.
+Adding a broad-tier language is a small contribution; see
 [CREDITS.md](CREDITS.md) for the folks who added the current set.
 
 ---
